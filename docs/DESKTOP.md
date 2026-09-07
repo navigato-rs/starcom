@@ -64,10 +64,11 @@ Currently supported:
 - every `IdentityFile` in order, plus `IdentitiesOnly`; if none are set, every
   existing `~/.ssh/id_ed25519` / `id_ecdsa` / `id_rsa`;
 - one `UserKnownHostsFile`;
-- bounded `Include` files and `*`/`?` include globs.
+- bounded `Include` files and `*`/`?` include globs;
+- up to four flat `ProxyJump` hops, each with its own identity and host-key checks.
 
 Wildcard `Host` entries apply defaults but are not shown as literal suggestions.
-The parser never executes configuration commands. `Match`, `ProxyJump`,
+The parser never executes configuration commands. `Match`, nested jump routes,
 `ProxyCommand`, certificates, custom agents, algorithm overrides, and other
 routing/security policy are displayed as blockers. Starcom does not silently
 bypass them by connecting directly or choosing another key. Hardware-backed
@@ -143,7 +144,8 @@ Enable **Allow terminal input** before connecting for an interactive attachment.
 A read-only attachment remains available for inspection.
 
 Selecting a Host alias offers its `IdentityFile` entries in order, then the
-local SSH agent, unless `IdentitiesOnly` is set. If the profile names no files,
+local SSH agent. `IdentitiesOnly` restricts agent offers to configured keys; it
+does not prevent the agent from signing for them. If the profile names no files,
 Starcom offers every existing default it can sign (`~/.ssh/id_ed25519`,
 `id_ecdsa`, `id_rsa`) before the agent. There is no agent-versus-key radio; an
 extra identity path lives under Advanced. If no agent is reachable and no

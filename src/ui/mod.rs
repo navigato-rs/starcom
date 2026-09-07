@@ -46,6 +46,7 @@ pub struct Form {
     identity_files: Vec<String>,
     identities_only: bool,
     host_key_alias: Option<String>,
+    jumps: Vec<ssh::Options>,
     known_hosts: String,
     socket: String,
     history: usize,
@@ -67,6 +68,7 @@ impl Default for Form {
             identity_files: Vec::new(),
             identities_only: false,
             host_key_alias: None,
+            jumps: Vec::new(),
             known_hosts: desktop::home_path()
                 .map(|path| path.join(".ssh/known_hosts").to_string_lossy().into_owned())
                 .unwrap_or_default(),
@@ -122,6 +124,7 @@ impl Form {
             identity_files: Vec::new(),
             identities_only: false,
             host_key_alias: None,
+            jumps: Vec::new(),
             known_hosts: saved.known_hosts,
             socket: saved.socket,
             history: saved.history.min(snapshot::MAX_HISTORY_LINES),
@@ -216,7 +219,8 @@ impl Form {
         }
         let authentication = ssh::Authentication {
             files,
-            agent: !self.identities_only,
+            agent: true,
+            identities_only: self.identities_only,
         };
         let user = self.user.trim();
         let user = if user.is_empty() {
@@ -232,6 +236,7 @@ impl Form {
             known_hosts: local_path(&self.known_hosts)?,
             host_key_alias: self.host_key_alias.clone(),
             timeout: time::Duration::from_secs(30),
+            jumps: self.jumps.clone(),
         };
         options.validate()?;
         Ok(desktop::Connection {
@@ -394,11 +399,14 @@ impl DesktopUi {
         self.listed_destination = self.form.destination().to_owned();
         self.auto_list = false;
         self.screen = Screen::Connection;
-        if !self.profile_source.is_empty()
-            && let Ok(profile) = self.config.resolve(&self.profile_source)
-        {
-            self.form
-                .apply_routing(&profile, self.config.default_identities());
+        if !self.profile_source.is_empty() {
+            match self.config.resolve(&self.profile_source) {
+                Ok(profile) => self
+                    .form
+                    .apply_routing(&profile, self.config.default_identities()),
+                Err(error) => self.form.profile_error = Some(error.to_string()),
+            }
+            self.refresh_route();
         }
     }
 
@@ -453,6 +461,7 @@ impl DesktopUi {
         self.profile_source = destination.clone();
         self.form.unsupported.clear();
         self.form.profile_error = None;
+        self.form.jumps.clear();
         if destination.is_empty() {
             self.form.host.clear();
             self.form.identity_files.clear();
@@ -468,6 +477,22 @@ impl DesktopUi {
                 self.form.host = destination;
                 self.form.profile_error = Some(error.to_string());
             }
+        }
+        self.refresh_route();
+    }
+
+    fn refresh_route(&mut self) {
+        self.form.jumps.clear();
+        if self.form.profile_error.is_some() || !self.form.unsupported.is_empty() {
+            return;
+        }
+        match self.config.connection(
+            self.form.destination(),
+            &desktop::local_user(),
+            time::Duration::from_secs(30),
+        ) {
+            Ok(options) => self.form.jumps = options.jumps,
+            Err(error) => self.form.profile_error = Some(error.to_string()),
         }
     }
 
@@ -655,6 +680,13 @@ impl DesktopUi {
                             Some(ref alias) => format!("{endpoint} (host key {alias})"),
                             None => endpoint,
                         });
+                    }
+
+                    if !self.form.jumps.is_empty() {
+                        let route = self.form.jumps.iter()
+                            .map(|hop| format!("{}@{}:{}", hop.user, hop.host, hop.port))
+                            .collect::<Vec<_>>().join(" → ");
+                        ui.weak(format!("Via {route}"));
                     }
 
                     ui.add_space(12.0);
@@ -1661,6 +1693,10 @@ mod tests {
     use super::*;
 
     /// `~/.ssh/<file>` after `expand_path`, including Windows separators.
+    fn test_config(text: &str) -> ssh_config::Config {
+        ssh_config::Config::parse(text, path::Path::new("/home/test")).unwrap()
+    }
+
     fn tilde_identity(file: &str) -> String {
         path::PathBuf::from("/home/test")
             .join(format!(".ssh/{file}"))
@@ -1670,7 +1706,7 @@ mod tests {
 
     #[test]
     fn a_literal_alias_populates_the_connection_form() {
-        let config = sync::Arc::new(ssh_config::Config::from_text(
+        let config = sync::Arc::new(test_config(
             "Host dev\nHostName 10.0.0.2\nUser alice\nPort 2222\nIdentityFile ~/.ssh/dev",
         ));
         let mut ui = DesktopUi::with_config(config, None);
@@ -1745,7 +1781,7 @@ mod tests {
     }
 
     #[test]
-    fn identities_only_still_uses_default_keys_and_closes_the_agent() {
+    fn identities_only_restricts_the_agent_to_configured_keys() {
         let mut form = Form::default();
         form.apply_profile(
             ssh_config::Profile {
@@ -1760,7 +1796,8 @@ mod tests {
         form.user = "alice".into();
         form.known_hosts = "/tmp/known_hosts".into();
         let connection = form.connection_named("work").unwrap();
-        assert!(!connection.options.authentication.agent);
+        assert!(connection.options.authentication.agent);
+        assert!(connection.options.authentication.identities_only);
         assert_eq!(
             connection.options.authentication.files,
             [path::PathBuf::from("/home/test/.ssh/id_ed25519")]
@@ -1793,8 +1830,8 @@ mod tests {
 
     #[test]
     fn restored_tabs_re_read_identity_policy_from_config() {
-        let config = sync::Arc::new(ssh_config::Config::from_text(
-            "Host zork\nHostName zork.example\nIdentityFile ~/.ssh/work\nIdentityFile ~/.ssh/id_ed25519\nIdentitiesOnly yes\nProxyJump bastion\n",
+        let config = sync::Arc::new(test_config(
+            "Host zork\nHostName zork.example\nIdentityFile ~/.ssh/work\nIdentityFile ~/.ssh/id_ed25519\nIdentitiesOnly yes\nProxyCommand custom-proxy\n",
         ));
         let mut ui = DesktopUi::with_config(config, None);
         ui.restore(store::Tab {
@@ -1814,7 +1851,12 @@ mod tests {
             [tilde_identity("work"), tilde_identity("id_ed25519")]
         );
         assert!(ui.form.identities_only);
-        assert!(ui.form.unsupported.iter().any(|item| item == "proxyjump"));
+        assert!(
+            ui.form
+                .unsupported
+                .iter()
+                .any(|item| item == "proxycommand")
+        );
         assert!(ui.form.connection_named("work").is_err());
     }
 
@@ -1953,9 +1995,7 @@ mod tests {
 
     #[test]
     fn choosing_a_host_lists_its_sessions() {
-        let config = sync::Arc::new(ssh_config::Config::from_text(
-            "Host zork\nHostName 10.0.0.2\nUser alice\n",
-        ));
+        let config = sync::Arc::new(test_config("Host zork\nHostName 10.0.0.2\nUser alice\n"));
         let mut ui = DesktopUi::with_config(config, None);
         ui.form.destination = "zork".to_owned();
         ui.refresh_profile();
@@ -2298,5 +2338,55 @@ mod tests {
         );
         assert_eq!(ui.selected, Some(pane));
         assert_eq!(ui.saved().pane, Some(pane.0));
+    }
+
+    #[test]
+    fn jump_routes_are_shared_by_listing_connect_and_restore() {
+        let config = sync::Arc::new(test_config(
+            "Host target\nHostName target.example\nUser alice\nProxyJump relay\n\
+             Host relay\nHostName relay.example\nUser bob\nPort 2222\nIdentityFile ~/.ssh/relay\n",
+        ));
+        let mut ui = DesktopUi::with_config(config, None);
+        ui.form.destination = "target".into();
+        ui.form.session = "work".into();
+        ui.refresh_profile();
+        let listed = ui.form.listing().unwrap();
+        let attached = ui.form.connection().unwrap();
+        assert_eq!(listed.options.jumps.len(), 1);
+        assert_eq!(attached.options.jumps[0].host, "relay.example");
+        assert_eq!(attached.options.jumps[0].user, "bob");
+        assert_eq!(attached.options.jumps[0].port, 2222);
+        assert_eq!(
+            attached.options.jumps[0].authentication.files,
+            [path::PathBuf::from("/home/test/.ssh/relay")]
+        );
+        let saved = ui.form.saved();
+        ui.restore(saved);
+        assert_eq!(ui.resume().unwrap().options.jumps[0].host, "relay.example");
+    }
+
+    #[test]
+    fn unsupported_bastion_blocks_restored_connections() {
+        let config = sync::Arc::new(test_config(
+            "Host target\nProxyJump relay\nHost relay\nProxyCommand custom-proxy\n",
+        ));
+        let mut ui = DesktopUi::with_config(config, None);
+        ui.restore(store::Tab {
+            destination: "target".into(),
+            host: "reachable.example".into(),
+            user: "alice".into(),
+            session: "work".into(),
+            port: 22,
+            known_hosts: "/tmp/known_hosts".into(),
+            ..store::Tab::default()
+        });
+        assert!(
+            ui.form
+                .profile_error
+                .as_deref()
+                .unwrap()
+                .contains("proxycommand")
+        );
+        assert!(ui.resume().is_err());
     }
 }

@@ -1,7 +1,7 @@
 # Embedded SSH
 
-Starcom uses **Sunset 0.6** for SSH protocol handling and RustCrypto/`ssh-key`
-for identity signing. `polling` supplies socket readiness without an async
+Starcom uses **sunset-client** for configuration, routing, trust, and identity
+handling, with Sunset 0.6 and RustCrypto underneath. `polling` supplies socket readiness without an async
 runtime. There is no local SSH subprocess, libssh2, OpenSSL, ring, or AWS-LC in
 the selected SSH/crypto path. The remote side remains an ordinary Linux sshd and
 stock tmux.
@@ -38,13 +38,14 @@ The embedded resolver currently supports:
 - every `IdentityFile` in order, plus `IdentitiesOnly`; if none are set, every
   existing default Starcom can sign (`~/.ssh/id_ed25519`, `id_ecdsa`, `id_rsa`);
 - one `UserKnownHostsFile`;
-- bounded `Include` expansion, including `*` and `?` globs.
+- bounded `Include` expansion, including `*` and `?` globs;
+- `ProxyJump` chains of up to four independently authenticated and verified hops.
 
 Files, total bytes, include depth, directory entries, aliases, and path expansion
 are bounded. Reading configuration never executes a command. `%h`, `%n`, `%r`,
 `%p`, `%d`, `%%`, and `~/` are handled where supported.
 
-The following are not approximated: `Match`, `ProxyJump`, `ProxyCommand`, host
+The following are not approximated: `Match`, nested jump routes, `ProxyCommand`, host
 certificates, custom agent routing, hardware security keys, algorithm overrides,
 canonicalization, binding directives, revoked-key files, and password/MFA
 workflows. A profile using unsupported routing, authentication, or trust policy
@@ -54,12 +55,12 @@ different key, or ignore those semantics.
 An optional system-SSH transport remains a future escape hatch for advanced
 enterprise/cluster configurations.
 
-`ProxyJump` needs a `direct-tcpip` channel, which published Sunset 0.6 rejects
-outright. Starcom builds against `navigato-rs/sunset` on `main`, which adds the
-client-side open. The fork is the SSH stack, not a pin waiting on upstream.
-`ProxyJump` is still reported as unsupported rather than half-supported: running
-a second SSH session inside such a channel needs the transport to accept
-something other than a `TcpStream`, which is not written.
+The pinned `sunset-client` drives nested SSH sessions over `direct-tcpip` channels.
+Every hop resolves its own configuration and verifies its own host key before
+loading identities. Explicit hop user/port overrides apply before path expansion.
+The chain shares one wakeable socket and bounded queues. A refused hop never
+falls back to a direct connection. Connect, discovery, reconnect, and SFTP upload
+all receive the same resolved route; no Starcom-specific jump transport remains.
 
 Sunset 0.6 emits no keyboard-interactive event and has no certificate path, which
 is what blocks MFA and host/user certificates rather than any decision here.
@@ -95,7 +96,8 @@ implementation or a system-SSH adapter.
 ## Authentication
 
 Identity files from the profile are offered in order, then keys from the local
-SSH agent, matching `ssh` unless `IdentitiesOnly` is set. Multiple `IdentityFile`
+SSH agent. `IdentitiesOnly yes` restricts agent offers to configured public
+identities, including public halves of encrypted keys. Multiple `IdentityFile`
 entries are kept. If the profile names none, Starcom offers every existing
 default it can sign (`~/.ssh/id_ed25519`, `id_ecdsa`, `id_rsa`) before the
 agent. Encrypted files are skipped with a note to `ssh-add` them. There is no

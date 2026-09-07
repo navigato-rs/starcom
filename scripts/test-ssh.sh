@@ -143,7 +143,7 @@ done
 [[ "$count" == 2 ]] || { echo 'tmux fixture did not become ready' >&2; exit 1; }
 export STARCOM_TEST_DIR="$work" STARCOM_TEST_USER="$user"
 export STARCOM_NO_FORWARD_PORT="$noforward_port"
-export STARCOM_AGENT_TEST_PUBKEY="$work/id_ed25519.pub"
+export SUNSET_AGENT_TEST_PUBKEY="$work/id_ed25519.pub"
 # cargo exits 0 when a filter matches nothing, so a renamed test or a changed
 # cfg would leave this whole fixture green having asserted nothing. Require the
 # tests to actually run, and update the counts when tests are added.
@@ -163,12 +163,13 @@ run_fixture() {
 }
 
 cargo_args=(--locked)
-integration_tests=24
+integration_tests=25
 
 # Build first, untimed. The per-run timeouts below bound how long a test may
 # take to RUN; letting them also cover compilation makes a cold tree look like
 # a hung test.
 cargo test "${cargo_args[@]}" --lib --test ssh_localhost --test ssh_migration --no-run
+cargo test "${cargo_args[@]}" -p sunset-client --lib --no-run
 
-run_fixture 1 timeout 30s cargo test "${cargo_args[@]}" --lib signs_with_isolated_openssh_agent -- --ignored --test-threads=1
+run_fixture 1 timeout 30s cargo test "${cargo_args[@]}" -p sunset-client --lib signs_with_isolated_openssh_agent -- --ignored --test-threads=1
 run_fixture "$integration_tests" timeout 300s cargo test "${cargo_args[@]}" --test ssh_localhost --test ssh_migration -- --ignored --test-threads=1

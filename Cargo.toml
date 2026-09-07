@@ -52,15 +52,9 @@ required-features = ["ssh"]
 anyhow = "1.0"
 alacritty_terminal = "0.26"
 tmuxctl = { version = "=0.1.0", default-features = false }
-sunset = { version = "0.6.0", git = "https://github.com/navigato-rs/sunset", rev = "c245252", default-features = false, features = ["std", "rsa", "ecdsa256", "larger"], optional = true }
-sunset-sftp = { version = "0.2.0", git = "https://github.com/navigato-rs/sunset", rev = "c245252", default-features = false, features = ["long-paths-1024"], optional = true }
-ssh-key = { version = "=0.7.0-rc.11", default-features = false, features = ["std", "ed25519", "rsa", "p256"], optional = true }
-hmac = { version = "0.13", optional = true }
-sha1 = { version = "0.11", optional = true }
-zeroize = { version = "1", optional = true }
-signature = { version = "3", optional = true }
+sunset-client = { version = "0.1.0", git = "https://github.com/navigato-rs/sunset", rev = "569026b845e3da570e8b7309b83b8e92bed0d97a", optional = true }
+sunset-sftp = { version = "0.2.0", git = "https://github.com/navigato-rs/sunset", rev = "569026b845e3da570e8b7309b83b8e92bed0d97a", default-features = false, features = ["long-paths-1024"], optional = true }
 polling = { version = "3.11", optional = true }
-base64 = { version = "0.22", optional = true }
 
 blade-egui = { version = "0.8.1", git = "https://github.com/kvark/blade", rev = "f1fbf2a", optional = true }
 blade-graphics = { version = "0.8.4", git = "https://github.com/kvark/blade", rev = "f1fbf2a", optional = true }
@@ -77,15 +71,15 @@ wayland-backend = { version = "0.3", default-features = false, features = ["clie
 wayland-client = { version = "0.31", default-features = false, features = ["system"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", optional = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Threading", "Win32_Security", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61.2", optional = true, features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
 
 [features]
 default = ["ssh", "gui"]
-gui = ["ssh", "dep:blade-egui", "dep:blade-graphics", "dep:egui", "dep:egui-winit", "dep:winit", "dep:png", "dep:log", "dep:env_logger", "dep:wayland-client", "dep:wayland-backend", "dep:raw-window-handle"]
-ssh = ["dep:sunset", "dep:sunset-sftp", "dep:ssh-key", "dep:hmac", "dep:sha1", "dep:zeroize", "dep:signature", "dep:windows-sys", "dep:polling", "dep:base64"]
+gui = ["ssh", "dep:blade-egui", "dep:blade-graphics", "dep:egui", "dep:egui-winit", "dep:winit", "dep:png", "dep:log", "dep:env_logger", "dep:wayland-client", "dep:wayland-backend", "dep:raw-window-handle", "dep:windows-sys", "dep:polling"]
+ssh = ["dep:sunset-client", "dep:sunset-sftp"]
 
 [package.metadata.deb]
 maintainer = "Dzmitry Malyshau"

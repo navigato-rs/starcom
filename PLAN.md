@@ -1,9 +1,9 @@
 # Starcom plan and roadmap
 
-Updated: 2026-09-05.
+Updated: 2026-09-07.
 
 **Current status:** M0 through M3 are done for the tested configuration, and M4
-is half done. M2's gate is signed off; M3 is complete: transport loss is classified apart
+is partly done. M2's gate is signed off; M3 is complete: transport loss is classified apart
 from authentication, trust, missing-session, server-exit, and detach; retries use
 cancellable jittered backoff with visible state; every attempt takes a fresh
 epoch and rebuilds models; a replaced session or restarted tmux server is
@@ -12,10 +12,9 @@ not treated as lost output. Loss during output, input, paste, and a remote layou
 change, plus a restarted tmux server, are covered by fixture tests.
 
 M4 now persists non-secret tabs, resumes their saved sessions by default with an
-opt-out setting, and adds explicit session discovery and creation. Its
-other three items — connection reuse, ProxyJump, and certificate/MFA workflows —
-are blocked on Sunset 0.6 and are recorded below with what specifically blocks
-each. M5 is next.
+opt-out setting, and adds explicit session discovery and creation. ProxyJump
+uses Sunset's shared std-only client. Connection reuse and certificate/MFA
+workflows remain open. M5 is next.
 
 Development lands on protected `main` through short-lived pull requests. CI runs
 for pull requests and updates to `main`. Routine milestone branches, generated
@@ -153,9 +152,10 @@ terminal checkpoint.
 - Supported resolution: `Host`, `HostName`, `User`, `Port`, `HostKeyAlias`, every `IdentityFile`
   in order, `IdentitiesOnly`, one `UserKnownHostsFile`, and OpenSSH's default
   `id_ed25519` / `id_ecdsa` / `id_rsa` when `IdentityFile` is omitted. Files
-  are offered first, then the agent, unless `IdentitiesOnly` closed that path.
-- `Match`, jump/proxy routing, certificates, custom agents, and security-algorithm
-  overrides are reported as unsupported rather than ignored.
+  are offered first, then the agent; `IdentitiesOnly` restricts its offered keys.
+- Flat ProxyJump chains use `sunset-client`; every hop has independent trust and
+  identity policy. `Match`, nested routes, ProxyCommand, certificates, custom agents,
+  and security-algorithm overrides are reported as unsupported rather than ignored.
 
 ### Desktop
 
@@ -253,7 +253,7 @@ write, endless security retry, or phantom successful reconnection. Met for the
 tested configuration; each clause has a fixture test, and the reconnect test is
 verified to fail when automatic retry is disabled.
 
-### M4 — Multiple-machine operational fit: two items done, three blocked on the SSH backend
+### M4 — Multiple-machine operational fit: three items done
 
 - [x] Persist non-secret tabs/profiles and resume their saved sessions by
   default, with an opt-out setting.
@@ -266,17 +266,9 @@ verified to fail when automatic retry is disabled.
   could share one from a channel-count perspective. Sharing still couples every
   tab on a host to one transport, and that is why it was deferred. The channel
   count was never the blocker.
-- [ ] Add ProxyJump/bastion support or a system-SSH adapter for advanced configs.
-  The backend blocker is removed. `navigato-rs/sunset` adds a client `direct-tcpip`
-  open, a way to tell a refused open from a slow one, `MAX_CHANNELS` 16, and
-  agent-held `sk-ssh-ed25519`. Starcom builds against that fork pinned at a
-  `main` revision, the way the GUI stack pins `kvark/blade`. It is validated
-  against real OpenSSH in the normal fixture run: a forward carries data both
-  ways, and both an unreachable destination and a server with
-  `AllowTcpForwarding no` are reported as refusals rather than as timeouts.
-  What remains is the larger half: running a second SSH session inside that
-  channel needs `ssh::Connection` to accept a transport other than a
-  `TcpStream`. Until that exists, `ProxyJump` stays reported as unsupported.
+- [x] Add ProxyJump/bastion support through the shared `sunset-client` package.
+  Up to four flat hops use independent configuration, identity, and host-key checks.
+  There is no direct fallback. Nested routes and ProxyCommand remain unsupported.
 - [ ] Improve certificate, hardware-key, custom-agent, and MFA workflows.
   Sunset 0.6's client emits no keyboard-interactive event and has no certificate
   path, so MFA and certificates cannot be driven from it at all. Agent-held
@@ -315,8 +307,7 @@ pinned fork, leaving the transport work rather than an open question.
 
 ## Immediate work order
 
-1. Give `ssh::Connection` a transport other than a `TcpStream`, which is what
-   `ProxyJump` needs on top of the forwarding channel that now exists.
+1. Keep the shared client and both application adapters covered by live fixtures.
 2. Begin M5 with the measurement harness, not with optimizations. There is still
    no recorded startup time, idle CPU, per-pane memory, or input latency.
 3. Add native macOS/Windows close, clipboard, and input acceptance.

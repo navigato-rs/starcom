@@ -16,8 +16,8 @@ with tempfile.TemporaryDirectory(prefix="starcom-agent-") as directory:
     try:
         environment = os.environ.copy()
         environment.pop("SSH_AUTH_SOCK", None)
-        environment["STARCOM_AGENT_TEST_PUBKEY"] = str(key) + ".pub"
-        subprocess.run(["cargo", "test", "--locked", "--lib", "signs_with_isolated_openssh_agent", "--", "--ignored", "--test-threads=1"],
+        environment["SUNSET_AGENT_TEST_PUBKEY"] = str(key) + ".pub"
+        subprocess.run(["cargo", "test", "--locked", "-p", "sunset-client", "--lib", "signs_with_isolated_openssh_agent", "--", "--ignored", "--test-threads=1"],
                        env=environment, check=True, timeout=120)
     finally:
         subprocess.run(["ssh-add", "-d", str(key)], check=True, timeout=15)

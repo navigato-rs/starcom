@@ -88,6 +88,7 @@ fn run() -> anyhow::Result<()> {
     let authentication = ssh::Authentication {
         files: identities,
         agent,
+        identities_only: false,
     };
     let port = optional_number(&mut values, "--port", 22)?;
     let history = optional_number(&mut values, "--history", 200)?;
@@ -123,6 +124,7 @@ fn run() -> anyhow::Result<()> {
         authentication,
         host_key_alias: None,
         timeout: time::Duration::from_secs(seconds),
+        jumps: Vec::new(),
     };
     if let Some(seconds) = watch_seconds {
         return watch(&options, &session, socket.as_deref(), history, seconds);

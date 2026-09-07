@@ -65,7 +65,8 @@ cargo run --release --locked -- --demo
 
 Use **+** to open a connection tab. Pick a `Host` from `~/.ssh/config` or type
 another destination; Starcom resolves supported user/host/port/key settings and
-reports unsupported routing or authentication policy instead of bypassing it.
+resolves ProxyJump through Sunset’s shared client and reports unsupported policy
+instead of bypassing it.
 Choosing a known host lists its tmux sessions and selects the first one so
 **Connect** is the next click. Each tab is one session and one window of that
 session: its form or its panes, not both side by side.
