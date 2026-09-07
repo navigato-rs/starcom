@@ -52,8 +52,8 @@ required-features = ["ssh"]
 anyhow = "1.0"
 alacritty_terminal = "0.26"
 tmuxctl = { version = "=0.1.0", default-features = false }
-sunset-client = { version = "0.1.0", git = "https://github.com/navigato-rs/sunset", rev = "569026b845e3da570e8b7309b83b8e92bed0d97a", optional = true }
-sunset-sftp = { version = "0.2.0", git = "https://github.com/navigato-rs/sunset", rev = "569026b845e3da570e8b7309b83b8e92bed0d97a", default-features = false, features = ["long-paths-1024"], optional = true }
+sunset-client = { version = "0.1.0", git = "https://github.com/navigato-rs/sunset", rev = "65f8859e33c2e9c7a4ed97b950798c1dcc888787", optional = true }
+sunset-sftp = { version = "0.2.0", git = "https://github.com/navigato-rs/sunset", rev = "65f8859e33c2e9c7a4ed97b950798c1dcc888787", default-features = false, features = ["long-paths-1024"], optional = true }
 polling = { version = "3.11", optional = true }
 
 blade-egui = { version = "0.8.1", git = "https://github.com/kvark/blade", rev = "f1fbf2a", optional = true }
