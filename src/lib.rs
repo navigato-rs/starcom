@@ -19,9 +19,7 @@ pub mod sessions;
 pub mod sftp;
 pub mod snapshot;
 #[cfg(feature = "ssh")]
-pub mod ssh;
-#[cfg(feature = "ssh")]
-pub mod ssh_config;
+pub use sunset_client::{self as ssh, config as ssh_config};
 #[cfg(feature = "gui")]
 pub mod store;
 pub mod terminal;

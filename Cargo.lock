@@ -3210,21 +3210,16 @@ version = "0.2.0"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
- "base64",
  "blade-egui",
  "blade-graphics",
  "egui",
  "egui-winit",
  "env_logger",
- "hmac",
  "log",
  "png",
  "polling",
  "raw-window-handle",
- "sha1",
- "signature",
- "ssh-key",
- "sunset",
+ "sunset-client",
  "sunset-sftp",
  "tmuxctl",
  "wayland-backend",
@@ -3232,7 +3227,6 @@ dependencies = [
  "windows-sys 0.61.2",
  "winit",
  "winresource",
- "zeroize",
 ]
 
 [[package]]
@@ -3250,7 +3244,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 [[package]]
 name = "sunset"
 version = "0.6.0"
-source = "git+https://github.com/navigato-rs/sunset?rev=c245252#c245252510336572c0d3ab5fce29850996e53c22"
+source = "git+https://github.com/navigato-rs/sunset?rev=569026b845e3da570e8b7309b83b8e92bed0d97a#569026b845e3da570e8b7309b83b8e92bed0d97a"
 dependencies = [
  "aes",
  "ascii",
@@ -3279,9 +3273,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "sunset-client"
+version = "0.1.0"
+source = "git+https://github.com/navigato-rs/sunset?rev=569026b845e3da570e8b7309b83b8e92bed0d97a#569026b845e3da570e8b7309b83b8e92bed0d97a"
+dependencies = [
+ "anyhow",
+ "base64",
+ "hmac",
+ "polling",
+ "sha1",
+ "signature",
+ "ssh-key",
+ "sunset",
+ "windows-sys 0.61.2",
+ "zeroize",
+]
+
+[[package]]
 name = "sunset-sftp"
 version = "0.2.0"
-source = "git+https://github.com/navigato-rs/sunset?rev=c245252#c245252510336572c0d3ab5fce29850996e53c22"
+source = "git+https://github.com/navigato-rs/sunset?rev=569026b845e3da570e8b7309b83b8e92bed0d97a#569026b845e3da570e8b7309b83b8e92bed0d97a"
 dependencies = [
  "log",
  "num_enum",
@@ -3293,7 +3304,7 @@ dependencies = [
 [[package]]
 name = "sunset-sshwire-derive"
 version = "0.3.0"
-source = "git+https://github.com/navigato-rs/sunset?rev=c245252#c245252510336572c0d3ab5fce29850996e53c22"
+source = "git+https://github.com/navigato-rs/sunset?rev=569026b845e3da570e8b7309b83b8e92bed0d97a#569026b845e3da570e8b7309b83b8e92bed0d97a"
 dependencies = [
  "virtue",
 ]

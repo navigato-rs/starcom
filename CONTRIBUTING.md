@@ -117,7 +117,7 @@ decided how to carry is a patch, not a dependency.
 
 ## Dependency advisories
 
-Starcom implements its own SSH client, so it owns its dependencies' advisories.
+Starcom uses the shared `sunset-client`, and still owns its dependency advisories.
 `deny.toml` is checked on every change and on a weekly schedule, because an
 advisory can land against a lockfile nobody touched.
 

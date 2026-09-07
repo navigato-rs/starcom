@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Use Sunset's shared client for SSH configuration, trust, and ProxyJump routes.
+- Coalesce remote wakeups without dropping output; keep copy feedback at footer size.
+
+
 ## v0.2.0
 
 Tabs, mouse, paste, session create, SFTP drops, and an About panel after

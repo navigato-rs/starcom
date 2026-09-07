@@ -278,7 +278,7 @@ mod tests {
             (ssh::Kind::Configuration, Failure::Configuration),
         ];
         for (kind, expected) in cases {
-            let error = anyhow::Error::new(ssh::Error::for_test(kind, "boom"))
+            let error = anyhow::Error::new(ssh::Error::new(kind, "boom"))
                 .context("attach the control session");
             assert_eq!(classify(&error), expected, "{kind:?}");
         }
@@ -288,7 +288,7 @@ mod tests {
     #[test]
     fn remote_text_can_stop_a_retry_but_never_start_one() {
         // tmux refusing the session must not become an endless reattach loop.
-        let error = anyhow::Error::new(ssh::Error::for_test(
+        let error = anyhow::Error::new(ssh::Error::new(
             ssh::Kind::Transport,
             "SSH control channel ended",
         ))
@@ -296,7 +296,7 @@ mod tests {
         assert_eq!(classify(&error), Failure::MissingSession);
 
         // An explicit -S socket with no server behind it must not retry forever.
-        let error = anyhow::Error::new(ssh::Error::for_test(
+        let error = anyhow::Error::new(ssh::Error::new(
             ssh::Kind::Transport,
             "SSH control channel ended",
         ))
@@ -308,7 +308,7 @@ mod tests {
 
         // The reverse must not hold: remote output claiming a transient fault
         // cannot turn a host-key failure into something Starcom retries.
-        let error = anyhow::Error::new(ssh::Error::for_test(
+        let error = anyhow::Error::new(ssh::Error::new(
             ssh::Kind::ChangedHostKey,
             "host key is not trusted",
         ))
@@ -347,7 +347,7 @@ mod tests {
             assert_eq!(classify(&error), Failure::Transport, "{kind:?}");
         }
         // An SSH error nested inside an io error still decides the outcome.
-        let nested = anyhow::Error::new(std::io::Error::other(ssh::Error::for_test(
+        let nested = anyhow::Error::new(std::io::Error::other(ssh::Error::new(
             ssh::Kind::ChangedHostKey,
             "host key is not trusted",
         )))
@@ -415,12 +415,12 @@ mod tests {
         // Sleep and NAT black-holes used to surface as the string
         // "tmux reply deadline expired", which classified as Protocol and
         // refused to reconnect. The typed timeout is what retry policy sees.
-        let error = anyhow::Error::new(ssh::Error::for_test(
+        let error = anyhow::Error::new(ssh::Error::new(
             ssh::Kind::Timeout,
             "tmux reply deadline expired",
         ));
         assert_eq!(classify(&error), Failure::Transport);
-        let wrapped = anyhow::Error::new(ssh::Error::for_test(
+        let wrapped = anyhow::Error::new(ssh::Error::new(
             ssh::Kind::Timeout,
             "tmux write deadline expired; delivery is uncertain",
         ))

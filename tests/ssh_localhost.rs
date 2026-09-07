@@ -20,6 +20,7 @@ fn options() -> ssh::Options {
         authentication: ssh::Authentication::identity(root().join("id_ed25519")),
         host_key_alias: None,
         timeout: time::Duration::from_secs(5),
+        jumps: Vec::new(),
     }
 }
 
@@ -642,6 +643,7 @@ fn sftp_put_writes_a_file_the_shell_can_read() {
 
     let mut opts = options();
     opts.timeout = time::Duration::from_secs(15);
+    opts.jumps.push(options());
     let paths = sftp::put_files(&opts, std::slice::from_ref(&src), |_| {}).unwrap();
     assert_eq!(paths.len(), 1);
     let remote = &paths[0];
@@ -786,4 +788,18 @@ fn a_direct_tcpip_channel_carries_data_through_the_server() {
 /// it, otherwise the caller cannot tell a refusal from an unresponsive host.
 fn options_timeout() -> time::Duration {
     options().timeout
+}
+
+#[test]
+#[ignore = "requires the isolated SSH/tmux fixture"]
+fn jump_route_lists_and_attaches_to_the_existing_session() {
+    let mut opts = options();
+    opts.jumps.push(options());
+    let socket = root().join("tmux.sock");
+    let names = starcom::sessions::list(&opts, socket.to_str()).unwrap();
+    assert!(names.iter().any(|entry| entry.name == "starcom"));
+    let session = core::SessionName::new("starcom").unwrap();
+    let mut inspector = inspect::Inspector::attach(&opts, &session, socket.to_str()).unwrap();
+    let observed = inspector.observe(20).unwrap();
+    assert_eq!(observed.captures.len(), 2);
 }
