@@ -1169,7 +1169,6 @@ impl DesktopUi {
                         } else if self.notice.as_deref() == Some("Copied!") {
                             ui.label(
                                 egui::RichText::new("Copied!")
-                                    .size(22.0)
                                     .color(egui::Color32::WHITE)
                                     .strong(),
                             );
