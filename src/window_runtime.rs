@@ -161,6 +161,7 @@ impl Runtime {
     }
 
     fn paint(&mut self, ctx: &egui::Context, output: egui::FullOutput) -> anyhow::Result<()> {
+        let _frame = navigato_support::timer(navigato_support::Metric::Frame);
         self.input
             .handle_platform_output(&self.window, output.platform_output);
         let jobs = ctx.tessellate(output.shapes, output.pixels_per_point);

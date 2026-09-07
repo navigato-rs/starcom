@@ -442,52 +442,60 @@ impl Workspace {
             .show(ctx, |ui| {
                 ui.set_min_size(egui::vec2(380.0, 300.0));
                 ui.set_width(380.0);
-                ui.horizontal(|ui| {
-                    if let Some(ref icon) = icon {
-                        ui.add(egui::Image::new((icon.id(), egui::vec2(72.0, 72.0))));
-                    }
-                    ui.vertical(|ui| {
-                        ui.label(
-                            egui::RichText::new(format!("Starcom {}", env!("CARGO_PKG_VERSION")))
-                                .heading(),
-                        );
-                        ui.hyperlink_to(
-                            "github.com/navigato-rs/starcom",
-                            "https://github.com/navigato-rs/starcom",
-                        );
-                        ui.horizontal_wrapped(|ui| {
-                            ui.spacing_mut().item_spacing.x = 4.0;
-                            ui.label("by");
-                            ui.label(egui::RichText::new("Dzmitry Malyshau").italics());
-                            ui.label("aka");
-                            ui.hyperlink_to("@kvark", "https://github.com/kvark");
+                egui::ScrollArea::vertical()
+                    .max_height((ctx.content_rect().height() - 100.0).max(180.0))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            if let Some(ref icon) = icon {
+                                ui.add(egui::Image::new((icon.id(), egui::vec2(72.0, 72.0))));
+                            }
+                            ui.vertical(|ui| {
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "Starcom {}",
+                                        env!("CARGO_PKG_VERSION")
+                                    ))
+                                    .heading(),
+                                );
+                                ui.hyperlink_to(
+                                    "github.com/navigato-rs/starcom",
+                                    "https://github.com/navigato-rs/starcom",
+                                );
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 4.0;
+                                    ui.label("by");
+                                    ui.label(egui::RichText::new("Dzmitry Malyshau").italics());
+                                    ui.label("aka");
+                                    ui.hyperlink_to("@kvark", "https://github.com/kvark");
+                                });
+                            });
                         });
+                        ui.add_space(12.0);
+                        ui.horizontal(|ui| {
+                            ui.label("Idle paint rate");
+                            ui.add(
+                                egui::DragValue::new(&mut fps)
+                                    .range(1..=store::MAX_FPS)
+                                    .suffix(" fps"),
+                            );
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Turn a quiet tab blue after");
+                            ui.add(
+                                egui::DragValue::new(&mut idle)
+                                    .range(0..=store::MAX_IDLE)
+                                    .suffix(" seconds"),
+                            );
+                        });
+                        ui.weak("0 seconds keeps a connected tab green.");
+                        ui.add_space(6.0);
+                        ui.checkbox(&mut restore_tabs, "Resume open tabs on startup");
+                        ui.weak("Reconnects each saved host and tmux session automatically.");
+                        ui.add_space(10.0);
+                        ui.label(format!("Open for {open_for} in total"));
+                        navigato_support::show(ui, crate::SUPPORT);
+                        ui.add_space(8.0);
                     });
-                });
-                ui.add_space(12.0);
-                ui.horizontal(|ui| {
-                    ui.label("Idle paint rate");
-                    ui.add(
-                        egui::DragValue::new(&mut fps)
-                            .range(1..=store::MAX_FPS)
-                            .suffix(" fps"),
-                    );
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Turn a quiet tab blue after");
-                    ui.add(
-                        egui::DragValue::new(&mut idle)
-                            .range(0..=store::MAX_IDLE)
-                            .suffix(" seconds"),
-                    );
-                });
-                ui.weak("0 seconds keeps a connected tab green.");
-                ui.add_space(6.0);
-                ui.checkbox(&mut restore_tabs, "Resume open tabs on startup");
-                ui.weak("Reconnects each saved host and tmux session automatically.");
-                ui.add_space(10.0);
-                ui.label(format!("Open for {open_for} in total"));
-                ui.add_space(8.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("Close").clicked() {
                         close = true;

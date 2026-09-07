@@ -14,6 +14,9 @@ on:
         required: true
         type: string
 
+env:
+  NAVIGATO_PRIVATE_REPORT_EMAIL: ${{ secrets.NAVIGATO_PRIVATE_REPORT_EMAIL }}
+
 permissions:
   contents: write
 

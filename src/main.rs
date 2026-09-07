@@ -93,11 +93,23 @@ fn run() -> anyhow::Result<()> {
                 );
                 return starcom::desktop::save_demo(&path);
             }
-            return starcom::desktop::run(if demo {
+            let _support = (!demo).then(|| {
+                navigato_support::init(
+                    starcom::SUPPORT,
+                    (!cfg!(debug_assertions))
+                        .then(|| navigato_support::state_directory(navigato_support::App::Starcom))
+                        .flatten(),
+                )
+            });
+            let result = starcom::desktop::run(if demo {
                 starcom::desktop::Startup::Demo
             } else {
                 starcom::desktop::Startup::ConnectionForm
             });
+            if result.is_err() {
+                navigato_support::failure(navigato_support::Failure::DesktopExit);
+            }
+            return result;
         }
         #[cfg(not(feature = "gui"))]
         {

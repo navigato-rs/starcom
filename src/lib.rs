@@ -38,3 +38,11 @@ mod window;
 mod window_runtime;
 #[cfg(feature = "gui")]
 mod workspace;
+
+#[cfg(feature = "gui")]
+pub const SUPPORT: navigato_support::Info = navigato_support::Info {
+    app: navigato_support::App::Starcom,
+    version: env!("CARGO_PKG_VERSION"),
+    revision: option_env!("GITHUB_SHA"),
+    private_email: option_env!("NAVIGATO_PRIVATE_REPORT_EMAIL"),
+};

@@ -1514,6 +1514,7 @@ impl DesktopUi {
             });
         match worker {
             Ok(_) => {
+                navigato_support::feature(navigato_support::Feature::Upload);
                 self.upload = Some(Upload {
                     events: rx,
                     target,

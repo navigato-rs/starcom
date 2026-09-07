@@ -92,3 +92,5 @@ Host keys must already be trusted.
 
 [Desktop usage](docs/DESKTOP.md) · [SSH details](docs/SSH.md) ·
 [Synchronization limits](docs/SYNCHRONIZATION.md) · [Roadmap](PLAN.md)
+
+Feedback and private diagnostics: [privacy and reporting](PRIVACY.md).
