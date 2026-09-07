@@ -49,6 +49,7 @@ path = "src/bin/starcom-inspect.rs"
 required-features = ["ssh"]
 
 [dependencies]
+navigato-support = { git = "https://github.com/navigato-rs/fileman", rev = "8c9f3aaceab0ab77332f01ef4d61fd32926a9138", optional = true }
 anyhow = "1.0"
 alacritty_terminal = "0.26"
 tmuxctl = { version = "=0.1.0", default-features = false }
@@ -78,7 +79,7 @@ winresource = "0.1"
 
 [features]
 default = ["ssh", "gui"]
-gui = ["ssh", "dep:blade-egui", "dep:blade-graphics", "dep:egui", "dep:egui-winit", "dep:winit", "dep:png", "dep:log", "dep:env_logger", "dep:wayland-client", "dep:wayland-backend", "dep:raw-window-handle", "dep:windows-sys", "dep:polling"]
+gui = ["dep:navigato-support", "ssh", "dep:blade-egui", "dep:blade-graphics", "dep:egui", "dep:egui-winit", "dep:winit", "dep:png", "dep:log", "dep:env_logger", "dep:wayland-client", "dep:wayland-backend", "dep:raw-window-handle", "dep:windows-sys", "dep:polling"]
 ssh = ["dep:sunset-client", "dep:sunset-sftp"]
 
 [package.metadata.deb]

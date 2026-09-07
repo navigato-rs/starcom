@@ -796,6 +796,7 @@ fn watch(
     previous: &mut Option<inspect::Identity>,
     backoff: &mut reconnect::Backoff,
 ) -> anyhow::Result<Outcome> {
+    let connection_timer = navigato_support::timer(navigato_support::Metric::Connection);
     let attached = session::Session::attach_with_access(
         &connection.options,
         &connection.session,
@@ -825,6 +826,11 @@ fn watch(
         }),
         _ => None,
     };
+    drop(connection_timer);
+    navigato_support::feature(navigato_support::Feature::Remote);
+    if !connection.options.jumps.is_empty() {
+        navigato_support::feature(navigato_support::Feature::Jump);
+    }
     *previous = Some(identity);
     {
         let mut state = shared

@@ -96,4 +96,6 @@ allow-git = [
     "https://github.com/kvark/blade",
     # Starcom's Sunset fork, pinned by revision. Same arrangement as Blade.
     "https://github.com/navigato-rs/sunset",
+    # Shared, content-free feedback support; GUI-only and revision-pinned.
+    "https://github.com/navigato-rs/fileman",
 ]
