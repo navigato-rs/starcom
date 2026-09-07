@@ -7,6 +7,9 @@ use std::{fs, io, path, sync, time};
 use crate::{desktop, ui, workspace};
 use anyhow::Context;
 
+#[path = "wake_flag.rs"]
+mod wake_flag;
+
 const INITIAL_SIZE: (u32, u32) = (1280, 760);
 #[cfg(target_os = "linux")]
 type LocalWake = sync::Arc<dyn Fn() + Send + Sync>;
@@ -231,6 +234,7 @@ struct App {
     next_repaint: Option<Wake>,
     last_paint: Option<time::Instant>,
     input_redraw: bool,
+    remote_wake: sync::Arc<wake_flag::WakeFlag>,
     error: Option<anyhow::Error>,
     #[cfg(target_os = "linux")]
     local_wake: LocalWake,
@@ -436,6 +440,7 @@ impl winit::application::ApplicationHandler<Event> for App {
         match event {
             Event::Repaint(when) => self.schedule(when, true),
             Event::Remote => {
+                self.remote_wake.acknowledge();
                 if !self.workspace.remote_changed() {
                     return;
                 }
@@ -505,11 +510,13 @@ pub fn run(startup: desktop::Startup) -> anyhow::Result<()> {
             }
         }
     });
+    let remote_wake = sync::Arc::new(wake_flag::WakeFlag::default());
     let Some(workspace) = workspace::Workspace::launch(
         {
             let proxy = proxy.clone();
+            let wake = sync::Arc::clone(&remote_wake);
             sync::Arc::new(move || {
-                let _ = proxy.send_event(Event::Remote);
+                wake.post(|| proxy.send_event(Event::Remote).is_ok());
             })
         },
         startup,
@@ -524,6 +531,7 @@ pub fn run(startup: desktop::Startup) -> anyhow::Result<()> {
         next_repaint: None,
         last_paint: None,
         input_redraw: false,
+        remote_wake,
         error: None,
         #[cfg(target_os = "linux")]
         local_wake: {
