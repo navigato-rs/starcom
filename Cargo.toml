@@ -49,7 +49,8 @@ path = "src/bin/starcom-inspect.rs"
 required-features = ["ssh"]
 
 [dependencies]
-navigato-support = { version = "0.1.0", git = "https://github.com/navigato-rs/fileman", rev = "6bc515dabb5e4fc118719308ae7fe2bdf1efe185", optional = true }
+navigato-http = { version = "0.1.0", git = "https://github.com/navigato-rs/fileman", rev = "78ab35bc16a35ada85e88b69f062fca166c2aa34", optional = true }
+navigato-support = { version = "0.1.0", git = "https://github.com/navigato-rs/fileman", rev = "78ab35bc16a35ada85e88b69f062fca166c2aa34", optional = true }
 anyhow = "1.0"
 alacritty_terminal = "0.26"
 tmuxctl = { version = "=0.1.0", default-features = false }
@@ -81,6 +82,7 @@ winresource = "0.1"
 default = ["ssh", "gui"]
 gui = ["dep:navigato-support", "ssh", "dep:blade-egui", "dep:blade-graphics", "dep:egui", "dep:egui-winit", "dep:winit", "dep:png", "dep:log", "dep:env_logger", "dep:wayland-client", "dep:wayland-backend", "dep:raw-window-handle", "dep:windows-sys", "dep:polling"]
 ssh = ["dep:sunset-client", "dep:sunset-sftp"]
+tls-evaluation = ["dep:navigato-http"]
 
 [package.metadata.deb]
 maintainer = "Dzmitry Malyshau"
@@ -104,3 +106,8 @@ strip = true
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(gles)'] }
+
+[[example]]
+name = "tls-probe"
+path = "examples/tls-probe.rs"
+required-features = ["tls-evaluation"]

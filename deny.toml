@@ -53,6 +53,8 @@ deny = [
     { name = "ssh2" },
     { name = "libssh2-sys" },
     { name = "ring" },
+    { name = "graviola" },
+    { name = "rustls-graviola" },
     { name = "aws-lc-rs" },
     { name = "aws-lc-sys" },
     { name = "aws-lc-fips-sys" },
@@ -62,8 +64,9 @@ deny = [
     { name = "boring-sys" },
     { name = "wolfssl" },
     { name = "wolfssl-sys" },
-    { name = "schannel" },
-    { name = "security-framework" },
+    # Certificate-store reads only; TLS and verification stay in Rustls.
+    { name = "schannel", wrappers = ["rustls-native-certs"] },
+    { name = "security-framework", wrappers = ["rustls-native-certs"] },
 ]
 
 [licenses]
@@ -98,4 +101,6 @@ allow-git = [
     "https://github.com/navigato-rs/sunset",
     # Shared, content-free feedback support; GUI-only and revision-pinned.
     "https://github.com/navigato-rs/fileman",
+    # Pinned, non-default TLS evaluation. Not approved for production reporting.
+    "https://github.com/RustCrypto/rustls-rustcrypto",
 ]

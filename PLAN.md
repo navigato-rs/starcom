@@ -305,6 +305,26 @@ pinned fork, leaving the transport work rather than an open question.
   desktop entry, and window/PE resources are included.
 - [ ] Package signed Linux, macOS, and Windows builds.
 
+## Rust-only HTTPS evaluation
+
+`tls-evaluation` exposes a read-only `tls-probe` example using Fileman's shared
+`navigato-http`. It is off by default and never enables reporting or updating.
+
+```sh
+cargo run --locked --no-default-features --features tls-evaluation --example tls-probe -- https://api.github.com/
+```
+
+The pinned RustCrypto provider is experimental. Its adapter rejects low-order
+X25519 and compressed P-256 shares, uses fallible key generation and limits
+AES-GCM key usage. Shared tests own cipher/certificate/transport coverage;
+Starcom CI checks feature composition on each OS and the MSRV. No forked
+primitives or TLS engine. Root-store FFI is permitted only through
+`rustls-native-certs`, not native TLS.
+
+Release blockers: upstream provider review, independent interoperability/fuzzing,
+proxy/cancellation policy, and direct-reporting consent tests. Existing advisory
+exceptions are unchanged; the HTTPS client never loads client private keys.
+
 ## Immediate work order
 
 1. Keep the shared client and both application adapters covered by live fixtures.
