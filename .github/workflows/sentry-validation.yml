@@ -1,0 +1,45 @@
+name: Validate shared crash support
+on:
+  push:
+    branches: [work/sentry-validation]
+permissions:
+  contents: write
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Prepare source and resolve pinned dependencies
+        run: |
+          set -euo pipefail
+          git worktree add --detach "$RUNNER_TEMP/review" ac7893f809b5b8730fc081ac1424bc05f3256d22
+          python3 .review/apply.py "$RUNNER_TEMP/review"
+          cargo metadata --manifest-path "$RUNNER_TEMP/review/Cargo.toml" --format-version 1 --all-features > /dev/null
+      - name: Validate without credentials or uploads
+        env:
+          CC: starcom-no-c-compiler
+          CXX: starcom-no-cxx-compiler
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/review"
+          cargo fmt --check
+          cargo test --locked --all-features --all-targets
+          cargo clippy --locked --all-features --all-targets -- -D warnings
+          python3 scripts/check-dependencies.py
+      - name: Store validated blobs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .review/apply.py "$RUNNER_TEMP/review" store
+      - uses: actions/upload-artifact@v4
+        with:
+          name: crash-publication
+          path: ${{ runner.temp }}/export/publication.json
+          retention-days: 2
