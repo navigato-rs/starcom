@@ -49,7 +49,7 @@ path = "src/bin/starcom-inspect.rs"
 required-features = ["ssh"]
 
 [dependencies]
-navigato-support = { version = "0.1.0", git = "https://github.com/navigato-rs/fileman", rev = "8c9f3aaceab0ab77332f01ef4d61fd32926a9138", optional = true }
+navigato-support = { version = "0.1.0", git = "https://github.com/navigato-rs/fileman", rev = "6bc515dabb5e4fc118719308ae7fe2bdf1efe185", optional = true }
 anyhow = "1.0"
 alacritty_terminal = "0.26"
 tmuxctl = { version = "=0.1.0", default-features = false }

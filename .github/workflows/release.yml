@@ -67,6 +67,10 @@ jobs:
           - os: macos-latest
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
+    env:
+      CARGO_PROFILE_RELEASE_DEBUG: "1"
+      CARGO_PROFILE_RELEASE_STRIP: "false"
+      CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO: ${{ matrix.os == 'ubuntu-latest' && 'off' || 'packed' }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -83,9 +87,27 @@ jobs:
           cargo install cargo-bundle --git https://github.com/burtonageo/cargo-bundle --rev 17cc8eb --locked
           cargo install cargo-deb cargo-generate-rpm --locked
 
-      - name: Build + bundle (Linux)
+      - name: Build (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo build --release --locked --bin starcom
+
+      - name: Preserve Linux symbols
+        if: matrix.os == 'ubuntu-latest'
+        uses: navigato-rs/fileman/.github/actions/sentry-symbols@6bc515dabb5e4fc118719308ae7fe2bdf1efe185
+        with:
+          binary: target/release/starcom
+          output: target/symbols/portable
+          auth-token: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          org: ${{ secrets.SENTRY_ORG || vars.SENTRY_ORG }}
+          project: ${{ secrets.SENTRY_PROJECT || vars.SENTRY_PROJECT }}
+
+      - name: Bundle (Linux)
         if: matrix.os == 'ubuntu-latest'
         run: cargo bundle --release --bin starcom
+
+      - name: Verify bundled executable (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: cmp target/release/starcom target/symbols/portable/starcom
 
       - name: Package tarball (Linux)
         if: matrix.os == 'ubuntu-latest'
@@ -113,6 +135,17 @@ jobs:
           rustup target add aarch64-apple-darwin
           cargo bundle --release --target aarch64-apple-darwin --bin starcom
 
+      - name: Preserve macOS symbols
+        if: matrix.os == 'macos-latest'
+        uses: navigato-rs/fileman/.github/actions/sentry-symbols@6bc515dabb5e4fc118719308ae7fe2bdf1efe185
+        with:
+          binary: target/aarch64-apple-darwin/release/starcom
+          output: target/symbols/macos
+          bundle-executable: target/aarch64-apple-darwin/release/bundle/osx/Starcom.app/Contents/MacOS/starcom
+          auth-token: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          org: ${{ secrets.SENTRY_ORG || vars.SENTRY_ORG }}
+          project: ${{ secrets.SENTRY_PROJECT || vars.SENTRY_PROJECT }}
+
       - name: Package (macOS)
         if: matrix.os == 'macos-latest'
         run: |
@@ -130,6 +163,16 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: cargo build --release --locked --bin starcom
+
+      - name: Preserve Windows symbols
+        if: matrix.os == 'windows-latest'
+        uses: navigato-rs/fileman/.github/actions/sentry-symbols@6bc515dabb5e4fc118719308ae7fe2bdf1efe185
+        with:
+          binary: target/release/starcom.exe
+          output: target/symbols/windows
+          auth-token: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          org: ${{ secrets.SENTRY_ORG || vars.SENTRY_ORG }}
+          project: ${{ secrets.SENTRY_PROJECT || vars.SENTRY_PROJECT }}
 
       - name: Package zip (Windows)
         if: matrix.os == 'windows-latest'
