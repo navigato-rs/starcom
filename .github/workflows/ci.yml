@@ -46,7 +46,9 @@ jobs:
       - name: Format check
         run: cargo fmt --check
       - name: Native crypto dependency policy
-        run: python scripts/check-dependencies.py
+        run: |
+          python scripts/check-dependencies.py
+          python -m unittest discover -s scripts -p test_dependency_policy.py
       - name: Build
         run: cargo build --locked --all-features --all-targets
       - name: Test

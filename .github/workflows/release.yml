@@ -93,7 +93,7 @@ jobs:
 
       - name: Preserve Linux symbols
         if: matrix.os == 'ubuntu-latest'
-        uses: navigato-rs/fileman/.github/actions/sentry-symbols@6bc515dabb5e4fc118719308ae7fe2bdf1efe185
+        uses: navigato-rs/fileman/.github/actions/sentry-symbols@78ab35bc16a35ada85e88b69f062fca166c2aa34
         with:
           binary: target/release/starcom
           output: target/symbols/portable
@@ -137,7 +137,7 @@ jobs:
 
       - name: Preserve macOS symbols
         if: matrix.os == 'macos-latest'
-        uses: navigato-rs/fileman/.github/actions/sentry-symbols@6bc515dabb5e4fc118719308ae7fe2bdf1efe185
+        uses: navigato-rs/fileman/.github/actions/sentry-symbols@78ab35bc16a35ada85e88b69f062fca166c2aa34
         with:
           binary: target/aarch64-apple-darwin/release/starcom
           output: target/symbols/macos
@@ -166,7 +166,7 @@ jobs:
 
       - name: Preserve Windows symbols
         if: matrix.os == 'windows-latest'
-        uses: navigato-rs/fileman/.github/actions/sentry-symbols@6bc515dabb5e4fc118719308ae7fe2bdf1efe185
+        uses: navigato-rs/fileman/.github/actions/sentry-symbols@78ab35bc16a35ada85e88b69f062fca166c2aa34
         with:
           binary: target/release/starcom.exe
           output: target/symbols/windows
