@@ -133,6 +133,10 @@ pub(crate) struct State {
     pub discovery: Option<Discovery>,
     /// Last interactive-command round trip, from traffic we already send.
     pub last_rtt: Option<time::Duration>,
+    /// Pending `rename-session`. Session-level, not a pane transaction.
+    rename: Option<core::SessionName>,
+    /// Name tmux accepted, for the tab label and saved workspace.
+    renamed: Option<String>,
     actions: collections::VecDeque<Pending>,
     action_bytes: usize,
     io_wake: Option<ssh::Wake>,
@@ -156,6 +160,8 @@ impl Default for State {
             failure: None,
             discovery: None,
             last_rtt: None,
+            rename: None,
+            renamed: None,
             actions: collections::VecDeque::new(),
             action_bytes: 0,
             io_wake: None,
@@ -174,6 +180,8 @@ impl State {
         self.retry = None;
         self.continuity = None;
         self.failure = None;
+        self.rename = None;
+        self.renamed = None;
         self.discard_actions();
         self.access = session::Access::ReadOnly;
         self.allow_resize = false;
@@ -419,6 +427,25 @@ impl Client {
 
     pub fn submit(&self, target: Target, action: input::Action) -> anyhow::Result<()> {
         self.lock().enqueue(target, action)
+    }
+
+    /// Ask tmux to rename the attached session. The worker reports success
+    /// through `take_renamed`; a duplicate name is an error, not a disconnect.
+    pub(crate) fn rename_session(&self, name: core::SessionName) -> anyhow::Result<()> {
+        let mut state = self.lock();
+        anyhow::ensure!(
+            state.input_ready(),
+            "connect with an interactive session to rename it"
+        );
+        state.rename = Some(name);
+        if let Some(ref wake) = state.io_wake {
+            wake.notify();
+        }
+        Ok(())
+    }
+
+    pub(crate) fn take_renamed(&self) -> Option<String> {
+        self.lock().renamed.take()
     }
 
     /// Admit a GUI frame atomically, so a full queue cannot accept half of a
@@ -804,7 +831,7 @@ fn watch(
         connection.history,
         connection.access,
     )?;
-    let (mut inspector, view) = attached.into_parts();
+    let (mut inspector, mut view) = attached.into_parts();
     let session_id = view.session;
     // Attaching is by name, so a restarted server hands back a session that
     // merely shares that name. A session id alone cannot see that: a fresh tmux
@@ -839,6 +866,9 @@ fn watch(
             .unwrap_or_else(sync::PoisonError::into_inner);
         if !state.accepts(epoch) {
             return Ok(Outcome::Cancelled);
+        }
+        if let Some(ref previous) = state.view {
+            view.preserve_history_offsets(previous);
         }
         state.view = Some(view);
         state.access = connection.access;
@@ -924,6 +954,9 @@ fn watch(
                 if !state.accepts(epoch) {
                     return Ok(Outcome::Cancelled);
                 }
+                if let Some(ref previous) = state.view {
+                    restored.preserve_history_offsets(previous);
+                }
                 state.view = Some(restored);
                 state.generation += 1;
                 state.last_rtt = inspector.last_rtt;
@@ -939,6 +972,54 @@ fn watch(
                         "the machine slept; the control stream is not known to have survived",
                     )
                     .into());
+                }
+                let rename = {
+                    let mut state = shared
+                        .0
+                        .lock()
+                        .unwrap_or_else(sync::PoisonError::into_inner);
+                    if !state.accepts(epoch) {
+                        return Ok(Outcome::Cancelled);
+                    }
+                    state.rename.take()
+                };
+                if let Some(name) = rename {
+                    match inspector.rename_session(&name) {
+                        Ok(notifications) => {
+                            let mut state = shared
+                                .0
+                                .lock()
+                                .unwrap_or_else(sync::PoisonError::into_inner);
+                            if state.accepts(epoch) {
+                                state.renamed = Some(name.as_str().to_owned());
+                                state.last_rtt = inspector.last_rtt;
+                                state.error = None;
+                                if let Some(ref mut view) = state.view {
+                                    for event in notifications {
+                                        view.apply(event);
+                                    }
+                                }
+                            }
+                            last_alive = reconnect::AliveClock::now();
+                            wake();
+                        }
+                        Err(error)
+                            if reconnect::classify(&error) == reconnect::Failure::Transport =>
+                        {
+                            return Err(error);
+                        }
+                        Err(error) => {
+                            let mut state = shared
+                                .0
+                                .lock()
+                                .unwrap_or_else(sync::PoisonError::into_inner);
+                            if state.accepts(epoch) {
+                                state.error = Some(format!("Could not rename session: {error}"));
+                            }
+                            wake();
+                        }
+                    }
+                    continue;
                 }
                 let pending = {
                     let mut state = shared

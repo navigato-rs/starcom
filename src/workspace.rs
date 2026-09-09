@@ -5,11 +5,17 @@ use std::{fs, io, path, sync, time};
 
 use anyhow::Context;
 
-use crate::{desktop, dialog, reconnect, ssh_config, store, ui};
+use crate::{core, desktop, dialog, reconnect, ssh_config, store, ui};
 
 const MAX_TABS: usize = 16;
 const NEW_CONNECTION: &str = "New connection";
 type Wake = sync::Arc<dyn Fn() + Send + Sync>;
+
+struct SessionRename {
+    id: u64,
+    draft: String,
+    focus: bool,
+}
 
 struct Tab {
     id: u64,
@@ -69,6 +75,8 @@ pub(crate) struct Workspace {
     /// The winit lifecycle can ask us to shut down through more than one path.
     /// Only the first call may persist and clear the tab list.
     shut_down: bool,
+    /// In-place session rename on a tab chip.
+    renaming: Option<SessionRename>,
 }
 
 /// A restored tab is labelled by where it points, not by a live connection.
@@ -129,6 +137,11 @@ fn about_icon() -> Option<egui::ColorImage> {
         [info.width as usize, info.height as usize],
         &pixels,
     ))
+}
+
+fn ack_painted(tab: &mut Tab) {
+    let state = tab.client.lock();
+    tab.last_revision = state.revision();
 }
 
 fn spawn_tab(
@@ -263,6 +276,7 @@ impl Workspace {
             suspend_clock: reconnect::AliveClock::now(),
             local_dirty: false,
             shut_down: false,
+            renaming: None,
         };
         if startup != desktop::Startup::Demo {
             workspace.reload_config();
@@ -374,11 +388,13 @@ impl Workspace {
         }
     }
 
-    /// Consume worker revisions and report whether anything currently visible
-    /// changed. Output in a hidden, already-active tab updates its quiet timer
-    /// without repainting the selected terminal.
+    /// Report whether anything currently visible changed. Worker revisions for
+    /// the selected terminal stay pending until `show` paints it; consuming
+    /// them here made a later coalesced wake look like a duplicate and skip
+    /// the real frame. Hidden-tab output still does not repaint the selected
+    /// terminal.
     pub(crate) fn remote_changed(&mut self) -> bool {
-        let mut repaint = std::mem::take(&mut self.local_dirty);
+        let mut repaint = self.local_dirty;
         let now = time::Instant::now();
         for (index, tab) in self.tabs.iter_mut().enumerate() {
             let state = tab.client.lock();
@@ -400,23 +416,31 @@ impl Workspace {
                 && live_phase(tab.last_phase)
                 && now.saturating_duration_since(tab.last_output)
                     >= time::Duration::from_secs(u64::from(self.idle));
-            tab.last_revision = revision;
-            if phase_changed || display_changed {
-                tab.last_phase = phase;
-                tab.last_seq = seq;
-                tab.last_output = now;
+            let visible = !self.composer_open && index == self.active;
+            let chip = phase_changed || (display_changed && was_quiet);
+            if visible || chip {
+                repaint = true;
             }
-            repaint |= (!self.composer_open && index == self.active)
-                || phase_changed
-                || (display_changed && was_quiet);
+            if !visible {
+                tab.last_revision = revision;
+                if phase_changed || display_changed {
+                    tab.last_phase = phase;
+                    tab.last_seq = seq;
+                    tab.last_output = now;
+                }
+            }
         }
 
         let state = self.composer.client.lock();
         let revision = state.revision();
         if revision != self.composer.last_revision {
-            self.composer.last_revision = revision;
-            repaint |= self.composer_open;
+            if self.composer_open {
+                repaint = true;
+            } else {
+                self.composer.last_revision = revision;
+            }
         }
+        drop(state);
         repaint
     }
 
@@ -654,6 +678,7 @@ impl Workspace {
             tab.ui.cancel_transient();
         }
         self.composer.ui.cancel_transient();
+        self.renaming = None;
     }
 
     pub fn terminal_focused(&self, ctx: &egui::Context) -> bool {
@@ -681,8 +706,10 @@ impl Workspace {
     }
 
     pub fn show(&mut self, root: &mut egui::Ui) -> Action {
+        self.local_dirty = false;
         let mut navigation = Action::None;
         let mut reorder: Option<(u64, usize)> = None;
+        let mut rename_to: Option<(u64, String)> = None;
         let new = egui::KeyboardShortcut::new(
             if cfg!(target_os = "macos") {
                 egui::Modifiers::MAC_CMD
@@ -750,7 +777,6 @@ impl Workspace {
                             let now = time::Instant::now();
                             for tab in &mut self.tabs {
                                 let state = tab.client.lock();
-                                tab.last_revision = state.revision();
                                 let phase = state.phase;
                                 let seq = state
                                     .view
@@ -764,11 +790,46 @@ impl Workspace {
                                     tab.last_output = now;
                                 }
                             }
-                            for (index, tab) in self.tabs.iter().enumerate() {
-                                ui.push_id(tab.id, |ui| {
-                                    let phase = tab.client.phase();
+                            for index in 0..self.tabs.len() {
+                                let id = self.tabs[index].id;
+                                let last_output = self.tabs[index].last_output;
+                                let label = self.tabs[index].label.clone();
+                                let phase = self.tabs[index].client.phase();
+                                ui.push_id(id, |ui| {
+                                    if self.renaming.as_ref().is_some_and(|rename| rename.id == id)
+                                    {
+                                        let rename = self.renaming.as_mut().expect("checked");
+                                        let edit = egui::TextEdit::singleline(&mut rename.draft)
+                                            .desired_width(180.0)
+                                            .font(egui::TextStyle::Button)
+                                            .hint_text("session name");
+                                        let response = ui.add(edit);
+                                        if rename.focus {
+                                            response.request_focus();
+                                            rename.focus = false;
+                                        }
+                                        let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                                        let escape =
+                                            ui.input(|i| i.key_pressed(egui::Key::Escape));
+                                        if escape {
+                                            self.renaming = None;
+                                        } else if enter {
+                                            let draft = self
+                                                .renaming
+                                                .as_ref()
+                                                .expect("checked")
+                                                .draft
+                                                .trim()
+                                                .to_owned();
+                                            rename_to = Some((id, draft));
+                                            self.renaming = None;
+                                        } else if response.lost_focus() {
+                                            self.renaming = None;
+                                        }
+                                        return;
+                                    }
                                     let busy = busy_phase(phase);
-                                    let mut title = tab.label.clone();
+                                    let mut title = label;
                                     if busy {
                                         title = format!("   {title}");
                                         ui.ctx()
@@ -777,12 +838,14 @@ impl Workspace {
                                     let selected = !self.composer_open && index == self.active;
                                     let quiet = self.idle > 0
                                         && live_phase(phase)
-                                        && now.saturating_duration_since(tab.last_output)
+                                        && now.saturating_duration_since(last_output)
                                             >= idle_after;
                                     if !quiet && self.idle > 0 && live_phase(phase) {
-                                        ui.ctx().request_repaint_after(idle_after.saturating_sub(
-                                            now.saturating_duration_since(tab.last_output),
-                                        ));
+                                        ui.ctx().request_repaint_after(
+                                            idle_after.saturating_sub(
+                                                now.saturating_duration_since(last_output),
+                                            ),
+                                        );
                                     }
                                     let color = tab_color(phase, idle_fill, quiet);
                                     let mut text = egui::RichText::new(title).size(16.0).strong();
@@ -808,9 +871,9 @@ impl Workspace {
                                                 egui::Color32::TRANSPARENT
                                             },
                                         ));
-                                    let response = ui
-                                        .add(button)
-                                        .on_hover_text("Click to switch · drag to reorder");
+                                    let response = ui.add(button).on_hover_text(
+                                        "Click to switch · double-click to rename · drag to reorder",
+                                    );
                                     if busy {
                                         let indicator = egui::Rect::from_center_size(
                                             egui::pos2(
@@ -825,24 +888,52 @@ impl Workspace {
                                             ui.ctx().time(),
                                         );
                                     }
-                                    response.dnd_set_drag_payload(tab.id);
+                                    response.dnd_set_drag_payload(id);
                                     if response.dragged() {
                                         ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
                                         ui.ctx().request_repaint();
                                     }
                                     if let Some(insert_at) = drop_insert_at(
                                         &response,
-                                        tab.id,
+                                        id,
                                         index,
                                         ui.input(|i| i.pointer.interact_pos()),
                                     ) {
                                         paint_drop_marker(ui, response.rect, insert_at > index);
-                                        if let Some(id) = response.dnd_release_payload::<u64>() {
-                                            reorder = Some((*id, insert_at));
+                                        if let Some(dragged) =
+                                            response.dnd_release_payload::<u64>()
+                                        {
+                                            reorder = Some((*dragged, insert_at));
                                         }
                                     }
-                                    if response.clicked() {
-                                        navigation = Action::Select(tab.id);
+                                    if response.double_clicked() {
+                                        match phase {
+                                            desktop::Phase::Watching => {
+                                                self.renaming = Some(SessionRename {
+                                                    id,
+                                                    draft: self.tabs[index]
+                                                        .ui
+                                                        .session_name()
+                                                        .to_owned(),
+                                                    focus: true,
+                                                });
+                                            }
+                                            desktop::Phase::Demo => {
+                                                self.notice = Some(
+                                                    "The demo has no remote session to rename."
+                                                        .to_owned(),
+                                                );
+                                            }
+                                            _ => {
+                                                self.notice = Some(
+                                                    "Connect before renaming the session."
+                                                        .to_owned(),
+                                                );
+                                            }
+                                        }
+                                    } else if response.clicked() {
+                                        navigation = Action::Select(id);
+                                        self.renaming = None;
                                     }
                                 });
                             }
@@ -902,6 +993,9 @@ impl Workspace {
         if let Some((id, insert_at)) = reorder {
             navigation = Action::Reorder { id, insert_at };
         }
+        if let Some((id, name)) = rename_to {
+            return Action::Tab(id, Box::new(ui::Action::RenameSession(name)));
+        }
         if matches!(
             navigation,
             Action::New | Action::Select(_) | Action::Close(_)
@@ -919,13 +1013,26 @@ impl Workspace {
                         .show(root, &mut self.composer.client.lock())
                 })
                 .inner;
+            ack_painted(&mut self.composer);
             (self.composer.id, action)
         } else {
-            let tab = &mut self.tabs[self.active];
-            let action = root
-                .push_id(tab.id, |root| tab.ui.show(root, &mut tab.client.lock()))
-                .inner;
-            (tab.id, action)
+            let (id, action, renamed) = {
+                let tab = &mut self.tabs[self.active];
+                let action = root
+                    .push_id(tab.id, |root| tab.ui.show(root, &mut tab.client.lock()))
+                    .inner;
+                ack_painted(tab);
+                let renamed = tab.client.take_renamed();
+                if let Some(ref name) = renamed {
+                    tab.ui.set_session_name(name.clone());
+                    tab.label = label(&tab.ui.saved());
+                }
+                (tab.id, action, renamed)
+            };
+            if renamed.is_some() {
+                self.persist();
+            }
+            (id, action)
         };
         if !matches!(navigation, Action::None) {
             // Reorder keeps this tab painted so the focused pane stays in
@@ -1022,6 +1129,13 @@ impl Workspace {
                                 // geometry; tmux owns it from then on.
                                 tab.client
                                     .create_session(connection, crate::core::Size::default())
+                            }
+                            ui::Action::RenameSession(name) => {
+                                if name == tab.ui.session_name() {
+                                    Ok(())
+                                } else {
+                                    tab.client.rename_session(core::SessionName::new(name)?)
+                                }
                             }
                             ui::Action::Disconnect => {
                                 tab.client.disconnect();
@@ -1624,6 +1738,7 @@ mod tests {
             suspend_clock: reconnect::AliveClock::now(),
             local_dirty: false,
             shut_down: false,
+            renaming: None,
         }
     }
 
@@ -1752,11 +1867,34 @@ mod tests {
         assert_eq!(workspace.paint_interval(), idle);
     }
 
+    fn paint(workspace: &mut Workspace) {
+        let ctx = egui::Context::default();
+        crate::window::configure(&ctx);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 760.0),
+            )),
+            ..Default::default()
+        };
+        let _ = ctx.run_ui(input, |root| {
+            workspace.show(root);
+        });
+    }
+
     #[test]
     fn hidden_terminal_updates_do_not_repaint_the_selected_terminal() {
         let mut workspace = Workspace::new(sync::Arc::new(|| {}), desktop::Startup::Demo).unwrap();
         assert!(workspace.remote_changed());
-        assert!(!workspace.remote_changed(), "duplicate wakes are discarded");
+        assert!(
+            workspace.remote_changed(),
+            "pending work stays pending until the terminal is painted"
+        );
+        paint(&mut workspace);
+        assert!(
+            !workspace.remote_changed(),
+            "duplicate wakes are discarded after paint"
+        );
 
         workspace.push_idle_tab().unwrap();
         workspace.active = 0;
@@ -1776,6 +1914,11 @@ mod tests {
         assert!(
             workspace.remote_changed(),
             "new selected terminal contents do repaint"
+        );
+        paint(&mut workspace);
+        assert!(
+            !workspace.remote_changed(),
+            "selected contents stay pending only until show paints"
         );
     }
 

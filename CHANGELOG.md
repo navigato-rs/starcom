@@ -27,11 +27,13 @@ Tabs, mouse, paste, session create, SFTP drops, and an About panel after
   selection. The wheel already went to the application in that case.
 - **File drop.** Up to eight files dropped with a connected pane focused upload
   over SFTP into the remote temp directory, then the remote paths are pasted. A
-  status-bar progress bar tracks large files. Non-regular files and files larger
-  than 32 MiB are rejected. The upload is a separate, cancellable SSH connection,
-  so it cannot stall the tmux control channel. Delayed completion remains bound
-  to the original pane generation. Wayland binds `wl_data_device` itself and
-  reads bounded URI data off the event thread so the compositor stays responsive.
+  status-bar progress bar tracks large files, with a Cancel button. Non-regular
+  files are rejected. A file larger than 32 MiB asks Yes/No on the status bar
+  instead of being discarded. The upload is a separate, cancellable SSH
+  connection, so it cannot stall the tmux control channel. Delayed completion
+  remains bound to the original pane generation. Wayland binds `wl_data_device`
+  itself and reads bounded URI data off the event thread so the compositor stays
+  responsive.
 - **About.** The tab strip has an About button on the right. It opens a modal
   with the icon, version, GitHub URL, author, total time Starcom has been
   open, and the workspace `fps` / `idle` settings.
@@ -45,6 +47,13 @@ Tabs, mouse, paste, session create, SFTP drops, and an About panel after
   shutdown callbacks no longer overwrite the saved workspace with the
   already-cleared in-memory tab list.
 - **Move pane.** Arrow buttons swap the focused pane with its neighbor.
+- **Rename session.** Double-click a connected tab to rename the tmux session.
+- **Zoom scroll.** Maximizing or restoring a pane keeps the local history
+  viewport, so reading further up does not jump back to the live tip.
+- **OpenTUI frames.** Remote output stays pending until the terminal is
+  painted, and a deferred remote wake is forced once the fps interval
+  elapses, so an erase-then-redraw (OpenCode and similar) cannot leave a
+  blank middle on screen.
 - **Terminal polish.** Zoomed panes show a distinct restore icon. Activity uses
   a fixed-size three-dot pulse instead of spinning or shape-shifting glyphs.
   Shift-Enter falls back to Enter instead of allowing `S-Enter` to appear as

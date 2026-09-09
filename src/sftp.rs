@@ -12,7 +12,8 @@ use anyhow::Context;
 use crate::ssh;
 
 const MAX_FILES: usize = 8;
-const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
+/// Files larger than this need an explicit Yes in the status bar.
+pub const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_NAME: usize = 255;
 
 /// Bytes written so far for the file currently being uploaded.
@@ -30,15 +31,17 @@ pub fn put_files(
     files: &[path::PathBuf],
     on_progress: impl FnMut(Progress<'_>),
 ) -> anyhow::Result<Vec<String>> {
-    put_files_while(options, files, || true, on_progress)
+    put_files_while(options, files, || true, Some(MAX_FILE_BYTES), on_progress)
 }
 
 /// Cancellable form used by the desktop. `keep_going` is checked before any
-/// connection and between bounded SFTP writes.
+/// connection and between bounded SFTP writes. `max_bytes` is `None` after the
+/// user confirmed an oversize drop.
 pub(crate) fn put_files_while(
     options: &ssh::Options,
     files: &[path::PathBuf],
     mut keep_going: impl FnMut() -> bool,
+    max_bytes: Option<u64>,
     mut on_progress: impl FnMut(Progress<'_>),
 ) -> anyhow::Result<Vec<String>> {
     anyhow::ensure!(!files.is_empty(), "no files to upload");
@@ -60,11 +63,7 @@ pub(crate) fn put_files_while(
             meta.is_file(),
             "{name} is not a regular file; drop files only"
         );
-        anyhow::ensure!(
-            meta.len() <= MAX_FILE_BYTES,
-            "{name} is larger than {} MiB",
-            MAX_FILE_BYTES / (1024 * 1024)
-        );
+        ensure_file_size(meta.len(), max_bytes, &name)?;
         prepared.push((file.clone(), remote_name, name, meta.len()));
     }
 
@@ -135,6 +134,39 @@ pub(crate) fn put_files_while(
 fn ensure_running(keep_going: &mut impl FnMut() -> bool) -> anyhow::Result<()> {
     anyhow::ensure!(keep_going(), "SFTP upload cancelled");
     Ok(())
+}
+
+fn ensure_file_size(len: u64, max_bytes: Option<u64>, name: &str) -> anyhow::Result<()> {
+    if let Some(max) = max_bytes {
+        anyhow::ensure!(
+            len <= max,
+            "{name} is larger than {} MiB",
+            max / (1024 * 1024)
+        );
+    }
+    Ok(())
+}
+
+/// Status-bar copy when at least one dropped file is over `MAX_FILE_BYTES`.
+pub(crate) fn oversize_notice(files: &[(String, u64)]) -> Option<String> {
+    if !files.iter().any(|(_, n)| *n > MAX_FILE_BYTES) {
+        return None;
+    }
+    let limit = MAX_FILE_BYTES / (1024 * 1024);
+    if files.len() == 1 {
+        let (name, bytes) = &files[0];
+        Some(format!(
+            "{name} is {:.0} MiB (limit {limit} MiB). Upload anyway?",
+            *bytes as f64 / (1024.0 * 1024.0)
+        ))
+    } else {
+        let total: u64 = files.iter().map(|(_, n)| *n).sum();
+        Some(format!(
+            "{} files, {:.0} MiB total (limit {limit} MiB each). Upload anyway?",
+            files.len(),
+            total as f64 / (1024.0 * 1024.0)
+        ))
+    }
 }
 
 /// File name used on the host. Rejects path separators so a drop cannot
@@ -405,8 +437,7 @@ impl Session {
                     break;
                 }
                 anyhow::ensure!(
-                    offset.saturating_add(count as u64) <= expected
-                        && offset.saturating_add(count as u64) <= MAX_FILE_BYTES,
+                    offset.saturating_add(count as u64) <= expected,
                     "{} changed size while it was being uploaded",
                     local.display()
                 );
@@ -490,5 +521,25 @@ mod tests {
         assert!(long.len() <= MAX_NAME);
         assert!(long.starts_with("starcom-0-0-"));
         assert!(long.ends_with('a'));
+    }
+
+    #[test]
+    fn oversize_files_are_named_in_the_confirmation() {
+        assert!(oversize_notice(&[("notes.txt".into(), 1024)]).is_none());
+        assert_eq!(
+            oversize_notice(&[("notes.pdf".into(), 80 * 1024 * 1024)]).as_deref(),
+            Some("notes.pdf is 80 MiB (limit 32 MiB). Upload anyway?")
+        );
+        assert_eq!(
+            oversize_notice(&[
+                ("a.bin".into(), 40 * 1024 * 1024),
+                ("b.bin".into(), 10 * 1024 * 1024)
+            ])
+            .as_deref(),
+            Some("2 files, 50 MiB total (limit 32 MiB each). Upload anyway?")
+        );
+        assert!(ensure_file_size(MAX_FILE_BYTES, Some(MAX_FILE_BYTES), "a").is_ok());
+        assert!(ensure_file_size(MAX_FILE_BYTES + 1, Some(MAX_FILE_BYTES), "a").is_err());
+        assert!(ensure_file_size(MAX_FILE_BYTES + 1, None, "a").is_ok());
     }
 }

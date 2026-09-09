@@ -451,7 +451,10 @@ impl winit::application::ApplicationHandler<Event> for App {
                     Some(painted) => now.max(painted + interval),
                     None => now,
                 };
-                self.schedule(when, false);
+                // Force once the fps interval elapses. A deferred remote wake
+                // with force=false could be fps-skipped again after a later
+                // local paint, leaving the empty OpenTUI erase on screen.
+                self.schedule(when, true);
             }
         }
     }

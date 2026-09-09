@@ -194,6 +194,32 @@ impl Inspector {
         Ok(())
     }
 
+    /// Rename the attached session. A duplicate name is a user-facing failure
+    /// and must not abort the control attachment.
+    #[cfg(feature = "gui")]
+    pub(crate) fn rename_session(
+        &mut self,
+        name: &core::SessionName,
+    ) -> anyhow::Result<Vec<tmuxctl::Notification>> {
+        let command = command::Command::rename_session(name);
+        match self.exchange(command.as_str(), 1) {
+            Ok(batch) => Ok(batch
+                .notifications
+                .into_iter()
+                .map(|(_, event)| event)
+                .collect()),
+            Err(error) => {
+                // `%error` still completes the reply, so the stream stays
+                // aligned. Abort only when the failure might have left it
+                // mid-transaction (timeout, drop, protocol).
+                if !error.to_string().contains("tmux rejected request") {
+                    self.abort();
+                }
+                Err(error)
+            }
+        }
+    }
+
     /// One newline-terminated, synchronous tmux command list. Register every
     /// reply before writing; never retry a partial write or failed command list.
     pub(crate) fn request_batch(&mut self, commands: &[String]) -> anyhow::Result<Batch> {
@@ -469,6 +495,7 @@ impl Inspector {
                         | "kill-pane"
                         | "select-pane"
                         | "swap-pane"
+                        | "rename-session"
                         | "if-shell"
                         | "display-message"
                 ),
@@ -515,6 +542,7 @@ impl Inspector {
                         | "after-kill-pane"
                         | "after-select-pane"
                         | "after-swap-pane"
+                        | "after-rename-session"
                         | "after-if-shell"
                         | "after-display-message"
                 ) {
