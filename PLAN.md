@@ -213,7 +213,7 @@ terminal checkpoint.
 - [x] SSH-config alias suggestions and fail-closed profile resolution.
 - [x] Local scrollback, selection, copy, and pane layouts.
 - [x] Wheel to the application when it reports mouse or is on the alternate screen;
-  pane split/zoom/kill/move chrome.
+  pane split/zoom/kill/move chrome; session rename; oversize drop confirm.
 - [x] Guarded keyboard input and paste; no stale/offline replay.
 - [x] Remote divider resizing followed by server-authoritative resync.
 - [x] Native Linux/X11 render, clipboard, resize, and clean-close smoke test.

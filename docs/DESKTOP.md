@@ -40,7 +40,9 @@ Ctrl-Shift-W/Cmd-W closes the tab and detaches that Starcom client; the tmux
 server and remote jobs continue running.
 
 A Starcom tab is one tmux session and shows one window of that session. A
-window picker is not in this increment.
+window picker is not in this increment. Double-click a connected tab to rename
+that tmux session. Enter confirms, Escape or clicking away cancels. A name
+already in use is reported without dropping the attachment.
 
 Each tab currently opens its own SSH connection. Reusing a host connection across
 multiple session tabs is deferred until it can be done without coupling failures
@@ -203,11 +205,13 @@ characters, and soft wraps, with a 1 MiB output limit.
 Focus a connected pane, then drop up to eight files onto the window to upload
 them over SFTP into the remote temp directory (`/tmp`), under unique
 `starcom-…` names. The remote paths are then pasted into the focused pane. A
-progress bar sits in the status bar while a large file is in flight. Non-regular
-files and files larger than 32 MiB are rejected. Switching tabs or closing the
-form cancels the upload; delayed completion never pastes into a replacement pane
-after a reconnect or layout change. The upload uses its own SSH connection, so
-it cannot stall the tmux control channel. On Wayland, Starcom binds
+progress bar sits in the status bar while a large file is in flight, with a
+**Cancel** button. Non-regular files are rejected. A file larger than 32 MiB
+asks **Yes** / **No** on the status bar instead of being discarded. Switching
+tabs or closing the form cancels the upload; delayed completion never pastes
+into a replacement pane after a reconnect or layout change. The upload uses
+its own SSH connection, so it cannot stall the tmux control channel. On Wayland,
+Starcom binds
 `wl_data_device` itself because winit 0.30 does not; the bounded URI-list read
 runs off the event thread.
 
@@ -227,7 +231,11 @@ Remote pane output is redrawn at most 5 times per second by default (`fps` in
 hover, typing, and other local UI stay immediate. After keys or wheel are sent,
 remote frames run at up to 20 fps for a short time so the echo does not wait on
 the idle cap. Output in a hidden tab keeps that tab's activity/quiet state
-accurate but does not repaint an unchanged selected terminal.
+accurate but does not repaint an unchanged selected terminal. A remote wake
+stays pending until the selected terminal is actually painted, and a deferred
+remote redraw is forced once the fps interval elapses, so an application that
+erases then redraws (OpenCode and other OpenTUI apps) cannot leave the empty
+erase on screen.
 
 ## Pane controls
 
@@ -243,7 +251,9 @@ Each interactive pane has window-style buttons in its top-right corner:
   window
 
 Maximize is tmux zoom. Zoomed tmux still lists every pane, overlapping; Starcom
-shows the filling pane and keeps focus until you restore.
+shows the filling pane and keeps focus until you restore. The local history
+viewport is kept across maximize and restore, so scrolling up to read and then
+zooming does not jump back to the live tip.
 
 Click a pane to focus it (`select-pane`). These are the same tmux operations an
 ordinary client would use, so other attached clients see them.

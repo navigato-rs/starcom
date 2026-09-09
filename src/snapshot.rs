@@ -398,6 +398,20 @@ impl View {
         self.exit.as_ref()
     }
 
+    /// Keep each surviving pane's local history viewport across a snapshot
+    /// replace. Zoom, split, and reconnect rebuild the Alacritty model at
+    /// offset 0; without this, maximizing while scrolled jumps to the live tip.
+    pub fn preserve_history_offsets(&mut self, previous: &View) {
+        for (id, pane) in &mut self.panes {
+            if let Some(old) = previous.panes.get(id) {
+                let offset = old.terminal.history_offset();
+                if offset > 0 {
+                    pane.terminal.scroll_history(offset);
+                }
+            }
+        }
+    }
+
     pub fn apply(&mut self, notification: tmuxctl::Notification) {
         // A detach must remain observable even if a preceding layout change
         // already invalidated the models in this same network read.
@@ -491,6 +505,35 @@ mod tests {
         for bytes in [br"\".as_slice(), br"\0", br"\400", br"\999", br"\x1b"] {
             assert!(decode_escaped(bytes).is_err());
         }
+    }
+
+    #[test]
+    fn history_viewport_survives_a_replaced_view() {
+        fn pane_with_history() -> Pane {
+            let mut pane =
+                Pane::restore(state(20, 4), &lines(&["a", "b", "c", "d"]), &[], &[], 8).unwrap();
+            for i in 0..12 {
+                pane.terminal.feed(format!("line{i:02}\r\n").as_bytes());
+            }
+            pane
+        }
+        let mut first = pane_with_history();
+        first.terminal.scroll_history(3);
+        let offset = first.terminal.history_offset();
+        assert_eq!(offset, 3);
+
+        let previous = View::new(tmuxctl::SessionId(0), vec![first]).unwrap();
+        let replacement = pane_with_history();
+        let mut next = View::new(tmuxctl::SessionId(0), vec![replacement]).unwrap();
+        assert_eq!(
+            next.panes()[&tmuxctl::PaneId(1)].terminal.history_offset(),
+            0
+        );
+        next.preserve_history_offsets(&previous);
+        assert_eq!(
+            next.panes()[&tmuxctl::PaneId(1)].terminal.history_offset(),
+            offset
+        );
     }
 
     #[test]

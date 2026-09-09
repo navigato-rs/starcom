@@ -136,6 +136,19 @@ fn wheel_ticks(remainder: &mut f32, delta: f32) -> i32 {
 }
 
 impl PaneUi {
+    /// A snapshot replace rebuilds the Alacritty model at offset 0. If the
+    /// previous model was scrolled, stay unstuck so the copied offset paints.
+    pub(crate) fn keep_history_viewport(&mut self, offset: usize) {
+        if offset > 0 {
+            self.stuck = false;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_stuck(&self) -> bool {
+        self.stuck
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn show(
         &mut self,

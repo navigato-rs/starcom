@@ -131,7 +131,8 @@ impl Session {
             Ok(view)
         })();
         match result {
-            Ok(view) => {
+            Ok(mut view) => {
+                view.preserve_history_offsets(&self.view);
                 self.view = view;
                 Ok(())
             }

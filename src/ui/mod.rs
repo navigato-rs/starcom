@@ -4,7 +4,7 @@ pub(crate) mod input;
 mod layout;
 mod terminal;
 
-use std::{collections, path, sync, thread, time};
+use std::{collections, fs, path, sync, thread, time};
 
 use crate::{
     core, desktop, input as terminal_input, reconnect, session, snapshot, ssh, ssh_config, store,
@@ -28,6 +28,15 @@ struct Upload {
     /// must never mint a fresh target after a reconnect or layout change.
     target: desktop::Target,
     cancel: sync::Arc<sync::atomic::AtomicBool>,
+}
+
+/// A drop that is waiting for Yes/No because a file is over `MAX_FILE_BYTES`.
+struct PendingDrop {
+    files: Vec<path::PathBuf>,
+    label: String,
+    target: desktop::Target,
+    options: ssh::Options,
+    allow_oversize: bool,
 }
 
 impl Drop for Upload {
@@ -266,6 +275,9 @@ pub enum Action {
     /// confirmed button press, never from a failed attach.
     CreateSession(desktop::Connection),
     Disconnect,
+    /// Rename the attached tmux session. The worker updates the tab label
+    /// after tmux accepts the name.
+    RenameSession(String),
     /// Every terminal step this frame produced, in order. Never a subset: a
     /// frame that cannot deliver all of its steps reports that to the user.
     Frame(Vec<Step>),
@@ -302,6 +314,7 @@ pub struct DesktopUi {
     /// involved; progress and completion are polled on the next frames.
     upload: Option<Upload>,
     upload_progress: Option<(String, u64, u64)>,
+    drop_prompt: Option<PendingDrop>,
     /// Whether a local SSH agent looked reachable, and when that was last
     /// asked. A hint for the form only; the connection still authenticates as
     /// configured. Rechecked while the form is open so that starting an agent
@@ -355,6 +368,7 @@ impl DesktopUi {
             creating: None,
             upload: None,
             upload_progress: None,
+            drop_prompt: None,
             agent_available: ssh::agent_available(),
             agent_checked: time::Instant::now(),
             listed_destination: String::new(),
@@ -442,6 +456,15 @@ impl DesktopUi {
         self.creating = None;
         self.upload = None;
         self.upload_progress = None;
+        self.drop_prompt = None;
+    }
+
+    pub(crate) fn session_name(&self) -> &str {
+        self.form.session.trim()
+    }
+
+    pub(crate) fn set_session_name(&mut self, name: String) {
+        self.form.session = name;
     }
 
     pub(crate) fn arm_focus_restore(&mut self) {
@@ -949,7 +972,6 @@ impl DesktopUi {
         let preferred = self.focused.or(self.selected);
         self.windows.clear();
         self.zoomed_windows.clear();
-        self.pane_ui.clear();
         self.focused = None;
         if let Some(ref view) = state.view {
             let mut grouped = collections::BTreeMap::<_, Vec<_>>::new();
@@ -994,6 +1016,16 @@ impl DesktopUi {
                 self.selected = None;
             }
         }
+        self.pane_ui.retain(|id, pane_ui| {
+            let Some(view) = state.view.as_ref() else {
+                return false;
+            };
+            let Some(pane) = view.panes().get(id) else {
+                return false;
+            };
+            pane_ui.keep_history_viewport(pane.terminal.history_offset());
+            true
+        });
         self.generation = state.generation;
     }
 
@@ -1162,10 +1194,28 @@ impl DesktopUi {
                             };
                             ui.add(
                                 egui::ProgressBar::new(frac.clamp(0.0, 1.0))
-                                    .desired_width(240.0)
+                                    .desired_width(200.0)
                                     .desired_height(16.0)
                                     .text(upload_label(name, done, total)),
                             );
+                            if click_button(ui, "Cancel")
+                                .on_hover_text("Stop this upload. Partial remote files are removed.")
+                                .clicked()
+                            {
+                                self.upload = None;
+                                self.upload_progress = None;
+                                self.notice = Some("Upload cancelled.".to_owned());
+                                self.notice_until = None;
+                            }
+                        } else if let Some(prompt) = self.drop_prompt.as_ref() {
+                            ui.small(&prompt.label);
+                            if click_button(ui, "Yes").clicked() {
+                                if let Some(pending) = self.drop_prompt.take() {
+                                    self.start_upload(state, pending);
+                                }
+                            } else if click_button(ui, "No").clicked() {
+                                self.drop_prompt = None;
+                            }
                         } else if self.notice.as_deref() == Some("Copied!") {
                             ui.label(
                                 egui::RichText::new("Copied!")
@@ -1455,6 +1505,65 @@ impl DesktopUi {
                 return;
             }
         };
+        let mut sized = Vec::new();
+        for file in &files {
+            let meta = match fs::metadata(file) {
+                Ok(meta) if meta.is_file() => meta,
+                _ => {
+                    self.notice = Some(format!(
+                        "{} is not a regular file; drop files only",
+                        file.display()
+                    ));
+                    self.notice_until = None;
+                    return;
+                }
+            };
+            let name =
+                crate::sftp::remote_file_name(file).unwrap_or_else(|_| file.display().to_string());
+            sized.push((name, meta.len()));
+        }
+        if let Some(label) = crate::sftp::oversize_notice(&sized) {
+            self.drop_prompt = Some(PendingDrop {
+                files,
+                label,
+                target,
+                options,
+                allow_oversize: true,
+            });
+            self.notice = None;
+            self.notice_until = None;
+            return;
+        }
+        self.start_upload(
+            state,
+            PendingDrop {
+                files,
+                label: String::new(),
+                target,
+                options,
+                allow_oversize: false,
+            },
+        );
+    }
+
+    fn start_upload(&mut self, state: &desktop::State, pending: PendingDrop) {
+        if state.target(pending.target.pane()) != Some(pending.target) {
+            self.notice = Some("The pane changed; drop the files again.".to_owned());
+            self.notice_until = None;
+            return;
+        }
+        let PendingDrop {
+            files,
+            target,
+            options,
+            allow_oversize,
+            ..
+        } = pending;
+        let max_bytes = if allow_oversize {
+            None
+        } else {
+            Some(crate::sftp::MAX_FILE_BYTES)
+        };
         let (tx, rx) = sync::mpsc::sync_channel(4);
         let cancel = sync::Arc::new(sync::atomic::AtomicBool::new(false));
         let worker_cancel = sync::Arc::clone(&cancel);
@@ -1466,6 +1575,7 @@ impl DesktopUi {
                     &options,
                     &files,
                     || !worker_cancel.load(sync::atomic::Ordering::Acquire),
+                    max_bytes,
                     |update| {
                         let _ = progress.try_send(UploadEvent::Progress {
                             name: update.name.to_owned(),
@@ -1931,6 +2041,64 @@ mod tests {
 
         assert_eq!(ui.window, Some(tmuxctl::WindowId(7)));
         assert_eq!(ui.selected, Some(tmuxctl::PaneId(1)));
+    }
+
+    #[test]
+    fn a_layout_rebuild_keeps_a_scrolled_history_viewport() {
+        let mut ui = DesktopUi::default();
+        ui.open_terminal();
+        let mut connected = desktop::State::interactive_demo().unwrap();
+        connected.generation = 1;
+        let pane = tmuxctl::PaneId(1);
+        {
+            let terminal = &mut connected
+                .view
+                .as_mut()
+                .unwrap()
+                .panes_mut()
+                .get_mut(&pane)
+                .unwrap()
+                .terminal;
+            terminal.scroll_history(10);
+            assert!(terminal.history_offset() > 0);
+        }
+        ui.rebuild_layout(&connected);
+        let offset = connected
+            .view
+            .as_ref()
+            .unwrap()
+            .panes()
+            .get(&pane)
+            .unwrap()
+            .terminal
+            .history_offset();
+        ui.pane_ui
+            .entry(pane)
+            .or_default()
+            .keep_history_viewport(offset);
+
+        let mut next = desktop::State::interactive_demo().unwrap();
+        next.generation = 2;
+        next.view
+            .as_mut()
+            .unwrap()
+            .preserve_history_offsets(connected.view.as_ref().unwrap());
+        ui.rebuild_layout(&next);
+        assert!(
+            !ui.pane_ui.get(&pane).expect("kept pane ui").is_stuck(),
+            "a scrolled pane must not snap back to the live tip after zoom"
+        );
+        assert_eq!(
+            next.view
+                .as_ref()
+                .unwrap()
+                .panes()
+                .get(&pane)
+                .unwrap()
+                .terminal
+                .history_offset(),
+            offset
+        );
     }
 
     fn paint(ui: &mut DesktopUi, state: &mut desktop::State) -> Action {
