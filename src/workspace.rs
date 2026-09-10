@@ -705,8 +705,28 @@ impl Workspace {
         }
     }
 
+    fn apply_renamed_session(&mut self) {
+        let Some(tab) = self.tabs.get_mut(self.active) else {
+            return;
+        };
+        let name = tab
+            .client
+            .take_renamed()
+            .or_else(|| tab.client.take_rename_revert());
+        let Some(name) = name else {
+            return;
+        };
+        if name == tab.ui.session_name() {
+            return;
+        }
+        tab.ui.set_session_name(name);
+        tab.label = label(&tab.ui.saved());
+        self.persist();
+    }
+
     pub fn show(&mut self, root: &mut egui::Ui) -> Action {
         self.local_dirty = false;
+        self.apply_renamed_session();
         let mut navigation = Action::None;
         let mut reorder: Option<(u64, usize)> = None;
         let mut rename_to: Option<(u64, String)> = None;
@@ -1016,23 +1036,12 @@ impl Workspace {
             ack_painted(&mut self.composer);
             (self.composer.id, action)
         } else {
-            let (id, action, renamed) = {
-                let tab = &mut self.tabs[self.active];
-                let action = root
-                    .push_id(tab.id, |root| tab.ui.show(root, &mut tab.client.lock()))
-                    .inner;
-                ack_painted(tab);
-                let renamed = tab.client.take_renamed();
-                if let Some(ref name) = renamed {
-                    tab.ui.set_session_name(name.clone());
-                    tab.label = label(&tab.ui.saved());
-                }
-                (tab.id, action, renamed)
-            };
-            if renamed.is_some() {
-                self.persist();
-            }
-            (id, action)
+            let tab = &mut self.tabs[self.active];
+            let action = root
+                .push_id(tab.id, |root| tab.ui.show(root, &mut tab.client.lock()))
+                .inner;
+            ack_painted(tab);
+            (tab.id, action)
         };
         if !matches!(navigation, Action::None) {
             // Reorder keeps this tab painted so the focused pane stays in
@@ -1131,10 +1140,17 @@ impl Workspace {
                                     .create_session(connection, crate::core::Size::default())
                             }
                             ui::Action::RenameSession(name) => {
-                                if name == tab.ui.session_name() {
+                                let parsed = core::SessionName::new(name)?;
+                                let previous = tab.ui.session_name().to_owned();
+                                if parsed.as_str() == previous {
                                     Ok(())
                                 } else {
-                                    tab.client.rename_session(core::SessionName::new(name)?)
+                                    // Persist before tmux answers so a hang or
+                                    // crash still reconnects to the new name.
+                                    tab.ui.set_session_name(parsed.as_str().to_owned());
+                                    tab.label = label(&tab.ui.saved());
+                                    save = true;
+                                    tab.client.rename_session(parsed, previous)
                                 }
                             }
                             ui::Action::Disconnect => {

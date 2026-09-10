@@ -48,18 +48,25 @@ Tabs, mouse, paste, session create, SFTP drops, and an About panel after
   already-cleared in-memory tab list.
 - **Move pane.** Arrow buttons swap the focused pane with its neighbor.
 - **Rename session.** Double-click a connected tab to rename the tmux session.
+  The new name is saved immediately so a restart reconnects to it. A rename
+  does not rebuild every pane. A rejected name restores the previous one.
 - **Zoom scroll.** Maximizing or restoring a pane keeps the local history
-  viewport, so reading further up does not jump back to the live tip.
+  viewport, including when you were following the live tip. A copied offset
+  no longer overscrolls or unsticks the tip.
 - **OpenTUI frames.** Remote output stays pending until the terminal is
   painted, and a deferred remote wake is forced once the fps interval
   elapses, so an erase-then-redraw (OpenCode and similar) cannot leave a
   blank middle on screen.
 - **Terminal polish.** Zoomed panes show a distinct restore icon. Activity uses
   a fixed-size three-dot pulse instead of spinning or shape-shifting glyphs.
-  Shift-Enter falls back to Enter instead of allowing `S-Enter` to appear as
-  literal input. The status pulse advances only when the selected terminal
-  changes or scrolls; hidden-tab output no longer repaints an unchanged
-  selected terminal. Move arrows account for tmux's separator cell.
+  Shift-Enter and Shift-Backspace fall back to Enter and BSpace instead of
+  allowing `S-Enter` or `S-BSpace` to appear as literal input. Wheel over a
+  primary-screen mouse-reporting TUI is sent as WheelUp/Down, not as a mouse
+  button, so it scrolls instead of selecting. Dragging pane contents selects;
+  the wheel and scrollbar scroll. The status pulse advances only when the
+  selected terminal changes or scrolls; hidden-tab output no longer repaints
+  an unchanged selected terminal. Move arrows account for tmux's separator
+  cell.
 - **History.** The default local history depth is 1000 lines, matching the
   snapshot cap.
 - **Sunset.** Pinned to `navigato-rs/sunset` `c245252`, which includes the

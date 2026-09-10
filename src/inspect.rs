@@ -199,9 +199,10 @@ impl Inspector {
     #[cfg(feature = "gui")]
     pub(crate) fn rename_session(
         &mut self,
+        session: tmuxctl::SessionId,
         name: &core::SessionName,
     ) -> anyhow::Result<Vec<tmuxctl::Notification>> {
-        let command = command::Command::rename_session(name);
+        let command = command::Command::rename_session(session, name);
         match self.exchange(command.as_str(), 1) {
             Ok(batch) => Ok(batch
                 .notifications

@@ -41,8 +41,10 @@ server and remote jobs continue running.
 
 A Starcom tab is one tmux session and shows one window of that session. A
 window picker is not in this increment. Double-click a connected tab to rename
-that tmux session. Enter confirms, Escape or clicking away cancels. A name
-already in use is reported without dropping the attachment.
+that tmux session. Enter confirms, Escape or clicking away cancels. The new
+name is written to the saved workspace immediately, so a restart reconnects
+to it. A name already in use is reported without dropping the attachment, and
+the previous name is restored.
 
 Each tab currently opens its own SSH connection. Reusing a host connection across
 multiple session tabs is deferred until it can be done without coupling failures

@@ -1052,10 +1052,10 @@ impl DesktopUi {
             let Some(view) = state.view.as_ref() else {
                 return false;
             };
-            let Some(pane) = view.panes().get(id) else {
+            if !view.panes().contains_key(id) {
                 return false;
-            };
-            pane_ui.keep_history_viewport(pane.terminal.history_offset());
+            }
+            pane_ui.on_layout_rebuild();
             true
         });
         self.generation = state.generation;
@@ -2140,6 +2140,39 @@ mod tests {
                 .terminal
                 .history_offset(),
             offset
+        );
+    }
+
+    #[test]
+    fn a_layout_rebuild_keeps_live_tip_tracking() {
+        let mut ui = DesktopUi::default();
+        ui.open_terminal();
+        let mut connected = desktop::State::interactive_demo().unwrap();
+        connected.generation = 1;
+        let pane = tmuxctl::PaneId(1);
+        ui.rebuild_layout(&connected);
+        ui.pane_ui.entry(pane).or_default();
+        assert!(ui.pane_ui.get(&pane).unwrap().is_stuck());
+
+        connected
+            .view
+            .as_mut()
+            .unwrap()
+            .panes_mut()
+            .get_mut(&pane)
+            .unwrap()
+            .terminal
+            .scroll_history(10);
+        let mut next = desktop::State::interactive_demo().unwrap();
+        next.generation = 2;
+        next.view
+            .as_mut()
+            .unwrap()
+            .preserve_history_offsets(connected.view.as_ref().unwrap());
+        ui.rebuild_layout(&next);
+        assert!(
+            ui.pane_ui.get(&pane).expect("kept pane ui").is_stuck(),
+            "a pane following the live tip must still do so after zoom"
         );
     }
 

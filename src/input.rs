@@ -37,10 +37,11 @@ pub struct Modifiers {
 
 impl Key {
     pub(crate) fn name(self, modifiers: Modifiers) -> Result<String, Error> {
-        // Shift+Enter has no portable terminal encoding. Passing `S-Enter` to
-        // tmux makes some tmux/application combinations surface the key name as
-        // literal input. Treat it like a conventional terminal does: Enter.
-        let modifiers = if self == Self::Enter {
+        // Shift+Enter / Shift+Backspace have no portable terminal encoding.
+        // Passing `S-Enter` or `S-BSpace` to tmux makes some tmux/application
+        // combinations surface the key name as literal input. Treat them like
+        // a conventional terminal does: the unshifted key.
+        let modifiers = if matches!(self, Self::Enter | Self::Backspace) {
             Modifiers {
                 shift: false,
                 ..modifiers
@@ -294,6 +295,16 @@ mod tests {
                 .unwrap(),
             "Enter",
             "Shift+Enter must not become literal S-Enter input"
+        );
+        assert_eq!(
+            Key::Backspace
+                .name(Modifiers {
+                    shift: true,
+                    ..Modifiers::default()
+                })
+                .unwrap(),
+            "BSpace",
+            "Shift+Backspace must not become literal S-BSpace input"
         );
         assert_eq!(
             Key::Left

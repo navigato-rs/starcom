@@ -133,10 +133,12 @@ pub(crate) struct State {
     pub discovery: Option<Discovery>,
     /// Last interactive-command round trip, from traffic we already send.
     pub last_rtt: Option<time::Duration>,
-    /// Pending `rename-session`. Session-level, not a pane transaction.
-    rename: Option<core::SessionName>,
+    /// Pending `rename-session` (new name, previous name).
+    rename: Option<(core::SessionName, String)>,
     /// Name tmux accepted, for the tab label and saved workspace.
     renamed: Option<String>,
+    /// Previous session name, restored if tmux rejected the rename.
+    rename_revert: Option<String>,
     actions: collections::VecDeque<Pending>,
     action_bytes: usize,
     io_wake: Option<ssh::Wake>,
@@ -162,6 +164,7 @@ impl Default for State {
             last_rtt: None,
             rename: None,
             renamed: None,
+            rename_revert: None,
             actions: collections::VecDeque::new(),
             action_bytes: 0,
             io_wake: None,
@@ -182,6 +185,7 @@ impl State {
         self.failure = None;
         self.rename = None;
         self.renamed = None;
+        self.rename_revert = None;
         self.discard_actions();
         self.access = session::Access::ReadOnly;
         self.allow_resize = false;
@@ -431,13 +435,19 @@ impl Client {
 
     /// Ask tmux to rename the attached session. The worker reports success
     /// through `take_renamed`; a duplicate name is an error, not a disconnect.
-    pub(crate) fn rename_session(&self, name: core::SessionName) -> anyhow::Result<()> {
+    pub(crate) fn rename_session(
+        &self,
+        name: core::SessionName,
+        previous: String,
+    ) -> anyhow::Result<()> {
         let mut state = self.lock();
         anyhow::ensure!(
             state.input_ready(),
             "connect with an interactive session to rename it"
         );
-        state.rename = Some(name);
+        state.rename = Some((name, previous));
+        state.renamed = None;
+        state.rename_revert = None;
         if let Some(ref wake) = state.io_wake {
             wake.notify();
         }
@@ -446,6 +456,10 @@ impl Client {
 
     pub(crate) fn take_renamed(&self) -> Option<String> {
         self.lock().renamed.take()
+    }
+
+    pub(crate) fn take_rename_revert(&self) -> Option<String> {
+        self.lock().rename_revert.take()
     }
 
     /// Admit a GUI frame atomically, so a full queue cannot accept half of a
@@ -584,7 +598,7 @@ fn worker_loop(shared: Shared, wake: Wake) {
                 state.pending.take().expect("request checked above"),
             )
         };
-        let connection = match request {
+        let mut connection = match request {
             Request::Attach(connection) => connection,
             // One-shot queries: run, publish the answer, wait for the next
             // request. Neither one becomes or disturbs an attachment.
@@ -631,7 +645,7 @@ fn worker_loop(shared: Shared, wake: Wake) {
                 &shared,
                 &wake,
                 epoch,
-                &connection,
+                &mut connection,
                 &mut previous_identity,
                 &mut backoff,
             );
@@ -819,7 +833,7 @@ fn watch(
     shared: &Shared,
     wake: &Wake,
     epoch: u64,
-    connection: &Connection,
+    connection: &mut Connection,
     previous: &mut Option<inspect::Identity>,
     backoff: &mut reconnect::Backoff,
 ) -> anyhow::Result<Outcome> {
@@ -983,15 +997,17 @@ fn watch(
                     }
                     state.rename.take()
                 };
-                if let Some(name) = rename {
-                    match inspector.rename_session(&name) {
+                if let Some((name, previous)) = rename {
+                    match inspector.rename_session(session_id, &name) {
                         Ok(notifications) => {
+                            connection.session = name.clone();
                             let mut state = shared
                                 .0
                                 .lock()
                                 .unwrap_or_else(sync::PoisonError::into_inner);
                             if state.accepts(epoch) {
                                 state.renamed = Some(name.as_str().to_owned());
+                                state.rename_revert = None;
                                 state.last_rtt = inspector.last_rtt;
                                 state.error = None;
                                 if let Some(ref mut view) = state.view {
@@ -1015,6 +1031,7 @@ fn watch(
                                 .unwrap_or_else(sync::PoisonError::into_inner);
                             if state.accepts(epoch) {
                                 state.error = Some(format!("Could not rename session: {error}"));
+                                state.rename_revert = Some(previous);
                             }
                             wake();
                         }
