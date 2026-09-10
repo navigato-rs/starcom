@@ -1376,6 +1376,26 @@ impl DesktopUi {
                         self.pending_client_cells = None;
                     }
                 }
+                if state.input_ready()
+                    && self.terminal_focused(ui.ctx())
+                    && let Some(pane_id) = self.focused
+                {
+                    let (events, modifiers) =
+                        ui.input(|input| (input.events.clone(), input.modifiers));
+                    if events
+                        .iter()
+                        .any(|event| input::follows_live_tip(event, modifiers))
+                    {
+                        self.pane_ui.entry(pane_id).or_default().follow_live_tip();
+                        if let Some(pane) = state
+                            .view
+                            .as_mut()
+                            .and_then(|view| view.panes_mut().get_mut(&pane_id))
+                        {
+                            pane.terminal.scroll_history(0);
+                        }
+                    }
+                }
                 if let (Some(id), Some(view)) = (self.window, state.view.as_mut())
                     && let Some(node) = self.windows.get_mut(&id)
                 {
@@ -2518,6 +2538,40 @@ mod tests {
         assert!(
             ui.terminal_focused(&ctx),
             "egui must not walk focus to Paste or any other widget"
+        );
+    }
+
+    #[test]
+    fn a_keystroke_jumps_local_history_to_the_live_tip() {
+        let (ctx, mut ui, mut state, pane, _target) = focus_demo_pane();
+        ui.pane_ui
+            .entry(pane)
+            .or_default()
+            .keep_history_viewport(10);
+        assert!(!ui.pane_ui.get(&pane).unwrap().is_stuck());
+
+        let input = egui::RawInput {
+            events: vec![egui::Event::Text("x".into())],
+            ..screen_input()
+        };
+        let _ = ctx.run_ui(input, |root| {
+            ui.show(root, &mut state);
+        });
+        assert!(
+            ui.pane_ui.get(&pane).expect("pane ui").is_stuck(),
+            "typing must follow the live tip"
+        );
+        assert_eq!(
+            state
+                .view
+                .as_ref()
+                .unwrap()
+                .panes()
+                .get(&pane)
+                .unwrap()
+                .terminal
+                .history_offset(),
+            0
         );
     }
 

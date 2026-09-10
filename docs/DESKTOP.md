@@ -197,7 +197,8 @@ report at the hovered cell. If it is on the alternate screen without mouse
 reporting, the wheel becomes Up/Down, matching xterm alternate-scroll. Otherwise
 the wheel examines local terminal history. One tick is 40 points, one egui
 line; leftover smoothing after a notch is accumulated so it cannot add extra
-ticks.
+ticks. Typing, paste, and other keyboard input jump that local history back
+to the live tip, the way a conventional terminal does. The wheel does not.
 
 Unmodified left clicks are forwarded the same way when the pane asked for mouse
 reports: a press and a release at the cell. Shift/Ctrl/Alt/Cmd clicks, drags,

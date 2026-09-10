@@ -151,6 +151,13 @@ impl PaneUi {
         self.scroll_frac = 0.0;
     }
 
+    /// Keyboard input and paste snap the viewport to the live tip, like a
+    /// conventional terminal. The wheel does not.
+    pub(crate) fn follow_live_tip(&mut self) {
+        self.stuck = true;
+        self.scroll_frac = 0.0;
+    }
+
     #[cfg(test)]
     pub(crate) fn is_stuck(&self) -> bool {
         self.stuck

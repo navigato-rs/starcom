@@ -142,6 +142,17 @@ pub fn translate(
     Ok(Some(out))
 }
 
+/// Typed keys and paste jump local history to the live tip. Copy and
+/// unrecognized events do not; the wheel is handled separately on the pane.
+pub(crate) fn follows_live_tip(event: &egui::Event, modifiers: egui::Modifiers) -> bool {
+    matches!(
+        translate(event, modifiers),
+        Ok(Some(
+            Event::Input(_) | Event::Paste(_) | Event::RequestPaste
+        ))
+    )
+}
+
 fn control_byte(key: egui::Key) -> Option<u8> {
     let name = key.name();
     if name.len() == 1 && name.as_bytes()[0].is_ascii_alphabetic() {
@@ -189,6 +200,30 @@ mod tests {
             )
             .unwrap(),
             Some(Event::Copy)
+        ));
+    }
+
+    #[test]
+    fn typing_and_paste_follow_the_live_tip_but_copy_does_not() {
+        let arrow = egui::Event::Key {
+            key: egui::Key::ArrowUp,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        assert!(follows_live_tip(
+            &egui::Event::Text("a".into()),
+            egui::Modifiers::NONE
+        ));
+        assert!(follows_live_tip(&arrow, egui::Modifiers::NONE));
+        assert!(follows_live_tip(
+            &egui::Event::Paste("x".into()),
+            egui::Modifiers::NONE
+        ));
+        assert!(!follows_live_tip(
+            &egui::Event::Copy,
+            egui::Modifiers::CTRL | egui::Modifiers::SHIFT
         ));
     }
 }
