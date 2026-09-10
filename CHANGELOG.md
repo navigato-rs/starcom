@@ -52,7 +52,8 @@ Tabs, mouse, paste, session create, SFTP drops, and an About panel after
   does not rebuild every pane. A rejected name restores the previous one.
 - **Zoom scroll.** Maximizing or restoring a pane keeps the local history
   viewport, including when you were following the live tip. A copied offset
-  no longer overscrolls or unsticks the tip.
+  no longer overscrolls or unsticks the tip. Typing and paste jump local
+  history back to the live tip.
 - **OpenTUI frames.** Remote output stays pending until the terminal is
   painted, and a deferred remote wake is forced once the fps interval
   elapses, so an erase-then-redraw (OpenCode and similar) cannot leave a
