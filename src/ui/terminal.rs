@@ -138,10 +138,17 @@ fn wheel_ticks(remainder: &mut f32, delta: f32) -> i32 {
 impl PaneUi {
     /// A snapshot replace rebuilds the Alacritty model at offset 0. If the
     /// previous model was scrolled, stay unstuck so the copied offset paints.
+    #[cfg(test)]
     pub(crate) fn keep_history_viewport(&mut self, offset: usize) {
         if offset > 0 {
             self.stuck = false;
         }
+    }
+
+    /// Layout rebuilds keep stuck/offset; only the sub-row remainder is stale
+    /// because row height and pane size have changed.
+    pub(crate) fn on_layout_rebuild(&mut self) {
+        self.scroll_frac = 0.0;
     }
 
     #[cfg(test)]
@@ -231,21 +238,18 @@ impl PaneUi {
                     .scroll_source(if wants_wheel {
                         egui::scroll_area::ScrollSource::NONE
                     } else {
-                        egui::scroll_area::ScrollSource::ALL
+                        // Wheel and the scrollbar scroll. Dragging the
+                        // contents is local selection, not a pan.
+                        egui::scroll_area::ScrollSource::SCROLL_BAR
+                            | egui::scroll_area::ScrollSource::MOUSE_WHEEL
                     });
+                let tip = tip_origin(total_rows, row_height, ui.available_height());
                 if self.stuck {
-                    area = area.vertical_scroll_offset(tip_origin(
-                        total_rows,
-                        row_height,
-                        ui.available_height(),
-                    ));
+                    area = area.vertical_scroll_offset(tip);
                 } else {
-                    area = area.vertical_scroll_offset(scroll_origin(
-                        history,
-                        display,
-                        row_height,
-                        self.scroll_frac,
-                    ));
+                    area = area.vertical_scroll_offset(
+                        scroll_origin(history, display, row_height, self.scroll_frac).min(tip),
+                    );
                 }
                 let output = area.show_rows(ui, row_height, total_rows, |ui, range| {
                     *rows = range.len();
@@ -307,7 +311,11 @@ impl PaneUi {
                         if ticks != 0 {
                             let up = ticks > 0;
                             let n = ticks.unsigned_abs();
-                            if mouse {
+                            // Mouse-wheel SGR reports on the primary screen are
+                            // what made Grok (and similar TUIs) treat a scroll
+                            // as a selection. Alternate-screen mouse apps such
+                            // as vim still get the mouse protocol.
+                            if mouse && pane.terminal.is_alternate_screen() {
                                 let (column, row) = response
                                     .hover_pos()
                                     .map(|position| {
@@ -327,9 +335,6 @@ impl PaneUi {
                                     )));
                                 }
                             } else {
-                                // Alternate-screen apps that did not enable mouse
-                                // reporting still want tmux WheelUp/WheelDown, not
-                                // cursor keys (those move the application cursor).
                                 let key = if up {
                                     input::Key::WheelUp
                                 } else {

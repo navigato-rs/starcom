@@ -446,6 +446,19 @@ impl View {
             // Unknown mutations, changes to pane geometry, and flow-control
             // gaps require a fresh snapshot. Never guess dimensions or replay
             // queued data into models whose topology may now be wrong.
+            tmuxctl::Notification::SessionRenamed(id, _)
+            | tmuxctl::Notification::SessionChanged(id, _)
+                if id == self.session =>
+            {
+                // Same attached session, new name. Pane models are unchanged;
+                // a full snapshot here is what froze the GUI after rename.
+            }
+            tmuxctl::Notification::SessionsChanged
+            | tmuxctl::Notification::WindowRenamed(..)
+            | tmuxctl::Notification::WindowPaneChanged { .. }
+            | tmuxctl::Notification::SessionWindowChanged { .. }
+            | tmuxctl::Notification::ClientSessionChanged { .. }
+            | tmuxctl::Notification::PaneModeChanged(_) => {}
             tmuxctl::Notification::LayoutChange { .. }
             | tmuxctl::Notification::WindowAdd(_)
             | tmuxctl::Notification::WindowClose(_)
@@ -534,6 +547,27 @@ mod tests {
             next.panes()[&tmuxctl::PaneId(1)].terminal.history_offset(),
             offset
         );
+    }
+
+    #[test]
+    fn renaming_the_attached_session_does_not_invalidate_models() {
+        let pane = Pane::restore(state(12, 3), &lines(&["a", "", ""]), &[], &[], 0).unwrap();
+        let mut view = View::new(tmuxctl::SessionId(0), vec![pane]).unwrap();
+        view.apply(tmuxctl::Notification::SessionRenamed(
+            tmuxctl::SessionId(0),
+            "new".into(),
+        ));
+        assert_eq!(view.status(), Status::Watching);
+        view.apply(tmuxctl::Notification::SessionChanged(
+            tmuxctl::SessionId(0),
+            "new".into(),
+        ));
+        assert_eq!(view.status(), Status::Watching);
+        view.apply(tmuxctl::Notification::SessionChanged(
+            tmuxctl::SessionId(7),
+            "other".into(),
+        ));
+        assert_eq!(view.status(), Status::NeedsResync);
     }
 
     #[test]
