@@ -152,6 +152,14 @@ impl Terminal {
         self.model.selection = None;
     }
 
+    /// OSC 8 URI on this cell, if the application set one.
+    pub fn hyperlink_at(&self, point: index::Point) -> Option<String> {
+        let point = self.clamp_point(point);
+        self.model.grid()[point]
+            .hyperlink()
+            .map(|link| link.uri().to_owned())
+    }
+
     fn clamp_point(&self, point: index::Point) -> index::Point {
         use grid::Dimensions;
         index::Point::new(
@@ -265,6 +273,29 @@ mod tests {
         let offset_after = terminal.history_offset();
         assert_eq!(offset_after, offset + 1);
         assert_eq!(line_text(&terminal, -(offset_after as i32)), shown);
+    }
+
+    #[test]
+    fn osc8_hyperlink_is_stored_on_the_cell() {
+        let mut terminal = Terminal::new(core::Size::new(20, 4).unwrap(), 0);
+        terminal.feed(b"\x1b]8;;https://example.com/login\x07here\x1b]8;;\x07.");
+        assert_eq!(
+            terminal
+                .hyperlink_at(index::Point::new(index::Line(0), index::Column(0)))
+                .as_deref(),
+            Some("https://example.com/login")
+        );
+        assert_eq!(
+            terminal
+                .hyperlink_at(index::Point::new(index::Line(0), index::Column(3)))
+                .as_deref(),
+            Some("https://example.com/login")
+        );
+        assert!(
+            terminal
+                .hyperlink_at(index::Point::new(index::Line(0), index::Column(4)))
+                .is_none()
+        );
     }
 
     #[test]

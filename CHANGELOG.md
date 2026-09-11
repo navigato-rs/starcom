@@ -53,7 +53,8 @@ Tabs, mouse, paste, session create, SFTP drops, and an About panel after
 - **Zoom scroll.** Maximizing or restoring a pane keeps the local history
   viewport, including when you were following the live tip. A copied offset
   no longer overscrolls or unsticks the tip. Typing and paste jump local
-  history back to the live tip.
+  history back to the live tip. Clicking an OSC 8 http(s) link opens it in
+  the local browser so remote device-login screens can finish.
 - **OpenTUI frames.** Remote output stays pending until the terminal is
   painted, and a deferred remote wake is forced once the fps interval
   elapses, so an erase-then-redraw (OpenCode and similar) cannot leave a
@@ -62,10 +63,11 @@ Tabs, mouse, paste, session create, SFTP drops, and an About panel after
   a fixed-size three-dot pulse instead of spinning or shape-shifting glyphs.
   Shift-Enter and Shift-Backspace fall back to Enter and BSpace instead of
   allowing `S-Enter` or `S-BSpace` to appear as literal input. The wheel is
-  never a tmux key name (`WheelUp` was typed as text). Mouse-reporting apps
-  get CSI wheel bytes; alternate-screen apps without mouse get CSI arrows;
-  otherwise the wheel scrolls local history. Dragging pane contents selects;
-  the scrollbar still scrolls. The status pulse advances only when the
+  never a tmux key name (`WheelUp` was typed as text). Shift+wheel always
+  scrolls local history. Alternate-screen mouse apps get CSI wheel bytes;
+  other application panes get tmux Up/Down; otherwise local history. One
+  mouse notch is one remote tick. Dragging pane contents selects; the
+  scrollbar still scrolls. The status pulse advances only when the
   selected terminal changes or scrolls; hidden-tab output no longer repaints
   an unchanged selected terminal. Move arrows account for tmux's separator
   cell. Typing `exit` in the last pane closes the tab instead of leaving a

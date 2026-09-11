@@ -146,6 +146,36 @@ fn wheel_ticks(remainder: &mut f32, delta: f32) -> i32 {
     ticks
 }
 
+/// One mouse-wheel notch is one remote tick. `smooth_scroll_delta` alone
+/// undershoots discrete wheels (a notch is often < `WHEEL_LINE` points).
+fn app_wheel_ticks(ui: &egui::Ui, remainder: &mut f32) -> i32 {
+    let mut ticks = 0_i32;
+    ui.input(|input| {
+        for event in &input.events {
+            let egui::Event::MouseWheel {
+                unit,
+                delta,
+                modifiers,
+                ..
+            } = event
+            else {
+                continue;
+            };
+            if modifiers.shift {
+                continue;
+            }
+            match unit {
+                egui::MouseWheelUnit::Line => ticks += delta.y.round() as i32,
+                egui::MouseWheelUnit::Page => ticks += (delta.y * 8.0).round() as i32,
+                egui::MouseWheelUnit::Point => {
+                    ticks += wheel_ticks(remainder, delta.y);
+                }
+            }
+        }
+    });
+    ticks.clamp(-8, 8)
+}
+
 impl PaneUi {
     /// A snapshot replace rebuilds the Alacritty model at offset 0. If the
     /// previous model was scrolled, stay unstuck so the copied offset paints.
@@ -244,6 +274,16 @@ impl PaneUi {
                 let mouse = pane.terminal.reports_mouse();
                 let wants_wheel = pane.terminal.wants_wheel();
                 let sgr_mouse = pane.terminal.sgr_mouse();
+                let shift_scroll = ui.input(|input| input.modifiers.shift);
+                let to_app = wants_wheel && !shift_scroll;
+                // Sample the wheel before the ScrollArea runs: it zeroes
+                // smooth_scroll_delta the instant it consumes a notch, so
+                // reading it after show_rows always saw zero. That made a
+                // stuck pane treat every real wheel scroll as an OpenTUI
+                // content-height jump and snap straight back to the live tip,
+                // i.e. local history scrolling looked completely dead.
+                let user_scrolled =
+                    !to_app && ui.input(|input| input.smooth_scroll_delta.y.abs() > 0.1);
                 // Follow the live tip with content-minus-view, not the content
                 // height: show_rows applies the offset before clamp, and an
                 // offset at the content height sits past the last row. Once
@@ -253,7 +293,7 @@ impl PaneUi {
                     .id_salt(("starcom-scroll", pane_id.0))
                     .auto_shrink([false, false])
                     .stick_to_bottom(self.stuck)
-                    .scroll_source(if wants_wheel {
+                    .scroll_source(if to_app {
                         egui::scroll_area::ScrollSource::NONE
                     } else {
                         // Wheel and the scrollbar scroll. Dragging the
@@ -322,18 +362,15 @@ impl PaneUi {
                     if response.clicked() {
                         events.push(input::Action::SelectPane);
                     }
-                    let pointer_in_pane = ui.rect_contains_pointer(rect);
-                    if wants_wheel && pointer_in_pane {
-                        let dy = ui.input(|input| input.smooth_scroll_delta.y);
-                        let ticks = wheel_ticks(remainder, dy);
+                    let pointer_in_pane =
+                        response.contains_pointer() || ui.rect_contains_pointer(content);
+                    if to_app && pointer_in_pane {
+                        let ticks = app_wheel_ticks(ui, remainder);
                         if ticks != 0 {
                             let up = ticks > 0;
                             let n = ticks.unsigned_abs();
-                            // Mouse-wheel SGR reports on the primary screen are
-                            // what made Grok (and similar TUIs) treat a scroll
-                            // as a selection. Alternate-screen mouse apps such
-                            // as vim still get the mouse protocol.
-                            if mouse {
+                            if mouse && pane.terminal.is_alternate_screen() {
+                                // vim and friends: SGR/X10 wheel, not cursor keys.
                                 let (column, row) = response
                                     .hover_pos()
                                     .map(|position| {
@@ -353,15 +390,15 @@ impl PaneUi {
                                     )));
                                 }
                             } else {
-                                // Bytes, never `send-keys WheelUp`: tmux types
-                                // unknown key names as literal text.
+                                // tmux `Up`/`Down` honor DECCKM. Raw CSI and
+                                // `WheelUp` either miss the app or type text.
+                                let key = if up { input::Key::Up } else { input::Key::Down };
                                 for _ in 0..n {
-                                    events.push(input::Action::Bytes(input::arrow_bytes(up)));
+                                    events
+                                        .push(input::Action::Key(key, input::Modifiers::default()));
                                 }
                             }
                         }
-                        // Remainder after the ±8 clamp is still a real scroll.
-                        // Paint again so it is not held until the next notch.
                         if remainder.abs() >= WHEEL_LINE {
                             ui.ctx().request_repaint();
                         }
@@ -370,6 +407,12 @@ impl PaneUi {
                         });
                     } else if !pointer_in_pane {
                         *remainder = 0.0;
+                    }
+                    if let Some(pos) = response.hover_pos() {
+                        let (point, _) = point_at(pos);
+                        if pane.terminal.hyperlink_at(point).is_some() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
                     }
                     if let Some(position) = response.interact_pointer_pos() {
                         let (point, side) = point_at(position);
@@ -380,15 +423,24 @@ impl PaneUi {
                                 && !modifiers.alt
                                 && !modifiers.command
                         });
-                        // Unmodified single clicks belong to the application
-                        // when it asked for them. Drags, modified clicks, and
-                        // double/triple clicks stay local selection.
-                        let forward_click = !frozen
-                            && mouse
-                            && unmodified
+                        let single_click = unmodified
                             && response.clicked()
                             && !response.double_clicked()
                             && !response.triple_clicked();
+                        // OSC 8 links open locally: a remote TUI cannot launch
+                        // this machine's browser (device-login "click here").
+                        let opened_link = !frozen
+                            && single_click
+                            && pane.terminal.hyperlink_at(point).is_some_and(|uri| {
+                                activate_hyperlink(ui.ctx(), &uri, notice, notice_until)
+                            });
+                        if opened_link {
+                            pane.terminal.clear_selection();
+                        }
+                        // Unmodified single clicks belong to the application
+                        // when it asked for them. Drags, modified clicks, and
+                        // double/triple clicks stay local selection.
+                        let forward_click = !frozen && mouse && single_click && !opened_link;
                         if forward_click {
                             let (column, row) = screen_cell(
                                 position,
@@ -650,8 +702,6 @@ impl PaneUi {
                         }
                     }
                 });
-                let user_scrolled =
-                    !wants_wheel && ui.input(|input| input.smooth_scroll_delta.y.abs() > 0.1);
                 let viewport = history_viewport(
                     output.state.offset.y,
                     output.content_size.y,
@@ -891,6 +941,58 @@ fn paint_chrome_icon(
     }
 }
 
+/// Remote OSC 8 URIs are untrusted. Only http(s) without controls or spaces.
+fn http_url(uri: &str) -> bool {
+    uri.len() <= 2048
+        && !uri.chars().any(|ch| ch.is_control() || ch.is_whitespace())
+        && (uri.starts_with("https://") || uri.starts_with("http://"))
+}
+
+fn open_http_url(uri: &str) -> Result<(), ()> {
+    if !http_url(uri) {
+        return Err(());
+    }
+    let mut command = if cfg!(target_os = "macos") {
+        let mut command = std::process::Command::new("open");
+        command.arg(uri);
+        command
+    } else if cfg!(windows) {
+        let mut command = std::process::Command::new("cmd");
+        command.args(["/C", "start", "", uri]);
+        command
+    } else {
+        let mut command = std::process::Command::new("xdg-open");
+        command.arg(uri);
+        command
+    };
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|_| ())
+}
+
+fn activate_hyperlink(
+    ctx: &egui::Context,
+    uri: &str,
+    notice: &mut Option<String>,
+    notice_until: &mut Option<std::time::Instant>,
+) -> bool {
+    if !http_url(uri) {
+        return false;
+    }
+    if open_http_url(uri).is_ok() {
+        *notice = Some("Opened in browser.".to_owned());
+        *notice_until = Some(std::time::Instant::now() + std::time::Duration::from_secs(2));
+        true
+    } else {
+        copy(ctx, uri.to_owned(), notice, notice_until, "Copied URL.");
+        true
+    }
+}
+
 pub fn copy(
     ctx: &egui::Context,
     text: String,
@@ -1020,6 +1122,17 @@ mod tests {
         assert!(frozen.r() > frozen.g(), "hue is kept, only dimmed");
         assert!(frozen.r() < 255);
         assert!(frozen.r() > BACKGROUND.r());
+    }
+
+    #[test]
+    fn only_http_urls_are_opened() {
+        assert!(http_url("https://github.com/login/device"));
+        assert!(http_url("http://127.0.0.1:8080/callback"));
+        assert!(!http_url("javascript:alert(1)"));
+        assert!(!http_url("file:///etc/passwd"));
+        assert!(!http_url("https://example.com/a b"));
+        assert!(!http_url("https://example.com/\n"));
+        assert!(!http_url(""));
     }
 
     #[test]

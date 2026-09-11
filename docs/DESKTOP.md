@@ -191,23 +191,23 @@ rather than changing the user's option or risking broadcast.
 
 ## Scrolling, selection, and copying
 
-Wheel handling follows the pane, not a global shortcut. If the application
-enabled mouse reporting (DEC 1000/1002/1003), the wheel is sent as CSI mouse
-bytes at the hovered cell. If it is on the alternate screen without mouse
-reporting, the wheel is CSI Up/Down, matching xterm alternate-scroll. Those
-are bytes, never tmux key names — `send-keys WheelUp` is typed as the word
-`WheelUp`. Otherwise the wheel examines local terminal history. One tick is
-40 points, one egui line; leftover smoothing after a notch is accumulated so
-it cannot add extra ticks. Typing, paste, and other keyboard input jump that
-local history back to the live tip, the way a conventional terminal does.
-The wheel does not.
+Wheel handling follows the pane, not a global shortcut. Shift+wheel always
+scrolls local history. Otherwise: mouse reporting on the alternate screen
+sends CSI mouse-wheel bytes (vim); other application-wheel panes get tmux
+`Up`/`Down` (never the key name `WheelUp`, which tmux types as text);
+everything else scrolls local history. Discrete mouse notches are one remote
+tick each. Typing, paste, and other keyboard input jump local history back
+to the live tip; the wheel does not.
 
-Unmodified left clicks are forwarded the same way when the pane asked for mouse
-reports: a press and a release at the cell. Shift/Ctrl/Alt/Cmd clicks, drags,
-double-clicks, and triple-clicks stay local. Drag to select, double-click for a
-word, and triple-click for a line. Selection anchors live in the terminal
-model, so they follow incoming scrolls. Copying handles wide cells, combining
-characters, and soft wraps, with a 1 MiB output limit.
+Unmodified left clicks on an OSC 8 `http`/`https` hyperlink open in the local
+browser (device-login "click here"). Other URIs are ignored. If a browser
+cannot be started, the URL is copied instead. Unmodified left clicks are
+otherwise forwarded when the pane asked for mouse reports: a press and a
+release at the cell. Shift/Ctrl/Alt/Cmd clicks, drags, double-clicks, and
+triple-clicks stay local. Drag to select, double-click for a word, and
+triple-click for a line. Selection anchors live in the terminal model, so they
+follow incoming scrolls. Copying handles wide cells, combining characters, and
+soft wraps, with a 1 MiB output limit.
 
 Focus a connected pane, then drop up to eight files onto the window to upload
 them over SFTP into the remote temp directory (`/tmp`), under unique
