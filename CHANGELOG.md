@@ -53,8 +53,8 @@ Tabs, mouse, paste, session create, SFTP drops, and an About panel after
 - **Zoom scroll.** Maximizing or restoring a pane keeps the local history
   viewport, including when you were following the live tip. A copied offset
   no longer overscrolls or unsticks the tip. Typing and paste jump local
-  history back to the live tip. Clicking an OSC 8 http(s) link opens it in
-  the local browser so remote device-login screens can finish.
+  history back to the live tip. Clicking an OSC 8 hyperlink copies its target
+  to the clipboard, since the URL is a cell attribute and not selectable text.
 - **OpenTUI frames.** Remote output stays pending until the terminal is
   painted, and a deferred remote wake is forced once the fps interval
   elapses, so an erase-then-redraw (OpenCode and similar) cannot leave a

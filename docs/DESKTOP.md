@@ -199,9 +199,9 @@ everything else scrolls local history. Discrete mouse notches are one remote
 tick each. Typing, paste, and other keyboard input jump local history back
 to the live tip; the wheel does not.
 
-Unmodified left clicks on an OSC 8 `http`/`https` hyperlink open in the local
-browser (device-login "click here"). Other URIs are ignored. If a browser
-cannot be started, the URL is copied instead. Unmodified left clicks are
+Unmodified left clicks on an OSC 8 hyperlink copy its target to the clipboard.
+The URL is a cell attribute, not on-screen text, so a plain selection cannot
+reach it; copying lets you paste it into a browser. Unmodified left clicks are
 otherwise forwarded when the pane asked for mouse reports: a press and a
 release at the cell. Shift/Ctrl/Alt/Cmd clicks, drags, double-clicks, and
 triple-clicks stay local. Drag to select, double-click for a word, and

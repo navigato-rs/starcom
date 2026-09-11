@@ -427,20 +427,22 @@ impl PaneUi {
                             && response.clicked()
                             && !response.double_clicked()
                             && !response.triple_clicked();
-                        // OSC 8 links open locally: a remote TUI cannot launch
-                        // this machine's browser (device-login "click here").
-                        let opened_link = !frozen
+                        // A click on an OSC 8 hyperlink copies its target. The
+                        // URL is a cell attribute, not on-screen text, so a
+                        // plain selection cannot reach it.
+                        let copied_link = !frozen
                             && single_click
                             && pane.terminal.hyperlink_at(point).is_some_and(|uri| {
-                                activate_hyperlink(ui.ctx(), &uri, notice, notice_until)
+                                copy(ui.ctx(), uri, notice, notice_until, "Link copied!");
+                                true
                             });
-                        if opened_link {
+                        if copied_link {
                             pane.terminal.clear_selection();
                         }
                         // Unmodified single clicks belong to the application
                         // when it asked for them. Drags, modified clicks, and
                         // double/triple clicks stay local selection.
-                        let forward_click = !frozen && mouse && single_click && !opened_link;
+                        let forward_click = !frozen && mouse && single_click && !copied_link;
                         if forward_click {
                             let (column, row) = screen_cell(
                                 position,
@@ -941,58 +943,6 @@ fn paint_chrome_icon(
     }
 }
 
-/// Remote OSC 8 URIs are untrusted. Only http(s) without controls or spaces.
-fn http_url(uri: &str) -> bool {
-    uri.len() <= 2048
-        && !uri.chars().any(|ch| ch.is_control() || ch.is_whitespace())
-        && (uri.starts_with("https://") || uri.starts_with("http://"))
-}
-
-fn open_http_url(uri: &str) -> Result<(), ()> {
-    if !http_url(uri) {
-        return Err(());
-    }
-    let mut command = if cfg!(target_os = "macos") {
-        let mut command = std::process::Command::new("open");
-        command.arg(uri);
-        command
-    } else if cfg!(windows) {
-        let mut command = std::process::Command::new("cmd");
-        command.args(["/C", "start", "", uri]);
-        command
-    } else {
-        let mut command = std::process::Command::new("xdg-open");
-        command.arg(uri);
-        command
-    };
-    command
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map(|_| ())
-        .map_err(|_| ())
-}
-
-fn activate_hyperlink(
-    ctx: &egui::Context,
-    uri: &str,
-    notice: &mut Option<String>,
-    notice_until: &mut Option<std::time::Instant>,
-) -> bool {
-    if !http_url(uri) {
-        return false;
-    }
-    if open_http_url(uri).is_ok() {
-        *notice = Some("Opened in browser.".to_owned());
-        *notice_until = Some(std::time::Instant::now() + std::time::Duration::from_secs(2));
-        true
-    } else {
-        copy(ctx, uri.to_owned(), notice, notice_until, "Copied URL.");
-        true
-    }
-}
-
 pub fn copy(
     ctx: &egui::Context,
     text: String,
@@ -1122,17 +1072,6 @@ mod tests {
         assert!(frozen.r() > frozen.g(), "hue is kept, only dimmed");
         assert!(frozen.r() < 255);
         assert!(frozen.r() > BACKGROUND.r());
-    }
-
-    #[test]
-    fn only_http_urls_are_opened() {
-        assert!(http_url("https://github.com/login/device"));
-        assert!(http_url("http://127.0.0.1:8080/callback"));
-        assert!(!http_url("javascript:alert(1)"));
-        assert!(!http_url("file:///etc/passwd"));
-        assert!(!http_url("https://example.com/a b"));
-        assert!(!http_url("https://example.com/\n"));
-        assert!(!http_url(""));
     }
 
     #[test]
