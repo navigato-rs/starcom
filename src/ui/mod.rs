@@ -280,6 +280,9 @@ pub enum Action {
     /// confirmed button press, never from a failed attach.
     CreateSession(desktop::Connection),
     Disconnect,
+    /// The remote session ended (last pane `exit`, detach, or tmux gone).
+    /// Close the tab; do not leave a gray frozen view.
+    SessionGone,
     /// Rename the attached tmux session. The worker updates the tab label
     /// after tmux accepts the name.
     RenameSession(String),
@@ -585,7 +588,7 @@ impl DesktopUi {
                 desktop::Phase::Disconnected | desktop::Phase::Failed
             )
         {
-            return Action::Disconnect;
+            return Action::SessionGone;
         }
         match self.screen {
             Screen::Connection => self.show_connection(root, state),
@@ -2387,14 +2390,14 @@ mod tests {
         assert_eq!(ui.screen, Screen::Terminal);
         state.phase = desktop::Phase::Failed;
         state.failure = Some(reconnect::Failure::MissingSession);
-        assert!(matches!(paint(&mut ui, &mut state), Action::Disconnect));
+        assert!(matches!(paint(&mut ui, &mut state), Action::SessionGone));
         let mut ui = DesktopUi::default();
         let mut state = desktop::State::interactive_demo().unwrap();
         paint(&mut ui, &mut state);
         state.phase = desktop::Phase::Failed;
         state.failure = Some(reconnect::Failure::ServerExit);
         assert!(
-            matches!(paint(&mut ui, &mut state), Action::Disconnect),
+            matches!(paint(&mut ui, &mut state), Action::SessionGone),
             "a tmux server/session end is not a reconnect"
         );
     }

@@ -84,6 +84,7 @@ fn history_viewport(
     row_height: f32,
     history: usize,
     was_stuck: bool,
+    user_scrolled: bool,
 ) -> HistoryViewport {
     if at_live_tip(scroll_y, content_height, view_height) {
         return HistoryViewport {
@@ -96,6 +97,16 @@ fn history_viewport(
     // user scroll to the oldest line. Treating it as the latter locks the view
     // on blank history after a reconnect (empty frozen panes).
     if was_stuck && scroll_y <= 1.0 {
+        return HistoryViewport {
+            stuck: true,
+            frac: 0.0,
+            offset: 0,
+        };
+    }
+    // OpenTUI apps erase then redraw. Content height jumps, egui keeps the old
+    // offset for a frame, and that looks like a user scroll into the blank
+    // erase. Stay on the live tip unless the wheel actually moved.
+    if was_stuck && !user_scrolled {
         return HistoryViewport {
             stuck: true,
             frac: 0.0,
@@ -322,7 +333,7 @@ impl PaneUi {
                             // what made Grok (and similar TUIs) treat a scroll
                             // as a selection. Alternate-screen mouse apps such
                             // as vim still get the mouse protocol.
-                            if mouse && pane.terminal.is_alternate_screen() {
+                            if mouse {
                                 let (column, row) = response
                                     .hover_pos()
                                     .map(|position| {
@@ -342,14 +353,10 @@ impl PaneUi {
                                     )));
                                 }
                             } else {
-                                let key = if up {
-                                    input::Key::WheelUp
-                                } else {
-                                    input::Key::WheelDown
-                                };
+                                // Bytes, never `send-keys WheelUp`: tmux types
+                                // unknown key names as literal text.
                                 for _ in 0..n {
-                                    events
-                                        .push(input::Action::Key(key, input::Modifiers::default()));
+                                    events.push(input::Action::Bytes(input::arrow_bytes(up)));
                                 }
                             }
                         }
@@ -643,6 +650,8 @@ impl PaneUi {
                         }
                     }
                 });
+                let user_scrolled =
+                    !wants_wheel && ui.input(|input| input.smooth_scroll_delta.y.abs() > 0.1);
                 let viewport = history_viewport(
                     output.state.offset.y,
                     output.content_size.y,
@@ -650,6 +659,7 @@ impl PaneUi {
                     row_height,
                     history,
                     self.stuck,
+                    user_scrolled,
                 );
                 self.stuck = viewport.stuck;
                 self.scroll_frac = viewport.frac;
@@ -1055,22 +1065,27 @@ mod tests {
 
     #[test]
     fn history_viewport_at_the_tip_clears_the_offset() {
-        let tip = history_viewport(1200.0, 2000.0, 800.0, 20.0, 60, true);
+        let tip = history_viewport(1200.0, 2000.0, 800.0, 20.0, 60, true, false);
         assert!(tip.stuck);
         assert_eq!(tip.frac, 0.0);
         assert_eq!(tip.offset, 0);
-        let mid = history_viewport(800.0, 2000.0, 800.0, 20.0, 60, true);
+        let mid = history_viewport(800.0, 2000.0, 800.0, 20.0, 60, true, true);
         assert!(!mid.stuck);
         assert!((mid.frac - 0.0).abs() < 0.01);
         assert_eq!(mid.offset, 20);
+        let redraw = history_viewport(800.0, 2000.0, 800.0, 20.0, 60, true, false);
+        assert!(
+            redraw.stuck,
+            "content-height jumps while following the tip are not a user scroll"
+        );
     }
 
     #[test]
     fn a_lost_tip_offset_does_not_lock_onto_the_oldest_line() {
-        let lost = history_viewport(0.0, 2000.0, 800.0, 20.0, 60, true);
+        let lost = history_viewport(0.0, 2000.0, 800.0, 20.0, 60, true, false);
         assert!(lost.stuck);
         assert_eq!(lost.offset, 0);
-        let from_top = history_viewport(0.0, 2000.0, 800.0, 20.0, 60, false);
+        let from_top = history_viewport(0.0, 2000.0, 800.0, 20.0, 60, false, false);
         assert!(!from_top.stuck);
         assert_eq!(from_top.offset, 60);
     }

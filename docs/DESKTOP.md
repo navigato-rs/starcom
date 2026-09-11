@@ -192,13 +192,15 @@ rather than changing the user's option or risking broadcast.
 ## Scrolling, selection, and copying
 
 Wheel handling follows the pane, not a global shortcut. If the application
-enabled mouse reporting (DEC 1000/1002/1003), the wheel is sent as a mouse
-report at the hovered cell. If it is on the alternate screen without mouse
-reporting, the wheel becomes Up/Down, matching xterm alternate-scroll. Otherwise
-the wheel examines local terminal history. One tick is 40 points, one egui
-line; leftover smoothing after a notch is accumulated so it cannot add extra
-ticks. Typing, paste, and other keyboard input jump that local history back
-to the live tip, the way a conventional terminal does. The wheel does not.
+enabled mouse reporting (DEC 1000/1002/1003), the wheel is sent as CSI mouse
+bytes at the hovered cell. If it is on the alternate screen without mouse
+reporting, the wheel is CSI Up/Down, matching xterm alternate-scroll. Those
+are bytes, never tmux key names — `send-keys WheelUp` is typed as the word
+`WheelUp`. Otherwise the wheel examines local terminal history. One tick is
+40 points, one egui line; leftover smoothing after a notch is accumulated so
+it cannot add extra ticks. Typing, paste, and other keyboard input jump that
+local history back to the live tip, the way a conventional terminal does.
+The wheel does not.
 
 Unmodified left clicks are forwarded the same way when the pane asked for mouse
 reports: a press and a release at the cell. Shift/Ctrl/Alt/Cmd clicks, drags,
@@ -281,8 +283,9 @@ block the resize transaction.
 
 **Exit** returns to the connection form. The form fields stay so you can
 reconnect. An empty form is closed instead of remaining as a New connection
-chip. Typing `exit` in the last pane of the session does the same. It is
-available in every connection phase, including **Connection failed**.
+chip. It is available in every connection phase, including **Connection failed**.
+If the remote session itself ends — last pane `exit`, an explicit detach, or
+tmux going away — the tab is closed instead of sitting on a gray last view.
 
 **Reconnect automatically after connection loss** is on by default in the
 connection form. Only transport loss is retried. That includes a TCP drop, a

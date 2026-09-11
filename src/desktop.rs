@@ -451,6 +451,8 @@ impl Client {
         if let Some(ref wake) = state.io_wake {
             wake.notify();
         }
+        drop(state);
+        self.shared.1.notify_one();
         Ok(())
     }
 
