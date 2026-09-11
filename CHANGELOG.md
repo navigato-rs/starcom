@@ -61,13 +61,15 @@ Tabs, mouse, paste, session create, SFTP drops, and an About panel after
 - **Terminal polish.** Zoomed panes show a distinct restore icon. Activity uses
   a fixed-size three-dot pulse instead of spinning or shape-shifting glyphs.
   Shift-Enter and Shift-Backspace fall back to Enter and BSpace instead of
-  allowing `S-Enter` or `S-BSpace` to appear as literal input. Wheel over a
-  primary-screen mouse-reporting TUI is sent as WheelUp/Down, not as a mouse
-  button, so it scrolls instead of selecting. Dragging pane contents selects;
-  the wheel and scrollbar scroll. The status pulse advances only when the
+  allowing `S-Enter` or `S-BSpace` to appear as literal input. The wheel is
+  never a tmux key name (`WheelUp` was typed as text). Mouse-reporting apps
+  get CSI wheel bytes; alternate-screen apps without mouse get CSI arrows;
+  otherwise the wheel scrolls local history. Dragging pane contents selects;
+  the scrollbar still scrolls. The status pulse advances only when the
   selected terminal changes or scrolls; hidden-tab output no longer repaints
   an unchanged selected terminal. Move arrows account for tmux's separator
-  cell.
+  cell. Typing `exit` in the last pane closes the tab instead of leaving a
+  gray frozen view.
 - **History.** The default local history depth is 1000 lines, matching the
   snapshot cap.
 - **Sunset.** Pinned to `navigato-rs/sunset` `c245252`, which includes the

@@ -395,6 +395,7 @@ impl Workspace {
     /// terminal.
     pub(crate) fn remote_changed(&mut self) -> bool {
         let mut repaint = self.local_dirty;
+        let mut echo = false;
         let now = time::Instant::now();
         for (index, tab) in self.tabs.iter_mut().enumerate() {
             let state = tab.client.lock();
@@ -421,6 +422,9 @@ impl Workspace {
             if visible || chip {
                 repaint = true;
             }
+            if visible && display_changed {
+                echo = true;
+            }
             if !visible {
                 tab.last_revision = revision;
                 if phase_changed || display_changed {
@@ -441,6 +445,11 @@ impl Workspace {
             }
         }
         drop(state);
+        if echo {
+            // OpenTUI erase-then-redraw is two frames inside one fps slot;
+            // the echo window lets the real frame paint.
+            self.echo_until = Some(now + time::Duration::from_millis(400));
+        }
         repaint
     }
 
@@ -1164,6 +1173,11 @@ impl Workspace {
                                 }
                                 Ok(())
                             }
+                            ui::Action::SessionGone => {
+                                close_after_exit = Some(id);
+                                tab.client.disconnect();
+                                Ok(())
+                            }
                             // Resolve clipboard reads in place so the whole frame
                             // still reaches the worker as one ordered, atomic batch.
                             ui::Action::Frame(steps) => {
@@ -1357,6 +1371,22 @@ mod tests {
         assert_eq!(workspace.tabs.len(), 1);
         assert_eq!(workspace.tabs[0].label, "dev / work");
         assert!(workspace.tabs[0].ui.showing_form());
+    }
+
+    #[test]
+    fn a_gone_session_closes_the_tab() {
+        let mut workspace = Workspace::new(sync::Arc::new(|| {}), desktop::Startup::Demo).unwrap();
+        workspace.tabs[0].ui.restore(store::Tab {
+            destination: "dev".into(),
+            host: "10.0.0.2".into(),
+            session: "work".into(),
+            ..store::Tab::default()
+        });
+        workspace.tabs[0].label = label(&workspace.tabs[0].ui.saved());
+        let id = workspace.tabs[0].id;
+        workspace.apply(Action::Tab(id, Box::new(ui::Action::SessionGone)), || None);
+        assert!(workspace.tabs.iter().all(|tab| tab.id != id));
+        assert!(workspace.composer_open);
     }
 
     #[test]

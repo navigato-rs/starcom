@@ -79,7 +79,9 @@ impl Command {
     /// spaces and shell metacharacters cannot become extra tmux syntax.
     pub fn rename_session(session: tmuxctl::SessionId, name: &crate::core::SessionName) -> Self {
         let quoted = shell_quote(name.as_str()).expect("SessionName is shell-quotable");
-        Self(format!("rename-session -t {session} {quoted}\n"))
+        // `$` in `$0` is tmux format/env expansion unless quoted.
+        let target = shell_quote(&session.to_string()).expect("session ids are quotable");
+        Self(format!("rename-session -t {target} {quoted}\n"))
     }
 
     /// One axis only. The window's total size comes from `client_size`.
@@ -194,7 +196,7 @@ mod tests {
                 &crate::core::SessionName::new("work").unwrap()
             )
             .as_str(),
-            "rename-session -t $3 'work'\n"
+            "rename-session -t '$3' 'work'\n"
         );
         assert_eq!(
             Command::rename_session(
@@ -202,7 +204,7 @@ mod tests {
                 &crate::core::SessionName::new("work's; $(false)").unwrap()
             )
             .as_str(),
-            "rename-session -t $0 'work'\"'\"'s; $(false)'\n"
+            "rename-session -t '$0' 'work'\"'\"'s; $(false)'\n"
         );
         assert_eq!(
             command.as_bytes().iter().filter(|&&b| b == b'\n').count(),
