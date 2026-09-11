@@ -63,8 +63,8 @@ pub(crate) struct Workspace {
     /// Seconds this install has been open across launches. Updated on persist.
     open_secs: u64,
     session_started: time::Instant,
-    /// Remote frames run this fast after keys or wheel, so echo is not stuck
-    /// on the idle fps cap. None when idle.
+    /// After a keystroke, remote paint may run faster until this instant —
+    /// one idle refresh interval, not a fixed window. None when idle.
     echo_until: Option<time::Instant>,
     /// GUI-side copy of the last event-loop clock, used to notice a machine
     /// sleep while the SSH worker is blocked in poll.
@@ -373,9 +373,8 @@ impl Workspace {
         time::Duration::from_secs_f64(1.0 / f64::from(store::clamp_fps(self.fps)))
     }
 
-    /// Idle remote paint uses `fps` from the saved workspace. After we sent
-    /// input, echo is allowed up to 20 fps for a short window so typing is not
-    /// 200ms behind.
+    /// Idle remote paint uses `fps` from the saved workspace. After a key, the
+    /// next idle slot may run at up to 20 fps so echo is not a full cycle late.
     pub(crate) fn paint_interval(&self) -> time::Duration {
         let idle = self.repaint_interval();
         if self
@@ -386,6 +385,10 @@ impl Workspace {
         } else {
             idle
         }
+    }
+
+    fn arm_echo(&mut self) {
+        self.echo_until = Some(time::Instant::now() + self.repaint_interval());
     }
 
     /// Report whether anything currently visible changed. Worker revisions for
@@ -446,9 +449,7 @@ impl Workspace {
         }
         drop(state);
         if echo {
-            // OpenTUI erase-then-redraw is two frames inside one fps slot;
-            // the echo window lets the real frame paint.
-            self.echo_until = Some(now + time::Duration::from_millis(400));
+            self.arm_echo();
         }
         repaint
     }
@@ -1221,8 +1222,7 @@ impl Workspace {
                         }
                     }
                     if follow_input {
-                        self.echo_until =
-                            Some(time::Instant::now() + time::Duration::from_millis(400));
+                        self.arm_echo();
                     }
                     if save {
                         self.persist();
@@ -1907,8 +1907,11 @@ mod tests {
         let idle = workspace.repaint_interval();
         assert_eq!(workspace.paint_interval(), idle);
         let mut workspace = workspace;
-        workspace.echo_until = Some(time::Instant::now() + time::Duration::from_millis(400));
-        assert_eq!(workspace.paint_interval(), time::Duration::from_millis(50));
+        workspace.arm_echo();
+        assert_eq!(
+            workspace.paint_interval(),
+            idle.min(time::Duration::from_millis(50))
+        );
         workspace.echo_until = Some(time::Instant::now() - time::Duration::from_millis(1));
         assert_eq!(workspace.paint_interval(), idle);
     }

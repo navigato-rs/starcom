@@ -236,8 +236,8 @@ sent to measure it.
 Remote pane output is redrawn at most 5 times per second by default (`fps` in
 `workspace.conf`; `etc/workspace.conf.example` is the documented file). Buttons,
 hover, typing, and other local UI stay immediate. After keys or wheel are sent,
-remote frames run at up to 20 fps for a short time so the echo does not wait on
-the idle cap. Output in a hidden tab keeps that tab's activity/quiet state
+the next idle refresh slot may run at up to 20 fps so the echo is not a full
+cycle late. Output in a hidden tab keeps that tab's activity/quiet state
 accurate but does not repaint an unchanged selected terminal. A remote wake
 stays pending until the selected terminal is actually painted, and a deferred
 remote redraw is forced once the fps interval elapses, so an application that
