@@ -235,17 +235,6 @@ pub enum Error {
     ResizeSize,
 }
 
-/// CSI cursor up/down. Alternate-screen apps that did not enable mouse
-/// reporting still want the same bytes a real tty sends for the wheel, not a
-/// tmux key name (those leak as the words `WheelUp` / `WheelDown`).
-pub fn arrow_bytes(up: bool) -> Vec<u8> {
-    if up {
-        b"\x1b[A".to_vec()
-    } else {
-        b"\x1b[B".to_vec()
-    }
-}
-
 /// CSI mouse wheel report at a 0-based pane cell. Used when the application
 /// enabled 1000/1002/1003 so local history scrolling would steal its input.
 pub fn mouse_wheel_bytes(up: bool, column: usize, row: usize, sgr: bool) -> Vec<u8> {
@@ -347,8 +336,6 @@ mod tests {
 
     #[test]
     fn mouse_wheel_reports_sgr_and_x10() {
-        assert_eq!(arrow_bytes(true), b"\x1b[A");
-        assert_eq!(arrow_bytes(false), b"\x1b[B");
         assert_eq!(mouse_wheel_bytes(true, 0, 0, true), b"\x1b[<64;1;1M");
         assert_eq!(mouse_wheel_bytes(false, 9, 4, true), b"\x1b[<65;10;5M");
         assert_eq!(
