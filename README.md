@@ -63,13 +63,14 @@ cargo run --release --locked
 cargo run --release --locked -- --demo
 ```
 
-Use **+** to open a connection tab. Pick a `Host` from `~/.ssh/config` or type
+Use **+** to open the connection screen. Pick a `Host` from `~/.ssh/config` or type
 another destination; Starcom resolves supported user/host/port/key settings and
 resolves ProxyJump through Sunset’s shared client and reports unsupported policy
 instead of bypassing it.
 Choosing a known host lists its tmux sessions and selects the first one so
-**Connect** is the next click. Each tab is one session and one window of that
-session: its form or its panes, not both side by side.
+**Connect** is the next click. A tab is registered for that session while it
+connects; failed first attachments return to **+** for repair instead of leaving
+an empty tab. Each tab shows one window of one session.
 
 Tabs are saved and resumed automatically by reconnecting to their previous host
 and tmux session; this can be disabled in **About**. Startup uses the same SSH

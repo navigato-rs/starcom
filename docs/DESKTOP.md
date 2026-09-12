@@ -20,24 +20,21 @@ attach to a tmux server.
 
 ## Connection tabs
 
-A Starcom tab owns one connection form, one SSH/tmux client, one terminal view,
-and its pending input tokens. Use **+** or Ctrl-Shift-T (Cmd-T on macOS) to open
-the connection form on the plus chip itself. A registered tab is added only when
-you press **Connect**. Drag a tab to reorder the strip. **About** on the right of
-the strip opens a modal with the icon, version, GitHub URL, total time Starcom
-has been open, and the workspace `fps` / `idle` settings. The form is never a
-sidebar beside another session's panes.
+A registered Starcom tab owns one SSH/tmux client, one terminal view, and its
+pending input tokens. Use **+** or Ctrl-Shift-T (Cmd-T on macOS) to open the only
+connection form, on the plus chip itself. Pressing **Connect** promotes that
+composer to a registered tab while the attachment starts. Drag a tab to reorder
+the strip. **About** on the right opens a modal with the icon, version, GitHub
+URL, total time Starcom has been open, and the workspace `fps` / `idle` settings.
 
-After a successful connection, the terminal workspace replaces the form in that
-tab. A failed first attach stays on the form and shows why. **Exit**, and typing
-`exit` in the last shell, return to the form in the same tab. An empty form is
-dropped instead of leaving a stuck New connection chip; a named destination
-keeps its label so you can reconnect. Restored tabs that have not been attached
-this session keep their destination labels. Tabs are green while connected,
-including while a pane layout is rebuilt. They turn yellow while connecting or
-reconnecting, and use a yellow background with a light-red title after a failure.
-Ctrl-Shift-W/Cmd-W closes the tab and detaches that Starcom client; the tmux
-server and remote jobs continue running.
+The tab shows connection progress and then the terminal workspace. If the first
+attachment fails before producing a terminal view, its populated form and error
+move back to **+** for repair/retry; no empty registered tab remains. Background
+startup failures are removed as well. **Exit**, Ctrl-Shift-W/Cmd-W, and typing
+`exit` in the last shell close the registered tab and detach that Starcom client;
+the tmux server and remote jobs continue running. Tabs are green while connected,
+including while a pane layout is rebuilt, and yellow while connecting or
+reconnecting.
 
 A Starcom tab is one tmux session and shows one window of that session. A
 window picker is not in this increment. Double-click a connected tab to rename
@@ -105,9 +102,10 @@ and existing tmux session, and the active tab shows connection progress until
 its terminal view is rebuilt. Disable **Resume open tabs on startup** in
 **About** to begin future launches with an empty workspace instead. Identity
 files, `IdentitiesOnly`, and unsupported-policy blockers are re-read from
-`~/.ssh/config`, and normal host-key and authentication checks still apply. A
-tab whose saved settings are incomplete or no longer allowed stays on its form
-and shows the error; Starcom never silently creates a replacement session. A
+`~/.ssh/config`, and normal host-key and authentication checks still apply. If
+the active saved tab is incomplete or no longer allowed, its populated form and
+error move to **+**; an invalid background tab is skipped and reported. Starcom
+never silently creates a replacement session. A
 saved pane is used only if it still exists in the fresh tmux snapshot. If it
 was closed, Starcom selects a visible pane in the saved window, or the first
 available window if that window also disappeared. A pane moved to another
@@ -283,11 +281,12 @@ block the resize transaction.
 
 ## Disconnect and exit behavior
 
-**Exit** returns to the connection form. The form fields stay so you can
-reconnect. An empty form is closed instead of remaining as a New connection
-chip. It is available in every connection phase, including **Connection failed**.
-If the remote session itself ends — last pane `exit`, an explicit detach, or
-tmux going away — the tab is closed instead of sitting on a gray last view.
+**Exit** closes the registered tab and drops its attachment; remote jobs keep
+running. To connect somewhere else, use **+**, which is the only connection
+form. If an initial attachment fails before a view exists, its fields and error
+move onto **+** so it can be repaired without leaving an empty tab. If the remote
+session itself ends — last pane `exit`, an explicit detach, or tmux going away —
+the tab is closed instead of sitting on a gray last view.
 
 **Reconnect automatically after connection loss** is on by default in the
 connection form. Only transport loss is retried. That includes a TCP drop, a

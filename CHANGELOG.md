@@ -10,6 +10,9 @@
 - Treat paste text beginning with `-` as buffer data, not `set-buffer` options.
   The exact `--no-version-check --store-token` regression is covered by the
   isolated SSH/tmux input test.
+- Keep the connection form exclusively on **+**. Failed first attachments move
+  there with their fields and error intact, background failures are retired,
+  and **Exit** removes its registered session tab.
 
 
 ## v0.2.0
