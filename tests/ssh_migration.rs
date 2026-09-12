@@ -20,6 +20,7 @@ fn options() -> ssh::Options {
         known_hosts: root().join("known_hosts"),
         authentication: ssh::Authentication::identity(root().join("id_ed25519")),
         host_key_alias: None,
+        strict_host_key_checking: ssh::StrictHostKeyChecking::Yes,
         timeout: time::Duration::from_secs(5),
         jumps: Vec::new(),
     }

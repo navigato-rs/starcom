@@ -187,7 +187,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -198,7 +198,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1234,7 +1234,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2118,7 +2118,7 @@ version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "536bfad37a309d62069485248eeaba1e8d9853aaf951caaeaed0585a95346f08"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3232,7 +3232,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3850,7 +3850,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 [[package]]
 name = "sunset"
 version = "0.6.0"
-source = "git+https://github.com/navigato-rs/sunset?rev=65f8859e33c2e9c7a4ed97b950798c1dcc888787#65f8859e33c2e9c7a4ed97b950798c1dcc888787"
+source = "git+https://github.com/navigato-rs/sunset?rev=09708add6c803d8f5a679a8050d52e1e1c11980e#09708add6c803d8f5a679a8050d52e1e1c11980e"
 dependencies = [
  "aes",
  "ascii",
@@ -3881,7 +3881,7 @@ dependencies = [
 [[package]]
 name = "sunset-client"
 version = "0.1.0"
-source = "git+https://github.com/navigato-rs/sunset?rev=65f8859e33c2e9c7a4ed97b950798c1dcc888787#65f8859e33c2e9c7a4ed97b950798c1dcc888787"
+source = "git+https://github.com/navigato-rs/sunset?rev=09708add6c803d8f5a679a8050d52e1e1c11980e#09708add6c803d8f5a679a8050d52e1e1c11980e"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3898,7 +3898,7 @@ dependencies = [
 [[package]]
 name = "sunset-sftp"
 version = "0.2.0"
-source = "git+https://github.com/navigato-rs/sunset?rev=65f8859e33c2e9c7a4ed97b950798c1dcc888787#65f8859e33c2e9c7a4ed97b950798c1dcc888787"
+source = "git+https://github.com/navigato-rs/sunset?rev=09708add6c803d8f5a679a8050d52e1e1c11980e#09708add6c803d8f5a679a8050d52e1e1c11980e"
 dependencies = [
  "log",
  "num_enum",
@@ -3910,7 +3910,7 @@ dependencies = [
 [[package]]
 name = "sunset-sshwire-derive"
 version = "0.3.0"
-source = "git+https://github.com/navigato-rs/sunset?rev=65f8859e33c2e9c7a4ed97b950798c1dcc888787#65f8859e33c2e9c7a4ed97b950798c1dcc888787"
+source = "git+https://github.com/navigato-rs/sunset?rev=09708add6c803d8f5a679a8050d52e1e1c11980e#09708add6c803d8f5a679a8050d52e1e1c11980e"
 dependencies = [
  "virtue",
 ]
@@ -4609,7 +4609,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

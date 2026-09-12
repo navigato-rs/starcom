@@ -55,6 +55,7 @@ pub struct Form {
     identity_files: Vec<String>,
     identities_only: bool,
     host_key_alias: Option<String>,
+    strict_host_key_checking: ssh::StrictHostKeyChecking,
     jumps: Vec<ssh::Options>,
     known_hosts: String,
     socket: String,
@@ -77,6 +78,7 @@ impl Default for Form {
             identity_files: Vec::new(),
             identities_only: false,
             host_key_alias: None,
+            strict_host_key_checking: ssh::StrictHostKeyChecking::Yes,
             jumps: Vec::new(),
             known_hosts: desktop::home_path()
                 .map(|path| path.join(".ssh/known_hosts").to_string_lossy().into_owned())
@@ -133,6 +135,7 @@ impl Form {
             identity_files: Vec::new(),
             identities_only: false,
             host_key_alias: None,
+            strict_host_key_checking: ssh::StrictHostKeyChecking::Yes,
             jumps: Vec::new(),
             known_hosts: saved.known_hosts,
             socket: saved.socket,
@@ -180,6 +183,7 @@ impl Form {
         }
         self.identities_only = profile.identities_only;
         self.host_key_alias.clone_from(&profile.host_key_alias);
+        self.strict_host_key_checking = profile.strict_host_key_checking;
         if let Some(ref known_hosts) = profile.known_hosts {
             self.known_hosts = known_hosts.to_string_lossy().into_owned();
         }
@@ -244,6 +248,7 @@ impl Form {
             authentication,
             known_hosts: local_path(&self.known_hosts)?,
             host_key_alias: self.host_key_alias.clone(),
+            strict_host_key_checking: self.strict_host_key_checking,
             timeout: time::Duration::from_secs(30),
             jumps: self.jumps.clone(),
         };
@@ -498,6 +503,7 @@ impl DesktopUi {
             self.form.identity_files.clear();
             self.form.identities_only = false;
             self.form.host_key_alias = None;
+            self.form.strict_host_key_checking = ssh::StrictHostKeyChecking::Yes;
             return;
         }
         match self.config.resolve(&destination) {
