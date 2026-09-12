@@ -176,6 +176,32 @@ fn app_wheel_ticks(ui: &egui::Ui, remainder: &mut f32) -> i32 {
     ticks.clamp(-8, 8)
 }
 
+fn terminal_scroll_source(to_app: bool) -> egui::scroll_area::ScrollSource {
+    if to_app {
+        // Application wheel handling and the local scrollbar are independent.
+        // Codex/Grok can own wheel events without disabling history-thumb drag.
+        egui::scroll_area::ScrollSource::SCROLL_BAR
+    } else {
+        egui::scroll_area::ScrollSource::SCROLL_BAR | egui::scroll_area::ScrollSource::MOUSE_WHEEL
+    }
+}
+
+fn vertical_scrollbar_rect(outer: egui::Rect, width: f32) -> egui::Rect {
+    outer.with_min_x((outer.right() - width).max(outer.left()))
+}
+
+fn terminal_interact_rect(
+    content: egui::Rect,
+    clip: egui::Rect,
+    floating_scrollbar: Option<egui::Rect>,
+) -> egui::Rect {
+    let mut interact = content.intersect(clip);
+    if let Some(scrollbar) = floating_scrollbar {
+        interact.max.x = interact.max.x.min(scrollbar.left()).max(interact.min.x);
+    }
+    interact
+}
+
 impl PaneUi {
     /// A snapshot replace rebuilds the Alacritty model at offset 0. If the
     /// previous model was scrolled, stay unstuck so the copied offset paints.
@@ -276,14 +302,28 @@ impl PaneUi {
                 let sgr_mouse = pane.terminal.sgr_mouse();
                 let shift_scroll = ui.input(|input| input.modifiers.shift);
                 let to_app = wants_wheel && !shift_scroll;
+                let scroll_outer = ui.available_rect_before_wrap();
+                let scroll_style = ui.spacing().scroll;
+                let scrollable = total_rows as f32 * row_height > scroll_outer.height() + 1.0;
+                let scrollbar = scrollable
+                    .then(|| vertical_scrollbar_rect(scroll_outer, scroll_style.bar_width));
+                let scrollbar_scrolled = scrollbar.is_some_and(|bar| {
+                    ui.input(|input| {
+                        input.pointer.primary_down()
+                            && input
+                                .pointer
+                                .press_origin()
+                                .is_some_and(|origin| bar.contains(origin))
+                    })
+                });
                 // Sample the wheel before the ScrollArea runs: it zeroes
                 // smooth_scroll_delta the instant it consumes a notch, so
                 // reading it after show_rows always saw zero. That made a
                 // stuck pane treat every real wheel scroll as an OpenTUI
                 // content-height jump and snap straight back to the live tip,
                 // i.e. local history scrolling looked completely dead.
-                let user_scrolled =
-                    !to_app && ui.input(|input| input.smooth_scroll_delta.y.abs() > 0.1);
+                let user_scrolled = scrollbar_scrolled
+                    || !to_app && ui.input(|input| input.smooth_scroll_delta.y.abs() > 0.1);
                 // Follow the live tip with content-minus-view, not the content
                 // height: show_rows applies the offset before clamp, and an
                 // offset at the content height sits past the last row. Once
@@ -293,14 +333,9 @@ impl PaneUi {
                     .id_salt(("starcom-scroll", pane_id.0))
                     .auto_shrink([false, false])
                     .stick_to_bottom(self.stuck)
-                    .scroll_source(if to_app {
-                        egui::scroll_area::ScrollSource::NONE
-                    } else {
-                        // Wheel and the scrollbar scroll. Dragging the
-                        // contents is local selection, not a pan.
-                        egui::scroll_area::ScrollSource::SCROLL_BAR
-                            | egui::scroll_area::ScrollSource::MOUSE_WHEEL
-                    });
+                    // Dragging contents is local selection, never a pan. The
+                    // scrollbar stays local even when wheel belongs to the app.
+                    .scroll_source(terminal_scroll_source(to_app));
                 let tip = tip_origin(total_rows, row_height, ui.available_height());
                 if self.stuck {
                     area = area.vertical_scroll_offset(tip);
@@ -315,8 +350,12 @@ impl PaneUi {
                         columns as f32 * cell_width,
                         range.len() as f32 * row_height,
                     ));
+                    let floating_scrollbar = (scroll_style.floating && scrollable)
+                        .then(|| vertical_scrollbar_rect(ui.clip_rect(), scroll_style.bar_width));
+                    let interact =
+                        terminal_interact_rect(content, ui.clip_rect(), floating_scrollbar);
                     let response = ui
-                        .interact(content, id, egui::Sense::click_and_drag())
+                        .interact(interact, id, egui::Sense::click_and_drag())
                         .on_hover_cursor(egui::CursorIcon::Text);
                     let point_at = |position: egui::Pos2| {
                         let row = (range.start as isize
@@ -363,7 +402,7 @@ impl PaneUi {
                         events.push(input::Action::SelectPane);
                     }
                     let pointer_in_pane =
-                        response.contains_pointer() || ui.rect_contains_pointer(content);
+                        response.contains_pointer() || ui.rect_contains_pointer(interact);
                     if to_app && pointer_in_pane {
                         let ticks = app_wheel_ticks(ui, remainder);
                         if ticks != 0 {
@@ -1089,6 +1128,32 @@ mod tests {
         assert_eq!(wheel_ticks(&mut remainder, -20.0), -1);
         assert_eq!(remainder, 0.0);
         assert_eq!(wheel_ticks(&mut remainder, 80.0), 4);
+    }
+
+    #[test]
+    fn application_wheel_mode_keeps_the_local_scrollbar() {
+        let app = terminal_scroll_source(true);
+        assert!(app.scroll_bar);
+        assert!(!app.mouse_wheel);
+        assert!(!app.drag);
+
+        let local = terminal_scroll_source(false);
+        assert!(local.scroll_bar);
+        assert!(local.mouse_wheel);
+        assert!(!local.drag, "dragging terminal text is selection");
+    }
+
+    #[test]
+    fn floating_scrollbar_gutter_is_not_terminal_input() {
+        let clip = egui::Rect::from_min_max(egui::pos2(10.0, 20.0), egui::pos2(210.0, 320.0));
+        let content = egui::Rect::from_min_max(egui::pos2(10.0, 20.0), egui::pos2(260.0, 420.0));
+        let scrollbar = vertical_scrollbar_rect(clip, 10.0);
+        let interact = terminal_interact_rect(content, clip, Some(scrollbar));
+
+        assert_eq!(scrollbar.x_range(), 200.0..=210.0);
+        assert_eq!(interact.right(), scrollbar.left());
+        assert!(interact.contains(egui::pos2(199.0, 100.0)));
+        assert!(!interact.contains(egui::pos2(205.0, 100.0)));
     }
 
     #[test]

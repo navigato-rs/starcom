@@ -197,7 +197,8 @@ mouse reporting receives terminal CSI cursor bytes. Starcom never substitutes
 tmux `Up`/`Down` or `WheelUp` key names for wheel input; everything else scrolls
 local history. Discrete mouse notches are one remote tick each. Typing, paste,
 and other keyboard input jump local history back to the live tip; the wheel does
-not.
+not. The scrollbar is always local history navigation, including when a TUI owns
+wheel events; its gutter cannot start selection or send mouse input remotely.
 
 Unmodified left clicks on an OSC 8 hyperlink copy its target to the clipboard.
 The URL is a cell attribute, not on-screen text, so a plain selection cannot
