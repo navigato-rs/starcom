@@ -4,6 +4,12 @@
 
 - Use Sunset's shared client for SSH configuration, trust, and ProxyJump routes.
 - Coalesce remote wakeups without dropping output; keep copy feedback at footer size.
+- Preserve wheel semantics: applications that enable mouse reporting receive
+  mouse-wheel bytes on either screen, while alternate-scroll uses terminal CSI
+  bytes instead of tmux `Up`/`Down` keys.
+- Treat paste text beginning with `-` as buffer data, not `set-buffer` options.
+  The exact `--no-version-check --store-token` regression is covered by the
+  isolated SSH/tmux input test.
 
 
 ## v0.2.0

@@ -178,7 +178,8 @@ Local clipboard shortcuts are:
 
 Paste is sent as soon as it is requested. It still rejects escape/C1 and other
 control characters except tabs and line endings; deliberate control input must
-come from key handling, not clipboard text.
+come from key handling, not clipboard text. Leading hyphens remain paste data
+and cannot be interpreted as tmux command options.
 
 Input is bound to the exact connection epoch, reconstructed-view generation, and
 pane identity in which it originated. Layout changes, reconnects, tab changes, or
@@ -192,12 +193,13 @@ rather than changing the user's option or risking broadcast.
 ## Scrolling, selection, and copying
 
 Wheel handling follows the pane, not a global shortcut. Shift+wheel always
-scrolls local history. Otherwise: mouse reporting on the alternate screen
-sends CSI mouse-wheel bytes (vim); other application-wheel panes get tmux
-`Up`/`Down` (never the key name `WheelUp`, which tmux types as text);
-everything else scrolls local history. Discrete mouse notches are one remote
-tick each. Typing, paste, and other keyboard input jump local history back
-to the live tip; the wheel does not.
+scrolls local history. Otherwise, an application that enabled mouse reporting
+receives CSI mouse-wheel bytes on either screen. Xterm alternate-scroll without
+mouse reporting receives terminal CSI cursor bytes. Starcom never substitutes
+tmux `Up`/`Down` or `WheelUp` key names for wheel input; everything else scrolls
+local history. Discrete mouse notches are one remote tick each. Typing, paste,
+and other keyboard input jump local history back to the live tip; the wheel does
+not.
 
 Unmodified left clicks on an OSC 8 hyperlink copy its target to the clipboard.
 The URL is a cell attribute, not on-screen text, so a plain selection cannot

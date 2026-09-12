@@ -119,7 +119,8 @@ stty -echo
 printf '\033[2J\033[HINPUT_READY\r\n'
 IFS= read -r first
 IFS= read -r second
-printf 'INPUT_RESULT:<%s>|<%s>\r\n' "$first" "$second"
+IFS= read -r third
+printf 'INPUT_RESULT:<%s>|<%s>|<%s>\r\n' "$first" "$second" "$third"
 exec sleep 600
 "#,
     )
@@ -240,16 +241,23 @@ exec sleep 600
             input::Action::Paste(input::Paste::new("world\n").unwrap()),
         )
         .unwrap();
+    client
+        .submit(
+            target,
+            input::Action::Paste(input::Paste::new("--no-version-check --store-token\n").unwrap()),
+        )
+        .unwrap();
 
     let result_deadline = time::Instant::now() + time::Duration::from_secs(10);
     loop {
         let present = client.with_view(|view| {
             view.and_then(|view| view.panes().get(&pane))
                 .is_some_and(|pane| {
-                    pane.terminal
-                        .screen_lines()
-                        .iter()
-                        .any(|line| line.contains("INPUT_RESULT:<hello>|<world>"))
+                    pane.terminal.screen_lines().iter().any(|line| {
+                        line.contains(
+                            "INPUT_RESULT:<hello>|<world>|<--no-version-check --store-token>",
+                        )
+                    })
                 })
         });
         if present {
@@ -299,7 +307,7 @@ exec sleep 600
     assert!(capture.status.success());
     assert_eq!(
         String::from_utf8_lossy(&capture.stdout)
-            .matches("INPUT_RESULT:<hello>|<world>")
+            .matches("INPUT_RESULT:<hello>|<world>|<--no-version-check --store-token>")
             .count(),
         1,
         "input or paste was duplicated"

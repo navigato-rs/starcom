@@ -110,7 +110,10 @@ impl Command {
         let mut commands = Vec::new();
         for (index, chunk) in paste.as_str().as_bytes().chunks(768).enumerate() {
             let append = if index == 0 { "" } else { "-a " };
-            let mut line = format!("set-buffer {append}-b {buffer} \"");
+            // `set-buffer` parses option-looking buffer contents even when the
+            // argument was quoted. End option parsing before the octal data so
+            // a paste beginning with `-` or `--` remains clipboard data.
+            let mut line = format!("set-buffer {append}-b {buffer} -- \"");
             for &byte in chunk {
                 line.push('\\');
                 line.push(char::from(b'0' + (byte >> 6)));
@@ -229,5 +232,20 @@ mod tests {
         assert!(Command::send_bytes(tmuxctl::PaneId(0), &[]).is_err());
         assert!(Command::send_bytes(tmuxctl::PaneId(0), &[0; MAX_INPUT_BYTES + 1]).is_err());
         assert!(Command::send_bytes(tmuxctl::PaneId(0), &[0; MAX_INPUT_BYTES]).is_ok());
+    }
+
+    #[test]
+    fn option_looking_paste_is_data_not_set_buffer_flags() {
+        let paste = input::Paste::new("--no-version-check --store-token").unwrap();
+        let commands = Command::paste(tmuxctl::PaneId(7), &paste, "starcom-test-1");
+        assert_eq!(commands.len(), 2);
+        assert_eq!(
+            commands[0].as_str(),
+            "set-buffer -b starcom-test-1 -- \"\\055\\055\\156\\157\\055\\166\\145\\162\\163\\151\\157\\156\\055\\143\\150\\145\\143\\153\\040\\055\\055\\163\\164\\157\\162\\145\\055\\164\\157\\153\\145\\156\"\n"
+        );
+        assert_eq!(
+            commands[1].as_str(),
+            "paste-buffer -d -p -b starcom-test-1 -t %7\n"
+        );
     }
 }
