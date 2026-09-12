@@ -369,8 +369,10 @@ impl PaneUi {
                         if ticks != 0 {
                             let up = ticks > 0;
                             let n = ticks.unsigned_abs();
-                            if mouse && pane.terminal.is_alternate_screen() {
-                                // vim and friends: SGR/X10 wheel, not cursor keys.
+                            if mouse {
+                                // Mouse reporting is independent of which screen
+                                // buffer is active. Preserve wheel semantics on
+                                // both primary- and alternate-screen TUIs.
                                 let (column, row) = response
                                     .hover_pos()
                                     .map(|position| {
@@ -390,12 +392,14 @@ impl PaneUi {
                                     )));
                                 }
                             } else {
-                                // tmux `Up`/`Down` honor DECCKM. Raw CSI and
-                                // `WheelUp` either miss the app or type text.
-                                let key = if up { input::Key::Up } else { input::Key::Down };
+                                // Xterm alternate-scroll translates wheel input
+                                // into cursor bytes. Do not route it through
+                                // tmux's named Up/Down keys: that changes the
+                                // application's input semantics.
                                 for _ in 0..n {
-                                    events
-                                        .push(input::Action::Key(key, input::Modifiers::default()));
+                                    events.push(input::Action::Bytes(
+                                        input::alternate_scroll_bytes(up),
+                                    ));
                                 }
                             }
                         }
