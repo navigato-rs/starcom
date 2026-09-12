@@ -123,6 +123,7 @@ fn run() -> anyhow::Result<()> {
         known_hosts,
         authentication,
         host_key_alias: None,
+        strict_host_key_checking: ssh::StrictHostKeyChecking::Yes,
         timeout: time::Duration::from_secs(seconds),
         jumps: Vec::new(),
     };

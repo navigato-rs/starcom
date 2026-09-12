@@ -54,8 +54,8 @@ navigato-support = { version = "0.1.0", git = "https://github.com/navigato-rs/fi
 anyhow = "1.0"
 alacritty_terminal = "0.26"
 tmuxctl = { version = "=0.1.0", default-features = false }
-sunset-client = { version = "0.1.0", git = "https://github.com/navigato-rs/sunset", rev = "65f8859e33c2e9c7a4ed97b950798c1dcc888787", optional = true }
-sunset-sftp = { version = "0.2.0", git = "https://github.com/navigato-rs/sunset", rev = "65f8859e33c2e9c7a4ed97b950798c1dcc888787", default-features = false, features = ["long-paths-1024"], optional = true }
+sunset-client = { version = "0.1.0", git = "https://github.com/navigato-rs/sunset", rev = "09708add6c803d8f5a679a8050d52e1e1c11980e", optional = true }
+sunset-sftp = { version = "0.2.0", git = "https://github.com/navigato-rs/sunset", rev = "09708add6c803d8f5a679a8050d52e1e1c11980e", default-features = false, features = ["long-paths-1024"], optional = true }
 polling = { version = "3.11", optional = true }
 
 blade-egui = { version = "0.8.1", git = "https://github.com/kvark/blade", rev = "f1fbf2a", optional = true }

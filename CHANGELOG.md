@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Pin Sunset to `09708ad` (OpenSSH RSA host signatures and modulus precision).
 - Use Sunset's shared client for SSH configuration, trust, and ProxyJump routes.
 - Coalesce remote wakeups without dropping output; keep copy feedback at footer size.
 - Preserve wheel semantics: applications that enable mouse reporting receive
