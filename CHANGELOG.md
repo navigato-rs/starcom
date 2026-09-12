@@ -8,8 +8,9 @@
   mouse-wheel bytes on either screen, while alternate-scroll uses terminal CSI
   bytes instead of tmux `Up`/`Down` keys.
 - Treat paste text beginning with `-` as buffer data, not `set-buffer` options.
-  The exact `--no-version-check --store-token` regression is covered by the
-  isolated SSH/tmux input test.
+  The `--no-version-check --store-token` encoding is unit-tested; the isolated
+  SSH/tmux input test pastes `--store-token` so the result still fits a split
+  pane.
 - Keep the connection form exclusively on **+**. Failed first attachments move
   there with their fields and error intact, background failures are retired,
   and **Exit** removes its registered session tab.
