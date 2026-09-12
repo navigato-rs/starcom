@@ -280,6 +280,10 @@ pub enum Action {
     /// confirmed button press, never from a failed attach.
     CreateSession(desktop::Connection),
     Disconnect,
+    /// An attachment failed before it produced a terminal view. Registered
+    /// tabs must not become connection forms; the workspace moves this form
+    /// back onto the `+` composer so it can be repaired and retried.
+    ReturnToComposer,
     /// The remote session ended (last pane `exit`, detach, or tmux gone).
     /// Close the tab; do not leave a gray frozen view.
     SessionGone,
@@ -452,7 +456,8 @@ impl DesktopUi {
         self.screen == Screen::Connection
     }
 
-    /// Show this tab's connection form. Exit uses this; the form fields stay.
+    /// Show the connection form after a failed registered tab is moved back to
+    /// the `+` composer. The entered fields stay available for repair/retry.
     pub(crate) fn return_to_form(&mut self) {
         self.screen = Screen::Connection;
         self.cancel_transient();
@@ -555,21 +560,25 @@ impl DesktopUi {
         if self.profile_source != self.form.destination() {
             self.refresh_profile();
         }
-        // The workspace replaces the form once a view exists, not when Connect
-        // is pressed. A failed first attach has nothing to show there.
-        if state.view.is_some()
-            && self.screen == Screen::Connection
-            && self.generation != state.generation
-        {
-            self.open_terminal();
-        } else if self.screen == Screen::Terminal
+        // A registered tab that failed before publishing a view belongs back on
+        // the `+` composer. Do this before changing screens so it cannot survive
+        // as an empty/form-only tab.
+        if self.screen == Screen::Terminal
             && state.view.is_none()
             && matches!(
                 state.phase,
                 desktop::Phase::Failed | desktop::Phase::Disconnected
             )
         {
-            self.screen = Screen::Connection;
+            return Action::ReturnToComposer;
+        }
+        // The workspace replaces a composer form once a view exists. Registered
+        // tabs are put on the terminal screen as soon as Connect is scheduled.
+        if state.view.is_some()
+            && self.screen == Screen::Connection
+            && self.generation != state.generation
+        {
+            self.open_terminal();
         }
         // The control session ended on purpose: last pane `exit`, an explicit
         // detach, or tmux itself going away. Same as the Exit button. Transport
@@ -1143,13 +1152,11 @@ impl DesktopUi {
                             .sense(egui::Sense::CLICK),
                     )
                     .on_hover_text(
-                        "Drop this attachment and return to the connection form. \
-                         Remote jobs keep running.",
+                        "Close this tab and drop its attachment. Remote jobs keep running.",
                     )
                     .clicked()
                 {
                     action = Action::Disconnect;
-                    self.return_to_form();
                 }
                 if let Some(pane) = self.focused.and_then(|id| {
                     state.view.as_ref().and_then(|view| view.panes().get(&id))
@@ -2369,7 +2376,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_first_attach_returns_to_the_form() {
+    fn a_failed_first_attach_returns_to_the_composer() {
         let mut ui = DesktopUi::default();
         ui.open_terminal();
         let mut state = desktop::State::default();
@@ -2378,8 +2385,15 @@ mod tests {
             "Authentication failed. Starcom will not retry it. SSH Authentication: no SSH agent is available"
                 .into(),
         );
-        paint(&mut ui, &mut state);
-        assert_eq!(ui.screen, Screen::Connection);
+        assert!(matches!(
+            paint(&mut ui, &mut state),
+            Action::ReturnToComposer
+        ));
+        assert_eq!(
+            ui.screen,
+            Screen::Terminal,
+            "the workspace owns moving a failed tab back to the composer"
+        );
     }
 
     #[test]

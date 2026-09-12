@@ -337,32 +337,53 @@ impl Workspace {
             },
         };
         self.restore_tabs = saved.restore_tabs;
+        let saved_active = saved.active;
+        let mut active_restored = false;
+        let mut active_failure = false;
         if self.restore_tabs {
-            for tab in saved.tabs {
-                if self.push_idle_tab().is_err() {
-                    break;
-                }
-                let index = self.tabs.len() - 1;
-                let restored = &mut self.tabs[index];
+            for (saved_index, tab) in saved.tabs.into_iter().enumerate() {
+                let id = self.alloc_id();
+                let mut restored = spawn_tab(
+                    id,
+                    sync::Arc::clone(&self.wake),
+                    sync::Arc::clone(&self.config),
+                    self.config_error.clone(),
+                )?;
                 restored.label = label(&tab);
                 restored.ui.restore(tab);
-                match restored.ui.resume() {
-                    Ok(connection) => {
-                        if let Err(error) = resume(&restored.client, connection) {
-                            restored.ui.return_to_form();
-                            restored.client.lock().error =
-                                Some(format!("Could not resume this tab: {error}"));
+                let result = restored
+                    .ui
+                    .resume()
+                    .and_then(|connection| resume(&restored.client, connection));
+                match result {
+                    Ok(()) => {
+                        if saved_index == saved_active {
+                            self.active = self.tabs.len();
+                            active_restored = true;
                         }
+                        self.tabs.push(restored);
                     }
                     Err(error) => {
-                        restored.client.lock().error =
-                            Some(format!("Could not resume this tab: {error}"));
+                        let message = format!("Could not resume {}: {error}", restored.label);
+                        restored.client.disconnect();
+                        restored.client.lock().error = Some(message.clone());
+                        restored.ui.return_to_form();
+                        if saved_index == saved_active {
+                            // Keep the failed destination available for repair,
+                            // but only on `+`, never as an empty registered tab.
+                            self.composer = restored;
+                            active_failure = true;
+                        } else {
+                            self.notice = Some(message);
+                        }
                     }
                 }
             }
         }
-        self.active = saved.active.min(self.tabs.len().saturating_sub(1));
-        self.composer_open = self.tabs.is_empty();
+        if !active_restored {
+            self.active = self.active.min(self.tabs.len().saturating_sub(1));
+        }
+        self.composer_open = active_failure || self.tabs.is_empty();
         self.fps = store::clamp_fps(saved.fps);
         self.idle = saved.idle.min(store::MAX_IDLE);
         self.open_secs = saved.open_secs.min(store::MAX_OPEN_SECS);
@@ -653,6 +674,84 @@ impl Workspace {
         Ok(())
     }
 
+    fn finish_tab_removal(&mut self, index: usize) {
+        if index < self.active {
+            self.active -= 1;
+        }
+        if self.tabs.is_empty() {
+            self.active = 0;
+            self.composer_open = true;
+        } else {
+            self.active = self.active.min(self.tabs.len() - 1);
+        }
+    }
+
+    fn remove_tab(&mut self, index: usize) {
+        self.cancel_transient();
+        self.tabs.remove(index); // Client::drop invalidates tokens and wakes its worker.
+        self.finish_tab_removal(index);
+    }
+
+    /// A connection which never produced a terminal remains useful for retry,
+    /// but a registered tab is not a second connection form. Move the whole
+    /// failed form/client back onto `+`, preserving its bounded diagnostic.
+    fn return_tab_to_composer(&mut self, index: usize) {
+        self.cancel_transient();
+        let mut tab = self.tabs.remove(index);
+        let error = tab.client.error();
+        tab.client.disconnect();
+        if let Some(error) = error {
+            tab.client.lock().error = Some(error);
+        }
+        tab.ui.return_to_form();
+        self.finish_tab_removal(index);
+        self.composer = tab;
+        self.composer_open = true;
+    }
+
+    /// Failed first attachments have no terminal content and therefore are not
+    /// tabs. Reconcile background failures too; waiting until a failed tab is
+    /// selected would leave an empty chip visible in the strip.
+    fn retire_failed_empty_tabs(&mut self) {
+        let failed: Vec<_> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .filter_map(|(index, tab)| {
+                let state = tab.client.lock();
+                (state.view.is_none()
+                    && matches!(
+                        state.phase,
+                        desktop::Phase::Failed | desktop::Phase::Disconnected
+                    ))
+                .then(|| (index, tab.id, state.error.clone()))
+            })
+            .collect();
+        if failed.is_empty() {
+            return;
+        }
+
+        let active_id = (!self.composer_open)
+            .then(|| self.tabs.get(self.active).map(|tab| tab.id))
+            .flatten();
+        let retry_id = active_id.filter(|id| failed.iter().any(|(_, failed, _)| failed == id));
+        for &(index, id, ref error) in failed.iter().rev() {
+            if Some(id) == retry_id {
+                continue;
+            }
+            if let Some(error) = error {
+                self.notice = Some(format!("Closed a tab after connection failure: {error}"));
+            }
+            self.remove_tab(index);
+        }
+        if let Some(id) = retry_id
+            && let Some(index) = self.tabs.iter().position(|tab| tab.id == id)
+        {
+            self.return_tab_to_composer(index);
+        }
+        self.persist();
+    }
+
     fn alloc_id(&mut self) -> u64 {
         let id = self.next;
         self.next = self.next.checked_add(1).expect("tab identity exhausted");
@@ -735,6 +834,7 @@ impl Workspace {
     }
 
     pub fn show(&mut self, root: &mut egui::Ui) -> Action {
+        self.retire_failed_empty_tabs();
         self.local_dirty = false;
         self.apply_renamed_session();
         let mut navigation = Action::None;
@@ -1093,17 +1193,7 @@ impl Workspace {
                 }
                 Action::Close(id) => {
                     if let Some(index) = self.tabs.iter().position(|tab| tab.id == id) {
-                        self.cancel_transient();
-                        self.tabs.remove(index); // Client::drop invalidates tokens and wakes its worker.
-                        if index < self.active {
-                            self.active -= 1;
-                        }
-                        if self.tabs.is_empty() {
-                            self.active = 0;
-                            self.composer_open = true;
-                        } else {
-                            self.active = self.active.min(self.tabs.len() - 1);
-                        }
+                        self.remove_tab(index);
                         self.persist();
                     }
                 }
@@ -1111,6 +1201,7 @@ impl Workspace {
                     let mut save = false;
                     let mut follow_input = false;
                     let mut close_after_exit = None;
+                    let mut return_to_composer = false;
                     {
                         if self.composer_open
                             && id == self.composer.id
@@ -1134,10 +1225,12 @@ impl Workspace {
                                 let started = tab.client.connect(connection).map(|()| {
                                     tab.label = label(&tab.ui.saved());
                                     tab.ui.reset_client_size();
+                                    tab.ui.open_terminal();
                                 });
                                 // Remember where a successful connection pointed, so
                                 // the next start reopens the same form.
                                 save = started.is_ok();
+                                return_to_composer = started.is_err();
                                 started
                             }
                             ui::Action::ListSessions(connection) => {
@@ -1164,14 +1257,15 @@ impl Workspace {
                                 }
                             }
                             ui::Action::Disconnect => {
+                                // Exit drops this attachment and its registered
+                                // tab. The `+` composer is the only connection
+                                // form in the workspace.
+                                close_after_exit = Some(id);
                                 tab.client.disconnect();
-                                tab.ui.return_to_form();
-                                tab.label = label(&tab.ui.saved());
-                                // An empty form is the composer. Don't leave it
-                                // as a chip next to +.
-                                if tab.label == NEW_CONNECTION {
-                                    close_after_exit = Some(id);
-                                }
+                                Ok(())
+                            }
+                            ui::Action::ReturnToComposer => {
+                                return_to_composer = true;
                                 Ok(())
                             }
                             ui::Action::SessionGone => {
@@ -1227,20 +1321,16 @@ impl Workspace {
                     if save {
                         self.persist();
                     }
+                    if return_to_composer
+                        && let Some(index) = self.tabs.iter().position(|tab| tab.id == id)
+                    {
+                        self.return_tab_to_composer(index);
+                        self.persist();
+                    }
                     if let Some(id) = close_after_exit
                         && let Some(index) = self.tabs.iter().position(|tab| tab.id == id)
                     {
-                        self.cancel_transient();
-                        self.tabs.remove(index);
-                        if index < self.active {
-                            self.active -= 1;
-                        }
-                        if self.tabs.is_empty() {
-                            self.active = 0;
-                            self.composer_open = true;
-                        } else {
-                            self.active = self.active.min(self.tabs.len() - 1);
-                        }
+                        self.remove_tab(index);
                         self.persist();
                     }
                 }
@@ -1348,7 +1438,7 @@ mod tests {
     }
 
     #[test]
-    fn exit_closes_an_empty_form_and_keeps_a_named_one() {
+    fn exit_removes_every_registered_tab() {
         let mut workspace = Workspace::new(sync::Arc::new(|| {}), desktop::Startup::Demo).unwrap();
         workspace.push_idle_tab().unwrap();
         let first = workspace.tabs[0].id;
@@ -1368,9 +1458,8 @@ mod tests {
         workspace.tabs[0].label = label(&workspace.tabs[0].ui.saved());
         let id = workspace.tabs[0].id;
         workspace.apply(Action::Tab(id, Box::new(ui::Action::Disconnect)), || None);
-        assert_eq!(workspace.tabs.len(), 1);
-        assert_eq!(workspace.tabs[0].label, "dev / work");
-        assert!(workspace.tabs[0].ui.showing_form());
+        assert!(workspace.tabs.is_empty());
+        assert!(workspace.composer_open);
     }
 
     #[test]
@@ -1387,6 +1476,29 @@ mod tests {
         workspace.apply(Action::Tab(id, Box::new(ui::Action::SessionGone)), || None);
         assert!(workspace.tabs.iter().all(|tab| tab.id != id));
         assert!(workspace.composer_open);
+    }
+
+    #[test]
+    fn a_failed_empty_tab_becomes_the_plus_composer() {
+        let mut workspace = Workspace::new(sync::Arc::new(|| {}), desktop::Startup::Demo).unwrap();
+        let failed_id = workspace.tabs[0].id;
+        {
+            let mut state = workspace.tabs[0].client.lock();
+            state.view = None;
+            state.phase = desktop::Phase::Failed;
+            state.error = Some("authentication failed".into());
+        }
+
+        workspace.retire_failed_empty_tabs();
+
+        assert!(workspace.tabs.is_empty());
+        assert!(workspace.composer_open);
+        assert_eq!(workspace.composer.id, failed_id);
+        assert_eq!(
+            workspace.composer.client.error().as_deref(),
+            Some("authentication failed")
+        );
+        assert!(workspace.composer.ui.showing_form());
     }
 
     #[test]
@@ -1661,7 +1773,7 @@ mod tests {
     }
 
     #[test]
-    fn an_incomplete_saved_tab_stays_on_its_form_with_an_error() {
+    fn an_incomplete_active_saved_tab_moves_to_the_composer() {
         let directory = std::env::temp_dir().join(format!(
             "starcom-workspace-incomplete-{}-{:?}",
             std::process::id(),
@@ -1706,9 +1818,12 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(attempts, 0);
-        assert!(workspace.tabs[0].ui.showing_form());
+        assert!(workspace.tabs.is_empty());
+        assert!(workspace.composer_open);
+        assert!(workspace.composer.ui.showing_form());
         assert!(
-            workspace.tabs[0]
+            workspace
+                .composer
                 .client
                 .error()
                 .is_some_and(|error| error.contains("choose a tmux session"))
