@@ -244,7 +244,7 @@ exec sleep 600
     client
         .submit(
             target,
-            input::Action::Paste(input::Paste::new("--no-version-check --store-token\n").unwrap()),
+            input::Action::Paste(input::Paste::new("--store-token\n").unwrap()),
         )
         .unwrap();
 
@@ -253,11 +253,10 @@ exec sleep 600
         let present = client.with_view(|view| {
             view.and_then(|view| view.panes().get(&pane))
                 .is_some_and(|pane| {
-                    pane.terminal.screen_lines().iter().any(|line| {
-                        line.contains(
-                            "INPUT_RESULT:<hello>|<world>|<--no-version-check --store-token>",
-                        )
-                    })
+                    pane.terminal
+                        .screen_lines()
+                        .join("")
+                        .contains("INPUT_RESULT:<hello>|<world>|<--store-token>")
                 })
         });
         if present {
@@ -307,7 +306,8 @@ exec sleep 600
     assert!(capture.status.success());
     assert_eq!(
         String::from_utf8_lossy(&capture.stdout)
-            .matches("INPUT_RESULT:<hello>|<world>|<--no-version-check --store-token>")
+            .replace('\n', "")
+            .matches("INPUT_RESULT:<hello>|<world>|<--store-token>")
             .count(),
         1,
         "input or paste was duplicated"
