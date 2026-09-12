@@ -1335,7 +1335,7 @@ impl DesktopUi {
                             ui.colored_label(ui.visuals().error_fg_color, error);
                         }
                         ui.add_space(8.0);
-                        ui.label("The connection form is kept in this tab.");
+                        ui.label("Waiting for the first terminal snapshot…");
                     });
                     return;
                 }
