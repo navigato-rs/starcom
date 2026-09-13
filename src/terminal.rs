@@ -4,6 +4,7 @@ use crate::core;
 
 const MAX_BUFFER_CELLS: usize = 131_072;
 const MAX_HISTORY_LINES: usize = 10_000;
+const MAX_HELD_OUTPUT: usize = 1024 * 1024;
 
 impl grid::Dimensions for core::Size {
     fn columns(&self) -> usize {
@@ -28,6 +29,8 @@ pub struct Terminal {
     parser: vte::ansi::Processor,
     size: core::Size,
     history_limit: usize,
+    /// Remote bytes held back while the user is drag-selecting.
+    held_output: Option<Vec<u8>>,
 }
 
 impl Terminal {
@@ -45,11 +48,32 @@ impl Terminal {
             parser: vte::ansi::Processor::new(),
             size,
             history_limit: history_lines,
+            held_output: None,
         }
     }
 
     pub fn feed(&mut self, bytes: &[u8]) {
+        if let Some(held) = self.held_output.as_mut() {
+            let room = MAX_HELD_OUTPUT.saturating_sub(held.len());
+            held.extend_from_slice(&bytes[..bytes.len().min(room)]);
+            return;
+        }
         self.parser.advance(&mut self.model, bytes);
+    }
+
+    /// Freeze the grid for a drag-select. Bytes are applied when the drag ends.
+    pub fn hold_output(&mut self, hold: bool) {
+        if hold {
+            if self.held_output.is_none() {
+                self.held_output = Some(Vec::new());
+            }
+            return;
+        }
+        if let Some(held) = self.held_output.take()
+            && !held.is_empty()
+        {
+            self.parser.advance(&mut self.model, &held);
+        }
     }
 
     /// Conservative maximum cell allocation for the primary and alternate grids.
@@ -359,5 +383,27 @@ mod tests {
             terminal.selection_range().unwrap().start.line,
             index::Line(-1)
         );
+    }
+
+    #[test]
+    fn held_output_does_not_move_text_during_a_drag() {
+        let mut terminal = Terminal::new(core::Size::new(20, 4).unwrap(), 20);
+        terminal.feed(b"hello");
+        terminal.hold_output(true);
+        terminal.begin_selection(
+            index::Point::new(index::Line(0), index::Column(0)),
+            index::Side::Left,
+            selection::SelectionType::Simple,
+        );
+        terminal.update_selection(
+            index::Point::new(index::Line(0), index::Column(4)),
+            index::Side::Right,
+        );
+        terminal.feed(b"\x1b[2J\x1b[Hxxxx");
+        assert_eq!(terminal.screen_lines()[0], "hello");
+        assert_eq!(terminal.selected_text().as_deref(), Some("hello"));
+        terminal.hold_output(false);
+        assert_eq!(terminal.screen_lines()[0], "xxxx");
+        assert!(terminal.selected_text().is_none());
     }
 }

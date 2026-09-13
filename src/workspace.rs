@@ -939,8 +939,7 @@ impl Workspace {
                                             rename.focus = false;
                                         }
                                         let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
-                                        let escape =
-                                            ui.input(|i| i.key_pressed(egui::Key::Escape));
+                                        let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
                                         if escape {
                                             self.renaming = None;
                                         } else if enter {
@@ -968,14 +967,11 @@ impl Workspace {
                                     let selected = !self.composer_open && index == self.active;
                                     let quiet = self.idle > 0
                                         && live_phase(phase)
-                                        && now.saturating_duration_since(last_output)
-                                            >= idle_after;
+                                        && now.saturating_duration_since(last_output) >= idle_after;
                                     if !quiet && self.idle > 0 && live_phase(phase) {
-                                        ui.ctx().request_repaint_after(
-                                            idle_after.saturating_sub(
-                                                now.saturating_duration_since(last_output),
-                                            ),
-                                        );
+                                        ui.ctx().request_repaint_after(idle_after.saturating_sub(
+                                            now.saturating_duration_since(last_output),
+                                        ));
                                     }
                                     let color = tab_color(phase, idle_fill, quiet);
                                     let mut text = egui::RichText::new(title).size(16.0).strong();
@@ -1001,9 +997,13 @@ impl Workspace {
                                                 egui::Color32::TRANSPARENT
                                             },
                                         ));
-                                    let response = ui.add(button).on_hover_text(
-                                        "Click to switch · double-click to rename · drag to reorder",
-                                    );
+                                    let response = ui.add(button).on_hover_text(if phase
+                                        == desktop::Phase::Watching
+                                    {
+                                        "Click to switch · double-click to rename · drag to reorder"
+                                    } else {
+                                        "Click to switch · drag to reorder"
+                                    });
                                     if busy {
                                         let indicator = egui::Rect::from_center_size(
                                             egui::pos2(
@@ -1030,38 +1030,21 @@ impl Workspace {
                                         ui.input(|i| i.pointer.interact_pos()),
                                     ) {
                                         paint_drop_marker(ui, response.rect, insert_at > index);
-                                        if let Some(dragged) =
-                                            response.dnd_release_payload::<u64>()
+                                        if let Some(dragged) = response.dnd_release_payload::<u64>()
                                         {
                                             reorder = Some((*dragged, insert_at));
                                         }
                                     }
-                                    if response.double_clicked() {
-                                        match phase {
-                                            desktop::Phase::Watching => {
-                                                self.renaming = Some(SessionRename {
-                                                    id,
-                                                    draft: self.tabs[index]
-                                                        .ui
-                                                        .session_name()
-                                                        .to_owned(),
-                                                    focus: true,
-                                                });
-                                            }
-                                            desktop::Phase::Demo => {
-                                                self.notice = Some(
-                                                    "The demo has no remote session to rename."
-                                                        .to_owned(),
-                                                );
-                                            }
-                                            _ => {
-                                                self.notice = Some(
-                                                    "Connect before renaming the session."
-                                                        .to_owned(),
-                                                );
-                                            }
-                                        }
-                                    } else if response.clicked() {
+                                    if response.double_clicked()
+                                        && phase == desktop::Phase::Watching
+                                    {
+                                        self.notice = None;
+                                        self.renaming = Some(SessionRename {
+                                            id,
+                                            draft: self.tabs[index].ui.session_name().to_owned(),
+                                            focus: true,
+                                        });
+                                    } else if response.clicked() || response.double_clicked() {
                                         navigation = Action::Select(id);
                                         self.renaming = None;
                                     }

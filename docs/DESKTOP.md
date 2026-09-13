@@ -207,8 +207,9 @@ otherwise forwarded when the pane asked for mouse reports: a press and a
 release at the cell. Shift/Ctrl/Alt/Cmd clicks, drags, double-clicks, and
 triple-clicks stay local. Drag to select, double-click for a word, and
 triple-click for a line. Selection anchors live in the terminal model, so they
-follow incoming scrolls. Copying handles wide cells, combining characters, and
-soft wraps, with a 1 MiB output limit.
+follow incoming scrolls. Remote output is held during a drag-select so a live
+pane cannot rewrite the grid under the highlight. Copying handles wide cells,
+combining characters, and soft wraps, with a 1 MiB output limit.
 
 Focus a connected pane, then drop up to eight files onto the window to upload
 them over SFTP into the remote temp directory (`/tmp`), under unique
