@@ -524,7 +524,9 @@ impl PaneUi {
                             }
                         } else if response.clicked() {
                             pane.terminal.clear_selection();
+                            pane.terminal.hold_output(false);
                         } else if response.drag_started() {
+                            pane.terminal.hold_output(true);
                             let origin = ui
                                 .input(|input| input.pointer.press_origin())
                                 .unwrap_or(position);
@@ -552,11 +554,12 @@ impl PaneUi {
                             }
                         }
                     }
-                    if response.drag_stopped()
-                        && let Some(text) = pane.terminal.selected_text()
-                    {
-                        copy(ui.ctx(), text, notice, notice_until, "Copied!");
-                        pane.terminal.clear_selection();
+                    if response.drag_stopped() {
+                        if let Some(text) = pane.terminal.selected_text() {
+                            copy(ui.ctx(), text, notice, notice_until, "Copied!");
+                            pane.terminal.clear_selection();
+                        }
+                        pane.terminal.hold_output(false);
                     }
                     let model = pane.terminal.model();
                     let selection_range = pane.terminal.selection_range();
