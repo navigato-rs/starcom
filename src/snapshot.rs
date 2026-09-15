@@ -144,6 +144,11 @@ impl State {
         self.modes[5] || self.modes[6] || self.modes[7]
     }
 
+    /// SGR mouse (1006). tmux may swallow the DECSET that Alacritty would see.
+    pub fn sgr_mouse(&self) -> bool {
+        self.modes[9]
+    }
+
     fn restore_modes(&self, terminal: &mut terminal::Terminal) {
         terminal.feed(b"\x1b[0m\x0f\x1b[3g");
         for &column in &self.tabs {
@@ -248,6 +253,23 @@ impl Pane {
             terminal,
             history_may_be_truncated,
         })
+    }
+
+    /// The single source of truth for mouse capabilities. tmux can swallow the
+    /// DECSET that the live Alacritty model would see, so trust either the model
+    /// or the control-mode snapshot rather than OR-ing them at each call site.
+    pub fn reports_mouse(&self) -> bool {
+        self.terminal.reports_mouse() || self.state.reports_mouse()
+    }
+
+    /// Wheel belongs to the application (mouse reporting or alternate scroll).
+    pub fn wants_wheel(&self) -> bool {
+        self.terminal.wants_wheel() || self.state.reports_mouse()
+    }
+
+    /// SGR (1006) extended mouse encoding is in effect.
+    pub fn sgr_mouse(&self) -> bool {
+        self.terminal.sgr_mouse() || self.state.sgr_mouse()
     }
 }
 
@@ -495,6 +517,10 @@ mod tests {
         assert!(!off.reports_mouse());
         let on = State::parse("%1|@2|12|3|0|0|0|0|0|0|2000|||0|2|1|0|0|0|1|1|0|0|0|0|1|").unwrap();
         assert!(on.reports_mouse());
+        assert!(!on.sgr_mouse());
+        let sgr = State::parse("%1|@2|12|3|0|0|0|0|0|0|2000|||0|2|1|0|0|0|1|0|0|0|0|1|1|").unwrap();
+        assert!(sgr.sgr_mouse());
+        assert!(!sgr.reports_mouse());
     }
 
     #[test]

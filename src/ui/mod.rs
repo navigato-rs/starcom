@@ -1,5 +1,6 @@
 //! Connection form and terminal workspace for one connection tab.
 
+mod gesture;
 pub(crate) mod input;
 mod layout;
 mod terminal;

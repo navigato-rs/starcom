@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Copy a link destination on click (OSC 8, an `http(s)` URL under the cell,
+  or, for a short underlined "click here" affordance whose OSC 8 was stripped,
+  a URL on the same or an adjacent line). A tap that stays on one cell is
+  forwarded as a paired mouse press and release when the pane asked for mouse
+  reports; a multi-cell drag stays local selection. Space and Enter are keys,
+  not fake pointer clicks, so they are not turned into mouse CSI.
 - Do not close a tab from under you when tmux or SSH fails, and do not dump
   the diagnostic into the tab strip (that wrapped the chrome over the
   terminal). A dead tmux server keeps the last view; only `exit`/detach
