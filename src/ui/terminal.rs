@@ -5,7 +5,7 @@ use alacritty_terminal::{grid::Dimensions, index, selection, term, vte::ansi};
 
 use crate::{input, snapshot};
 
-use super::layout;
+use super::{gesture, layout};
 
 const BACKGROUND: egui::Color32 = egui::Color32::from_rgb(18, 21, 26);
 const FOREGROUND: egui::Color32 = egui::Color32::from_rgb(214, 220, 229);
@@ -36,6 +36,9 @@ pub struct PaneUi {
     scroll_frac: f32,
     /// True while the viewport is pinned to the live tip.
     stuck: bool,
+    /// Pointer gesture state machine: turns per-frame egui signals into one
+    /// link-copy / app-click / local-selection decision.
+    pointer: gesture::Pointer,
 }
 
 impl Default for PaneUi {
@@ -46,6 +49,7 @@ impl Default for PaneUi {
             remainder: 0.0,
             scroll_frac: 0.0,
             stuck: true,
+            pointer: gesture::Pointer::default(),
         }
     }
 }
@@ -128,13 +132,13 @@ fn screen_cell(
     row_height: f32,
     columns: usize,
     rows: usize,
+    row_origin: i64,
 ) -> (usize, usize) {
     let column = ((position.x - content.left()) / cell_width)
         .floor()
         .clamp(0.0, columns.saturating_sub(1) as f32) as usize;
-    let row = ((position.y - content.top()) / row_height)
-        .floor()
-        .clamp(0.0, rows.saturating_sub(1) as f32) as usize;
+    let visible = ((position.y - content.top()) / row_height).floor() as i64;
+    let row = (visible + row_origin).clamp(0, rows.saturating_sub(1) as i64) as usize;
     (column, row)
 }
 
@@ -188,6 +192,13 @@ fn terminal_scroll_source(to_app: bool) -> egui::scroll_area::ScrollSource {
 
 fn vertical_scrollbar_rect(outer: egui::Rect, width: f32) -> egui::Rect {
     outer.with_min_x((outer.right() - width).max(outer.left()))
+}
+
+/// Pointer primary click only. [`egui::Response::clicked`] is also true for
+/// Space and Enter on a focused click-sense widget, which would inject mouse
+/// CSI into the remote application instead of those keys.
+fn pointer_primary_click(response: &egui::Response) -> bool {
+    response.clicked_by(egui::PointerButton::Primary)
 }
 
 fn terminal_interact_rect(
@@ -297,9 +308,10 @@ impl PaneUi {
                 let display = pane.terminal.history_offset();
                 let rows = &mut self.painted_rows;
                 let remainder = &mut self.remainder;
-                let mouse = pane.terminal.reports_mouse();
-                let wants_wheel = pane.terminal.wants_wheel();
-                let sgr_mouse = pane.terminal.sgr_mouse();
+                let pointer = &mut self.pointer;
+                let mouse = pane.reports_mouse();
+                let wants_wheel = pane.wants_wheel();
+                let sgr_mouse = pane.sgr_mouse();
                 let shift_scroll = ui.input(|input| input.modifiers.shift);
                 let to_app = wants_wheel && !shift_scroll;
                 let scroll_outer = ui.available_rect_before_wrap();
@@ -354,6 +366,7 @@ impl PaneUi {
                         .then(|| vertical_scrollbar_rect(ui.clip_rect(), scroll_style.bar_width));
                     let interact =
                         terminal_interact_rect(content, ui.clip_rect(), floating_scrollbar);
+                    let row_origin = range.start as i64 - history as i64;
                     let response = ui
                         .interact(interact, id, egui::Sense::click_and_drag())
                         .on_hover_cursor(egui::CursorIcon::Text);
@@ -376,7 +389,9 @@ impl PaneUi {
                             },
                         )
                     };
-                    if response.clicked() || response.drag_started() || response.secondary_clicked()
+                    if pointer_primary_click(&response)
+                        || response.drag_started()
+                        || response.secondary_clicked()
                     {
                         *focused = Some(pane_id);
                         response.request_focus();
@@ -398,7 +413,7 @@ impl PaneUi {
                             );
                         });
                     }
-                    if response.clicked() {
+                    if pointer_primary_click(&response) {
                         events.push(input::Action::SelectPane);
                     }
                     let pointer_in_pane =
@@ -422,6 +437,7 @@ impl PaneUi {
                                             row_height,
                                             columns,
                                             screen_rows,
+                                            row_origin,
                                         )
                                     })
                                     .unwrap_or((0, 0));
@@ -451,115 +467,163 @@ impl PaneUi {
                     } else if !pointer_in_pane {
                         *remainder = 0.0;
                     }
+                    let unmodified = ui.input(|input| {
+                        let modifiers = input.modifiers;
+                        !modifiers.shift && !modifiers.ctrl && !modifiers.alt && !modifiers.command
+                    });
+                    // `press_origin` is cleared on the release frame, so it
+                    // cannot distinguish a tap from a drag after the pointer
+                    // is up. Fall back to the current pointer for that frame.
+                    let origin_pos = ui
+                        .input(|input| input.pointer.press_origin())
+                        .or_else(|| response.interact_pointer_pos())
+                        .or_else(|| ui.input(|input| input.pointer.latest_pos()))
+                        .or_else(|| response.hover_pos());
+                    let pointer_pos = response
+                        .interact_pointer_pos()
+                        .or_else(|| ui.input(|input| input.pointer.latest_pos()))
+                        .or_else(|| response.hover_pos())
+                        .or(origin_pos);
+                    // Hover feedback: a link cell shows a hand and its target.
                     if let Some(pos) = response.hover_pos() {
                         let (point, _) = point_at(pos);
-                        if pane.terminal.hyperlink_at(point).is_some() {
+                        if let Some(uri) = pane.terminal.link_destination(point) {
                             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                            response.clone().on_hover_text(uri);
                         }
                     }
-                    if let Some(position) = response.interact_pointer_pos() {
-                        let (point, side) = point_at(position);
-                        let unmodified = ui.input(|input| {
-                            let modifiers = input.modifiers;
-                            !modifiers.shift
-                                && !modifiers.ctrl
-                                && !modifiers.alt
-                                && !modifiers.command
-                        });
-                        let single_click = unmodified
-                            && response.clicked()
-                            && !response.double_clicked()
-                            && !response.triple_clicked();
-                        // A click on an OSC 8 hyperlink copies its target. The
-                        // URL is a cell attribute, not on-screen text, so a
-                        // plain selection cannot reach it.
-                        let copied_link = !frozen
-                            && single_click
-                            && pane.terminal.hyperlink_at(point).is_some_and(|uri| {
+                    // Snapshot the selection before this frame mutates it: the
+                    // forward-vs-copy split and the drag-release copy both key
+                    // off whether a drag actually produced text.
+                    let selected = pane.terminal.selected_text();
+                    let origin_point = origin_pos.map(point_at);
+                    let pointer_point = pointer_pos.map(point_at);
+                    let link_at_origin = origin_point
+                        .map(|(point, _)| point)
+                        .and_then(|point| pane.terminal.link_destination(point))
+                        .is_some();
+                    let click = if response.triple_clicked() {
+                        Some(gesture::Click::Triple)
+                    } else if response.double_clicked() {
+                        Some(gesture::Click::Double)
+                    } else if pointer_primary_click(&response) {
+                        Some(gesture::Click::Single)
+                    } else {
+                        None
+                    };
+                    // drag_started also reports as dragging, so it wins; a stop
+                    // frame no longer reports as dragging.
+                    let drag = if response.drag_started() {
+                        Some(gesture::DragPhase::Start)
+                    } else if response.drag_stopped() {
+                        Some(gesture::DragPhase::Stop)
+                    } else if response.dragged() {
+                        Some(gesture::DragPhase::Continue)
+                    } else {
+                        None
+                    };
+                    let outcome = pointer.update(gesture::Signals {
+                        unmodified,
+                        primary_pressed: response.is_pointer_button_down_on()
+                            && ui.input(|input| input.pointer.primary_pressed()),
+                        primary_down: ui.input(|input| input.pointer.primary_down()),
+                        click,
+                        drag,
+                        link_at_origin,
+                        has_selection: selected.is_some(),
+                        mouse_app: !frozen && mouse,
+                    });
+                    // Send a paired press+release to the application at a cell.
+                    let mut forward_click = |position: egui::Pos2| {
+                        let (column, row) = screen_cell(
+                            position,
+                            content,
+                            cell_width,
+                            row_height,
+                            columns,
+                            screen_rows,
+                            row_origin,
+                        );
+                        events.push(input::Action::Bytes(input::mouse_click_bytes(
+                            true, column, row, sgr_mouse,
+                        )));
+                        events.push(input::Action::Bytes(input::mouse_click_bytes(
+                            false, column, row, sgr_mouse,
+                        )));
+                    };
+                    let mut extend_drag = false;
+                    match outcome {
+                        gesture::Outcome::Idle => {}
+                        gesture::Outcome::CopyLink => {
+                            if let Some(uri) = origin_point
+                                .and_then(|(point, _)| pane.terminal.link_destination(point))
+                            {
                                 copy(ui.ctx(), uri, notice, notice_until, "Link copied!");
-                                true
-                            });
-                        if copied_link {
-                            pane.terminal.clear_selection();
-                        }
-                        // Unmodified single clicks belong to the application
-                        // when it asked for them. Drags, modified clicks, and
-                        // double/triple clicks stay local selection.
-                        let forward_click = !frozen && mouse && single_click && !copied_link;
-                        if forward_click {
-                            let (column, row) = screen_cell(
-                                position,
-                                content,
-                                cell_width,
-                                row_height,
-                                columns,
-                                screen_rows,
-                            );
-                            events.push(input::Action::Bytes(input::mouse_click_bytes(
-                                true, column, row, sgr_mouse,
-                            )));
-                            events.push(input::Action::Bytes(input::mouse_click_bytes(
-                                false, column, row, sgr_mouse,
-                            )));
-                            pane.terminal.clear_selection();
-                        } else if response.triple_clicked() {
-                            pane.terminal.begin_selection(
-                                point,
-                                side,
-                                selection::SelectionType::Lines,
-                            );
-                            if let Some(text) = pane.terminal.selected_text() {
-                                copy(ui.ctx(), text, notice, notice_until, "Copied!");
-                                pane.terminal.clear_selection();
                             }
-                        } else if response.double_clicked() {
-                            pane.terminal.begin_selection(
-                                point,
-                                side,
-                                selection::SelectionType::Semantic,
-                            );
-                            if let Some(text) = pane.terminal.selected_text() {
-                                copy(ui.ctx(), text, notice, notice_until, "Copied!");
-                                pane.terminal.clear_selection();
-                            }
-                        } else if response.clicked() {
                             pane.terminal.clear_selection();
                             pane.terminal.hold_output(false);
-                        } else if response.drag_started() {
-                            pane.terminal.hold_output(true);
-                            let origin = ui
-                                .input(|input| input.pointer.press_origin())
-                                .unwrap_or(position);
-                            let (anchor, anchor_side) = point_at(origin);
-                            pane.terminal.begin_selection(
-                                anchor,
-                                anchor_side,
-                                selection::SelectionType::Simple,
-                            );
                         }
-                        if response.dragged() {
-                            pane.terminal.update_selection(point, side);
-                            let clip = ui.clip_rect();
-                            let delta = if position.y < clip.top() + 12.0 {
-                                row_height
-                            } else if position.y > clip.bottom() - 12.0 {
-                                -row_height
-                            } else {
-                                0.0
-                            };
-                            if delta != 0.0 {
-                                ui.scroll_with_delta(egui::vec2(0.0, delta));
-                                ui.ctx()
-                                    .request_repaint_after(std::time::Duration::from_millis(30));
+                        gesture::Outcome::Click { forward_to_app } => {
+                            pane.terminal.clear_selection();
+                            pane.terminal.hold_output(false);
+                            if forward_to_app && let Some(position) = pointer_pos.or(origin_pos) {
+                                forward_click(position);
+                            }
+                        }
+                        gesture::Outcome::SelectWord | gesture::Outcome::SelectLine => {
+                            if let Some((point, side)) = pointer_point {
+                                let kind = if matches!(outcome, gesture::Outcome::SelectLine) {
+                                    selection::SelectionType::Lines
+                                } else {
+                                    selection::SelectionType::Semantic
+                                };
+                                pane.terminal.begin_selection(point, side, kind);
+                                if let Some(text) = pane.terminal.selected_text() {
+                                    copy(ui.ctx(), text, notice, notice_until, "Copied!");
+                                    pane.terminal.clear_selection();
+                                }
+                            }
+                        }
+                        gesture::Outcome::DragBegin => {
+                            pane.terminal.hold_output(true);
+                            if let Some((point, side)) = origin_point {
+                                pane.terminal.begin_selection(
+                                    point,
+                                    side,
+                                    selection::SelectionType::Simple,
+                                );
+                            }
+                            extend_drag = true;
+                        }
+                        gesture::Outcome::DragExtend => extend_drag = true,
+                        gesture::Outcome::DragEnd { forward_to_app } => {
+                            if let Some(text) = selected {
+                                copy(ui.ctx(), text, notice, notice_until, "Copied!");
+                                pane.terminal.clear_selection();
+                            }
+                            pane.terminal.hold_output(false);
+                            if forward_to_app && let Some(position) = pointer_pos.or(origin_pos) {
+                                forward_click(position);
                             }
                         }
                     }
-                    if response.drag_stopped() {
-                        if let Some(text) = pane.terminal.selected_text() {
-                            copy(ui.ctx(), text, notice, notice_until, "Copied!");
-                            pane.terminal.clear_selection();
+                    if extend_drag
+                        && let (Some((point, side)), Some(position)) = (pointer_point, pointer_pos)
+                    {
+                        pane.terminal.update_selection(point, side);
+                        let clip = ui.clip_rect();
+                        let delta = if position.y < clip.top() + 12.0 {
+                            row_height
+                        } else if position.y > clip.bottom() - 12.0 {
+                            -row_height
+                        } else {
+                            0.0
+                        };
+                        if delta != 0.0 {
+                            ui.scroll_with_delta(egui::vec2(0.0, delta));
+                            ui.ctx()
+                                .request_repaint_after(std::time::Duration::from_millis(30));
                         }
-                        pane.terminal.hold_output(false);
                     }
                     let model = pane.terminal.model();
                     let selection_range = pane.terminal.selection_range();
@@ -1144,6 +1208,17 @@ mod tests {
         assert!(local.scroll_bar);
         assert!(local.mouse_wheel);
         assert!(!local.drag, "dragging terminal text is selection");
+    }
+
+    #[test]
+    fn screen_cell_is_pty_row_not_history_row() {
+        let content = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(80.0, 60.0));
+        let top = screen_cell(egui::pos2(10.0, 20.0), content, 8.0, 10.0, 10, 4, 0);
+        assert_eq!(top, (0, 0));
+        let next = screen_cell(egui::pos2(18.0, 31.0), content, 8.0, 10.0, 10, 4, 0);
+        assert_eq!(next, (1, 1));
+        let history = screen_cell(egui::pos2(10.0, 20.0), content, 8.0, 10.0, 10, 4, -8);
+        assert_eq!(history, (0, 0), "clicks in history clamp to the screen");
     }
 
     #[test]

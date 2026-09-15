@@ -204,6 +204,25 @@ mod tests {
     }
 
     #[test]
+    fn space_is_text_not_a_named_key() {
+        assert_eq!(
+            raw(translate(&egui::Event::Text(" ".into()), egui::Modifiers::NONE).unwrap()),
+            [b' ']
+        );
+        let space = egui::Event::Key {
+            key: egui::Key::Space,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        assert!(
+            matches!(translate(&space, egui::Modifiers::NONE), Ok(None)),
+            "Space must not become a tmux key name or CSI"
+        );
+    }
+
+    #[test]
     fn typing_and_paste_follow_the_live_tip_but_copy_does_not() {
         let arrow = egui::Event::Key {
             key: egui::Key::ArrowUp,

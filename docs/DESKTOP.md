@@ -200,11 +200,16 @@ and other keyboard input jump local history back to the live tip; the wheel does
 not. The scrollbar is always local history navigation, including when a TUI owns
 wheel events; its gutter cannot start selection or send mouse input remotely.
 
-Unmodified left clicks on an OSC 8 hyperlink copy its target to the clipboard.
-The URL is a cell attribute, not on-screen text, so a plain selection cannot
-reach it; copying lets you paste it into a browser. Unmodified left clicks are
-otherwise forwarded when the pane asked for mouse reports: a press and a
-release at the cell. Shift/Ctrl/Alt/Cmd clicks, drags, double-clicks, and
+A click on a link copies its destination to the local clipboard: OSC 8 if the
+cell has one, otherwise an `http(s)` URL covering the cell, or — for a short
+underlined "click here to copy" affordance whose OSC 8 tmux has stripped — a
+URL on the same or an adjacent line. A long underlined run is treated as
+content, not a link. Hover shows the destination. A tiny pointer
+move is not treated as a drag. Keyboard Space and Enter are not pointer
+clicks. When the pane asked for mouse reports and the click was not a link, an
+unmodified tap with no selected text is sent as a paired press and release so
+the application still sees the click; a drag that produced a selection copies
+on release. Shift/Ctrl/Alt/Cmd clicks, double-clicks, and
 triple-clicks stay local. Drag to select, double-click for a word, and
 triple-click for a line. Selection anchors live in the terminal model, so they
 follow incoming scrolls. Remote output is held during a drag-select so a live
