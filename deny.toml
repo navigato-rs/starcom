@@ -38,6 +38,12 @@ ignore = [
     # application or fed runtime data. Remove this when Sunset adopts pastey or
     # native identifier concatenation; tracked in PLAN.md M5.
     { id = "RUSTSEC-2024-0436", reason = "compile-time macro in pinned sunset-sftp; replace with maintained identifier generation" },
+    # rustls 0.23.44 accepts TLS 1.3 handshake messages across key-change
+    # record boundaries (RUSTSEC-2026-0285). The handshake transcript is still
+    # authenticated; a network attacker cannot complete a handshake this way.
+    # navigato-http pins rustls =0.23.44 and is the tls-evaluation feature,
+    # not the SSH path. Drop this when FileMan pins rustls >= 0.23.45.
+    { id = "RUSTSEC-2026-0285", reason = "navigato-http pins rustls 0.23.44; tls-evaluation only, not SSH" },
 ]
 
 [bans]
