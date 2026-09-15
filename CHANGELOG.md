@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Do not close a tab from under you when tmux or SSH fails, and do not dump
+  the diagnostic into the tab strip (that wrapped the chrome over the
+  terminal). A dead tmux server keeps the last view; only `exit`/detach
+  close the tab. Strip notices stay on one line.
 - Hold remote pane output during a drag-select so a live TUI cannot rewrite
   the grid under the highlight.
 - Pin Sunset to `09708ad` (OpenSSH RSA host signatures and modulus precision).
