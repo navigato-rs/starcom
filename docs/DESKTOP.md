@@ -285,10 +285,11 @@ block the resize transaction.
 
 **Exit** closes the registered tab and drops its attachment; remote jobs keep
 running. To connect somewhere else, use **+**, which is the only connection
-form. If an initial attachment fails before a view exists, its fields and error
-move onto **+** so it can be repaired without leaving an empty tab. If the remote
-session itself ends — last pane `exit`, an explicit detach, or tmux going away —
-the tab is closed instead of sitting on a gray last view.
+form. If an initial attachment fails before a view exists, and that tab is the
+one you are looking at, its fields and error move onto **+**. Other failed
+tabs stay in the strip until you select them. If the remote session itself ends
+— last pane `exit` or an explicit detach — the tab is closed. If the tmux
+*server* process exits, the last view stays with the error on that tab.
 
 **Reconnect automatically after connection loss** is on by default in the
 connection form. Only transport loss is retried. That includes a TCP drop, a

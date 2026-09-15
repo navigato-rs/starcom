@@ -709,46 +709,30 @@ impl Workspace {
         self.composer_open = true;
     }
 
-    /// Failed first attachments have no terminal content and therefore are not
-    /// tabs. Reconcile background failures too; waiting until a failed tab is
-    /// selected would leave an empty chip visible in the strip.
+    /// A failed first attachment has no terminal to show. If it is the tab
+    /// you are looking at, move it onto `+` with its error. Other failed
+    /// chips stay put until selected — never close them from under you or
+    /// dump the diagnostic into the tab strip.
     fn retire_failed_empty_tabs(&mut self) {
-        let failed: Vec<_> = self
-            .tabs
-            .iter()
-            .enumerate()
-            .filter_map(|(index, tab)| {
-                let state = tab.client.lock();
-                (state.view.is_none()
-                    && matches!(
-                        state.phase,
-                        desktop::Phase::Failed | desktop::Phase::Disconnected
-                    ))
-                .then(|| (index, tab.id, state.error.clone()))
-            })
-            .collect();
-        if failed.is_empty() {
+        if self.composer_open {
             return;
         }
-
-        let active_id = (!self.composer_open)
-            .then(|| self.tabs.get(self.active).map(|tab| tab.id))
-            .flatten();
-        let retry_id = active_id.filter(|id| failed.iter().any(|(_, failed, _)| failed == id));
-        for &(index, id, ref error) in failed.iter().rev() {
-            if Some(id) == retry_id {
-                continue;
-            }
-            if let Some(error) = error {
-                self.notice = Some(format!("Closed a tab after connection failure: {error}"));
-            }
-            self.remove_tab(index);
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        let failed = {
+            let state = tab.client.lock();
+            state.view.is_none()
+                && matches!(
+                    state.phase,
+                    desktop::Phase::Failed | desktop::Phase::Disconnected
+                )
+        };
+        if !failed {
+            return;
         }
-        if let Some(id) = retry_id
-            && let Some(index) = self.tabs.iter().position(|tab| tab.id == id)
-        {
-            self.return_tab_to_composer(index);
-        }
+        let index = self.active;
+        self.return_tab_to_composer(index);
         self.persist();
     }
 
@@ -1084,7 +1068,13 @@ impl Workspace {
                                 navigation = Action::New;
                             }
                             if let Some(ref notice) = self.notice {
-                                ui.colored_label(ui.visuals().error_fg_color, notice);
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(notice.as_str())
+                                            .color(ui.visuals().error_fg_color),
+                                    )
+                                    .truncate(),
+                                );
                             }
                         },
                     );
@@ -1482,6 +1472,30 @@ mod tests {
             Some("authentication failed")
         );
         assert!(workspace.composer.ui.showing_form());
+    }
+
+    #[test]
+    fn a_background_failed_tab_is_not_closed_from_under_you() {
+        let mut workspace = Workspace::new(sync::Arc::new(|| {}), desktop::Startup::Demo).unwrap();
+        workspace.push_idle_tab().unwrap();
+        workspace.active = 0;
+        workspace.composer_open = false;
+        let background = workspace.tabs[1].id;
+        {
+            let mut state = workspace.tabs[1].client.lock();
+            state.view = None;
+            state.phase = desktop::Phase::Failed;
+            state.error = Some("The remote tmux server exited.".into());
+        }
+
+        workspace.retire_failed_empty_tabs();
+
+        assert!(
+            workspace.tabs.iter().any(|tab| tab.id == background),
+            "a failed background tab stays so it is not deleted from saved state"
+        );
+        assert!(workspace.notice.is_none());
+        assert!(!workspace.composer_open);
     }
 
     #[test]

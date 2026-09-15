@@ -586,17 +586,13 @@ impl DesktopUi {
         {
             self.open_terminal();
         }
-        // The control session ended on purpose: last pane `exit`, an explicit
-        // detach, or tmux itself going away. Same as the Exit button. Transport
-        // loss still reconnects; that is the only automatic retry.
+        // Last pane `exit` or an explicit detach: the session is gone, so the
+        // tab closes. A tmux *server* that exited is not that — keep the last
+        // view and the error on this tab so it is not deleted from the strip.
         if self.screen == Screen::Terminal
             && matches!(
                 state.failure,
-                Some(
-                    reconnect::Failure::Detached
-                        | reconnect::Failure::MissingSession
-                        | reconnect::Failure::ServerExit
-                )
+                Some(reconnect::Failure::Detached | reconnect::Failure::MissingSession)
             )
             && matches!(
                 state.phase,
@@ -2416,10 +2412,13 @@ mod tests {
         paint(&mut ui, &mut state);
         state.phase = desktop::Phase::Failed;
         state.failure = Some(reconnect::Failure::ServerExit);
+        state.error = Some(reconnect::Failure::ServerExit.summary().into());
+        let action = paint(&mut ui, &mut state);
         assert!(
-            matches!(paint(&mut ui, &mut state), Action::SessionGone),
-            "a tmux server/session end is not a reconnect"
+            !matches!(action, Action::SessionGone | Action::ReturnToComposer),
+            "a dead tmux server must not delete the tab; the last view stays"
         );
+        assert_eq!(ui.screen, Screen::Terminal);
     }
 
     #[test]
