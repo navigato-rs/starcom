@@ -274,8 +274,10 @@ verified to fail when automatic retry is disabled.
   Sunset 0.6's client emits no keyboard-interactive event and has no certificate
   path, so MFA and certificates cannot be driven from it at all. Agent-held
   `sk-ssh-ed25519@openssh.com` keys are offered; signing stays in the agent
-  (no libfido2). `sk-ecdsa-*` is still skipped as unsupported. Direct-file SK
-  and custom `IdentityAgent` sockets remain blockers.
+  (no libfido2). Security-key identity files are skipped so they are not
+  offered as signable files. `sk-ecdsa-*` is still skipped as unsupported.
+  Direct-file SK (without the agent) and custom `IdentityAgent` sockets
+  remain blockers.
 
 Gate: a user with several hosts can reopen yesterday's tabs, see what is running,
 and start what is missing, without Starcom authenticating or creating anything on

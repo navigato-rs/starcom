@@ -18,6 +18,7 @@ not supported by this backend are rejected, not ignored.\n\
 --identity may be repeated; files are offered in order. --agent also offers\n\
 keys from the local SSH agent. At least one of --identity or --agent is required.\n\
 Agent-held sk-ssh-ed25519 keys are offered; sk-ecdsa is not.\n\
+Security-key identity files are skipped; add them with ssh-add.\n\
 Defaults: port 22, history 200 lines (max 1000), timeout 10 seconds per operation.\n\
 OS DNS resolution and local agent IPC are not covered by the network timeout.\n\
 Default captures are NOT an atomic/interactive session.\n\

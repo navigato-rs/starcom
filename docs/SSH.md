@@ -100,9 +100,10 @@ SSH agent. `IdentitiesOnly yes` restricts agent offers to configured public
 identities, including public halves of encrypted keys. Multiple `IdentityFile`
 entries are kept. If the profile names none, Starcom offers every existing
 default it can sign (`~/.ssh/id_ed25519`, `id_ecdsa`, `id_rsa`) before the
-agent. Encrypted files are skipped with a note to `ssh-add` them. There is no
-agent-versus-key radio on the form; an extra identity path under Advanced is
-tried first.
+agent. Encrypted files and security-key identity files (`id_ed25519_sk` and
+similar) are skipped with a note to `ssh-add` them so the agent can sign.
+There is no agent-versus-key radio on the form; an extra identity path under
+Advanced is tried first.
 
 Hardware-backed `sk-ssh-ed25519@openssh.com` keys in the local agent are
 offered; the authenticator signs, Starcom does not talk to the FIDO device.

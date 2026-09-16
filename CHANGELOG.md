@@ -14,6 +14,7 @@
   close the tab. Strip notices stay on one line.
 - Hold remote pane output during a drag-select so a live TUI cannot rewrite
   the grid under the highlight.
+- Pin Sunset to `523cc5e` so security-key identity files are skipped and signed by the agent, instead of failing with `signature error`.
 - Pin Sunset to `09708ad` (OpenSSH RSA host signatures and modulus precision).
 - Use Sunset's shared client for SSH configuration, trust, and ProxyJump routes.
 - Coalesce remote wakeups without dropping output; keep copy feedback at footer size.
