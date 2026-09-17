@@ -206,13 +206,16 @@ underlined "click here to copy" affordance whose OSC 8 tmux has stripped — a
 URL on the same or an adjacent line. A long underlined run is treated as
 content, not a link. Hover shows the destination. A tiny pointer
 move is not treated as a drag. Keyboard Space and Enter are not pointer
-clicks. When the pane asked for mouse reports and the click was not a link, an
-unmodified tap with no selected text is sent as a paired press and release so
-the application still sees the click; a drag that produced a selection copies
-on release. Shift/Ctrl/Alt/Cmd clicks, double-clicks, and
-triple-clicks stay local. Drag to select, double-click for a word, and
-triple-click for a line. Selection anchors live in the terminal model, so they
-follow incoming scrolls. Remote output is held during a drag-select so a live
+clicks. When the live pane still has mouse reporting enabled and the
+click was not a link, an unmodified tap with no selected text is sent as
+a paired press and release so the application still sees the click; a
+drag that produced a selection copies on release. Snapshot mouse flags
+are applied at restore and then follow live DECSET/DECRST, so a tap in
+the shell after a TUI exits is not injected as SGR CSI. Shift/Ctrl/Alt/Cmd
+clicks, double-clicks, and triple-clicks stay local. Drag to select,
+double-click for a word, and triple-click for a line. Selection anchors
+live in the terminal model, so they follow incoming scrolls. Remote
+output is held during a drag-select so a live
 pane cannot rewrite the grid under the highlight. Copying handles wide cells,
 combining characters, and soft wraps, with a 1 MiB output limit.
 

@@ -22,7 +22,7 @@ pub const STATE_FORMAT: &str = concat!(
     "#{alternate_saved_x}|#{alternate_saved_y}|",
     "#{scroll_region_upper}|#{scroll_region_lower}|",
     "#{cursor_flag}|#{insert_flag}|#{keypad_cursor_flag}|#{keypad_flag}|",
-    "#{wrap_flag}|#{mouse_standard_flag}|#{mouse_button_flag}|#{mouse_any_flag}|",
+    "#{wrap_flag}|#{mouse_standard_flag}|#{mouse_button_flag}|#{mouse_all_flag}|",
     "#{mouse_utf8_flag}|#{mouse_sgr_flag}|#{bracket_paste_flag}|#{pane_tabs}"
 );
 
@@ -40,7 +40,8 @@ pub struct State {
     saved_cursor: (usize, usize),
     scroll_region: (usize, usize),
     // Cursor, insert, application cursor, application keypad, wrap, mouse
-    // standard/button/any/UTF8/SGR, in that order.
+    // 1000/1002/1003/UTF8/SGR. modes[7] is mouse_all_flag (1003), not
+    // mouse_any_flag (1000|1002|1003).
     modes: [bool; 10],
     // Older tmux versions do not export this input-side mode.
     bracketed_paste: Option<bool>,
@@ -144,7 +145,7 @@ impl State {
         self.modes[5] || self.modes[6] || self.modes[7]
     }
 
-    /// SGR mouse (1006). tmux may swallow the DECSET that Alacritty would see.
+    /// SGR mouse (1006).
     pub fn sgr_mouse(&self) -> bool {
         self.modes[9]
     }
@@ -255,21 +256,20 @@ impl Pane {
         })
     }
 
-    /// The single source of truth for mouse capabilities. tmux can swallow the
-    /// DECSET that the live Alacritty model would see, so trust either the model
-    /// or the control-mode snapshot rather than OR-ing them at each call site.
+    /// Live mouse reporting (1000/1002/1003). Snapshot flags are applied to the
+    /// model at restore; later DECSET/DECRST in pane output update it.
     pub fn reports_mouse(&self) -> bool {
-        self.terminal.reports_mouse() || self.state.reports_mouse()
+        self.terminal.reports_mouse()
     }
 
     /// Wheel belongs to the application (mouse reporting or alternate scroll).
     pub fn wants_wheel(&self) -> bool {
-        self.terminal.wants_wheel() || self.state.reports_mouse()
+        self.terminal.wants_wheel()
     }
 
     /// SGR (1006) extended mouse encoding is in effect.
     pub fn sgr_mouse(&self) -> bool {
-        self.terminal.sgr_mouse() || self.state.sgr_mouse()
+        self.terminal.sgr_mouse()
     }
 }
 
@@ -511,16 +511,69 @@ mod tests {
         text.iter().map(|line| (*line).to_owned()).collect()
     }
 
+    fn mouse_state(standard: bool, button: bool, all: bool, sgr: bool) -> State {
+        let flag = |on| if on { "1" } else { "0" };
+        State::parse(&format!(
+            "%1|@2|12|3|0|0|0|0|0|0|2000|||0|2|1|0|0|0|1|{}|{}|{}|0|{}|1|",
+            flag(standard),
+            flag(button),
+            flag(all),
+            flag(sgr)
+        ))
+        .unwrap()
+    }
+
     #[test]
     fn mouse_standard_flag_means_the_pane_wants_the_wheel() {
         let off = state(12, 3);
         assert!(!off.reports_mouse());
-        let on = State::parse("%1|@2|12|3|0|0|0|0|0|0|2000|||0|2|1|0|0|0|1|1|0|0|0|0|1|").unwrap();
+        let on = mouse_state(true, false, false, false);
         assert!(on.reports_mouse());
         assert!(!on.sgr_mouse());
-        let sgr = State::parse("%1|@2|12|3|0|0|0|0|0|0|2000|||0|2|1|0|0|0|1|0|0|0|0|1|1|").unwrap();
+        let all = mouse_state(false, false, true, false);
+        assert!(all.reports_mouse(), "mouse_all_flag is DECSET 1003");
+        let sgr = mouse_state(false, false, false, true);
         assert!(sgr.sgr_mouse());
         assert!(!sgr.reports_mouse());
+    }
+
+    #[test]
+    fn restored_mouse_modes_follow_live_decset_and_decrst() {
+        let grid = lines(&["shell", "", ""]);
+        let mut pane = Pane::restore(state(12, 3), &grid, &[], &[], 0).unwrap();
+        assert!(!pane.reports_mouse());
+        assert!(!pane.sgr_mouse());
+        pane.terminal.feed(b"\x1b[?1000h\x1b[?1006h");
+        assert!(pane.reports_mouse());
+        assert!(pane.sgr_mouse());
+
+        // Snapshot flags stay on until the next layout restore. Live DECRST must
+        // win, or a later tap in the shell is sent as SGR CSI and typed as
+        // `0;71;34M0;71;34m`.
+        let mut pane =
+            Pane::restore(mouse_state(true, false, false, true), &grid, &[], &[], 0).unwrap();
+        assert!(pane.reports_mouse());
+        assert!(pane.sgr_mouse());
+        pane.terminal.feed(b"\x1b[?1000l\x1b[?1006l");
+        assert!(!pane.reports_mouse());
+        assert!(!pane.sgr_mouse());
+    }
+
+    #[test]
+    fn standard_mouse_restore_does_not_enable_any_event_tracking() {
+        // tmux `mouse_any_flag` is 1000|1002|1003. Restoring it as 1003 left
+        // MOTION on after the application sent only 1000l.
+        let mut pane = Pane::restore(
+            mouse_state(true, false, false, false),
+            &lines(&["shell", "", ""]),
+            &[],
+            &[],
+            0,
+        )
+        .unwrap();
+        assert!(pane.reports_mouse());
+        pane.terminal.feed(b"\x1b[?1000l");
+        assert!(!pane.reports_mouse());
     }
 
     #[test]
