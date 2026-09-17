@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Do not forward SGR mouse clicks after a TUI has left mouse reporting.
+  Snapshot flags are applied at restore; later DECSET/DECRST follow the live
+  model. Restore 1003 from `mouse_all_flag`, not `mouse_any_flag`. A tap in
+  the shell was being typed as `0;col;rowM`.
 - Copy a link destination on click (OSC 8, an `http(s)` URL under the cell,
   or, for a short underlined "click here" affordance whose OSC 8 was stripped,
   a URL on the same or an adjacent line). A tap that stays on one cell is
