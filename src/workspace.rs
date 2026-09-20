@@ -197,7 +197,9 @@ fn tab_color(phase: desktop::Phase, idle: egui::Color32, quiet: bool) -> egui::C
         desktop::Phase::Connecting | desktop::Phase::Reconnecting => {
             egui::Color32::from_rgb(140, 108, 28)
         }
-        desktop::Phase::Failed => egui::Color32::from_rgb(140, 108, 28),
+        desktop::Phase::Failed | desktop::Phase::Disconnected => {
+            egui::Color32::from_rgb(148, 40, 40)
+        }
         _ => idle,
     }
 }
@@ -959,7 +961,10 @@ impl Workspace {
                                     }
                                     let color = tab_color(phase, idle_fill, quiet);
                                     let mut text = egui::RichText::new(title).size(16.0).strong();
-                                    if phase == desktop::Phase::Failed {
+                                    if matches!(
+                                        phase,
+                                        desktop::Phase::Failed | desktop::Phase::Disconnected
+                                    ) {
                                         text = text.color(egui::Color32::from_rgb(255, 196, 196));
                                     }
                                     paint_tab_fills(ui, color, lift(color, 32));
@@ -1230,20 +1235,13 @@ impl Workspace {
                                 }
                             }
                             ui::Action::Disconnect => {
-                                // Exit drops this attachment and its registered
-                                // tab. The `+` composer is the only connection
-                                // form in the workspace.
+                                // Exit is the only way a session tab is removed.
                                 close_after_exit = Some(id);
                                 tab.client.disconnect();
                                 Ok(())
                             }
                             ui::Action::ReturnToComposer => {
                                 return_to_composer = true;
-                                Ok(())
-                            }
-                            ui::Action::SessionGone => {
-                                close_after_exit = Some(id);
-                                tab.client.disconnect();
                                 Ok(())
                             }
                             // Resolve clipboard reads in place so the whole frame
@@ -1352,10 +1350,14 @@ mod tests {
         let live = tab_color(desktop::Phase::Watching, idle, false);
         let quiet = tab_color(desktop::Phase::Watching, idle, true);
         assert_ne!(live, quiet);
-        assert_eq!(
+        assert_ne!(
             tab_color(desktop::Phase::Failed, idle, false),
             tab_color(desktop::Phase::Reconnecting, idle, false),
-            "failed uses the same chip fill as reconnecting"
+            "a broken tab is red, not the reconnecting yellow"
+        );
+        assert_eq!(
+            tab_color(desktop::Phase::Failed, idle, false),
+            tab_color(desktop::Phase::Disconnected, idle, false),
         );
         assert_eq!(
             tab_color(desktop::Phase::Resynchronizing, idle, false),
@@ -1432,22 +1434,6 @@ mod tests {
         let id = workspace.tabs[0].id;
         workspace.apply(Action::Tab(id, Box::new(ui::Action::Disconnect)), || None);
         assert!(workspace.tabs.is_empty());
-        assert!(workspace.composer_open);
-    }
-
-    #[test]
-    fn a_gone_session_closes_the_tab() {
-        let mut workspace = Workspace::new(sync::Arc::new(|| {}), desktop::Startup::Demo).unwrap();
-        workspace.tabs[0].ui.restore(store::Tab {
-            destination: "dev".into(),
-            host: "10.0.0.2".into(),
-            session: "work".into(),
-            ..store::Tab::default()
-        });
-        workspace.tabs[0].label = label(&workspace.tabs[0].ui.saved());
-        let id = workspace.tabs[0].id;
-        workspace.apply(Action::Tab(id, Box::new(ui::Action::SessionGone)), || None);
-        assert!(workspace.tabs.iter().all(|tab| tab.id != id));
         assert!(workspace.composer_open);
     }
 

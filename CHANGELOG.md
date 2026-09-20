@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Copy a wrapped `http(s)` URL as one destination; a link split across
+  soft-wrapped rows was only copying the clicked row.
+- Never auto-close a session tab. A broken connection keeps the last view
+  frozen, colors the tab red, and leaves **Exit** on the status bar for the
+  user. Only **Exit** (or closing the chip) removes it.
+- Hide the maximize button when the window has a single pane.
+- Apply DECSET 2026 synchronized updates atomically (and on the 150ms
+  timeout) so Grok/OpenTUI erase-then-redraw does not leave leftover lines.
 - Do not forward SGR mouse clicks after a TUI has left mouse reporting.
   Snapshot flags are applied at restore; later DECSET/DECRST follow the live
   model. Restore 1003 from `mouse_all_flag`, not `mouse_any_flag`. A tap in
@@ -14,8 +22,7 @@
   not fake pointer clicks, so they are not turned into mouse CSI.
 - Do not close a tab from under you when tmux or SSH fails, and do not dump
   the diagnostic into the tab strip (that wrapped the chrome over the
-  terminal). A dead tmux server keeps the last view; only `exit`/detach
-  close the tab. Strip notices stay on one line.
+  terminal). Strip notices stay on one line.
 - Hold remote pane output during a drag-select so a live TUI cannot rewrite
   the grid under the highlight.
 - Pin Sunset to `510efc5` so security-key identity files are skipped and signed by the agent, instead of failing with `signature error`.

@@ -1142,11 +1142,23 @@ fn watch(
                 }
                 // Socket readiness wait, not a repaint timer. Idle reads do not
                 // wake the UI. All network I/O is outside the model mutex.
-                let notifications =
-                    inspector.poll(time::Instant::now() + time::Duration::from_secs(30))?;
-                if notifications.is_empty() {
-                    continue;
-                }
+                // A pending DECSET 2026 update must expire in 150ms even with
+                // no further output, or Grok/OpenTUI redraws stay invisible.
+                let wait_until = {
+                    let state = shared
+                        .0
+                        .lock()
+                        .unwrap_or_else(sync::PoisonError::into_inner);
+                    if !state.accepts(epoch) {
+                        return Ok(Outcome::Cancelled);
+                    }
+                    state
+                        .view
+                        .as_ref()
+                        .and_then(snapshot::View::sync_deadline)
+                        .unwrap_or_else(|| time::Instant::now() + time::Duration::from_secs(30))
+                };
+                let notifications = inspector.poll(wait_until)?;
                 let mut state = shared
                     .0
                     .lock()
@@ -1159,6 +1171,7 @@ fn watch(
                 for notification in notifications {
                     view.apply(notification);
                 }
+                view.flush_expired_sync();
                 let changed = view.display_seq() != seq;
                 drop(state);
                 last_alive = reconnect::AliveClock::now();

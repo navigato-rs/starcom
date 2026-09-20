@@ -7,9 +7,7 @@ mod terminal;
 
 use std::{collections, fs, path, sync, thread, time};
 
-use crate::{
-    core, desktop, input as terminal_input, reconnect, session, snapshot, ssh, ssh_config, store,
-};
+use crate::{core, desktop, input as terminal_input, session, snapshot, ssh, ssh_config, store};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Screen {
@@ -290,9 +288,6 @@ pub enum Action {
     /// tabs must not become connection forms; the workspace moves this form
     /// back onto the `+` composer so it can be repaired and retried.
     ReturnToComposer,
-    /// The remote session ended (last pane `exit`, detach, or tmux gone).
-    /// Close the tab; do not leave a gray frozen view.
-    SessionGone,
     /// Rename the attached tmux session. The worker updates the tab label
     /// after tmux accepts the name.
     RenameSession(String),
@@ -586,21 +581,6 @@ impl DesktopUi {
             && self.generation != state.generation
         {
             self.open_terminal();
-        }
-        // Last pane `exit` or an explicit detach: the session is gone, so the
-        // tab closes. A tmux *server* that exited is not that — keep the last
-        // view and the error on this tab so it is not deleted from the strip.
-        if self.screen == Screen::Terminal
-            && matches!(
-                state.failure,
-                Some(reconnect::Failure::Detached | reconnect::Failure::MissingSession)
-            )
-            && matches!(
-                state.phase,
-                desktop::Phase::Disconnected | desktop::Phase::Failed
-            )
-        {
-            return Action::SessionGone;
         }
         match self.screen {
             Screen::Connection => self.show_connection(root, state),
@@ -1088,6 +1068,9 @@ impl DesktopUi {
     }
 
     fn show_terminal(&mut self, root: &mut egui::Ui, state: &mut desktop::State) -> Action {
+        if let Some(ref mut view) = state.view {
+            view.flush_expired_sync();
+        }
         let scrolled = root.input(|input| input.smooth_scroll_delta != egui::Vec2::ZERO);
         self.note_refresh(state, scrolled);
         let generation_changed = self.generation != state.generation;
@@ -1835,6 +1818,7 @@ fn field(ui: &mut egui::Ui, label: &str, value: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::reconnect;
 
     /// `~/.ssh/<file>` after `expand_path`, including Windows separators.
     fn test_config(text: &str) -> ssh_config::Config {
@@ -2400,14 +2384,21 @@ mod tests {
     }
 
     #[test]
-    fn a_destroyed_session_disconnects_like_exit() {
+    fn a_destroyed_session_keeps_the_frozen_tab() {
         let mut ui = DesktopUi::default();
         let mut state = desktop::State::interactive_demo().unwrap();
         paint(&mut ui, &mut state);
         assert_eq!(ui.screen, Screen::Terminal);
         state.phase = desktop::Phase::Failed;
         state.failure = Some(reconnect::Failure::MissingSession);
-        assert!(matches!(paint(&mut ui, &mut state), Action::SessionGone));
+        let action = paint(&mut ui, &mut state);
+        assert!(
+            !matches!(action, Action::ReturnToComposer | Action::Disconnect),
+            "a gone session must not close or move the tab; Exit stays for the user"
+        );
+        assert_eq!(ui.screen, Screen::Terminal);
+        let painted: usize = ui.pane_ui.values().map(|pane| pane.painted_rows).sum();
+        assert!(painted > 0, "the last view stays frozen on the tab");
         let mut ui = DesktopUi::default();
         let mut state = desktop::State::interactive_demo().unwrap();
         paint(&mut ui, &mut state);
@@ -2416,7 +2407,7 @@ mod tests {
         state.error = Some(reconnect::Failure::ServerExit.summary().into());
         let action = paint(&mut ui, &mut state);
         assert!(
-            !matches!(action, Action::SessionGone | Action::ReturnToComposer),
+            !matches!(action, Action::ReturnToComposer | Action::Disconnect),
             "a dead tmux server must not delete the tab; the last view stays"
         );
         assert_eq!(ui.screen, Screen::Terminal);

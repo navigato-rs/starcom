@@ -201,9 +201,10 @@ not. The scrollbar is always local history navigation, including when a TUI owns
 wheel events; its gutter cannot start selection or send mouse input remotely.
 
 A click on a link copies its destination to the local clipboard: OSC 8 if the
-cell has one, otherwise an `http(s)` URL covering the cell, or — for a short
-underlined "click here to copy" affordance whose OSC 8 tmux has stripped — a
-URL on the same or an adjacent line. A long underlined run is treated as
+cell has one, otherwise an `http(s)` URL covering the cell (including when
+the URL is split across soft-wrapped rows), or — for a short underlined
+"click here to copy" affordance whose OSC 8 tmux has stripped — a URL on
+the same or an adjacent line. A long underlined run is treated as
 content, not a link. Hover shows the destination. A tiny pointer
 move is not treated as a drag. Keyboard Space and Enter are not pointer
 clicks. When the live pane still has mouse reporting enabled and the
@@ -263,7 +264,8 @@ Each interactive pane has window-style buttons in its top-right corner:
 - move left / right / up / down (`swap-pane` with the neighbor that shares
   that edge). Hidden when there is no neighbor on that side.
 - maximize / restore (`resize-pane -Z`); the icon changes to overlapping
-  rectangles while the pane is maximized
+  rectangles while the pane is maximized. Hidden when the window has only
+  one pane.
 - close the pane (`kill-pane`), hidden when it is the last pane in the
   window
 
@@ -291,13 +293,14 @@ block the resize transaction.
 
 ## Disconnect and exit behavior
 
-**Exit** closes the registered tab and drops its attachment; remote jobs keep
-running. To connect somewhere else, use **+**, which is the only connection
-form. If an initial attachment fails before a view exists, and that tab is the
-one you are looking at, its fields and error move onto **+**. Other failed
-tabs stay in the strip until you select them. If the remote session itself ends
-— last pane `exit` or an explicit detach — the tab is closed. If the tmux
-*server* process exits, the last view stays with the error on that tab.
+**Exit** is the only way a session tab is removed: it drops the attachment and
+the chip; remote jobs keep running. To connect somewhere else, use **+**,
+which is the only connection form. If an initial attachment fails before a
+view exists, and that tab is the one you are looking at, its fields and error
+move onto **+**. Other failed chips stay in the strip until you select them.
+If the remote session ends — last pane `exit`, an explicit detach, or a dead
+tmux server — the tab stays, the last view is frozen, and the chip turns red
+so you can still copy from it or press **Exit**.
 
 **Reconnect automatically after connection loss** is on by default in the
 connection form. Only transport loss is retried. That includes a TCP drop, a
