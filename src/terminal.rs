@@ -61,7 +61,35 @@ impl Terminal {
             held.extend_from_slice(&bytes[..bytes.len().min(room)]);
             return;
         }
+        // OpenTUI/Grok use DECSET 2026. VTE buffers those bytes until ESU or
+        // the 150ms timeout; Alacritty's PTY loop calls stop_sync, we must too.
+        let _ = self.flush_expired_sync();
         self.parser.advance(&mut self.model, bytes);
+    }
+
+    /// True while a DECSET 2026 synchronized update has not been applied.
+    pub fn sync_pending(&self) -> bool {
+        use vte::ansi::Timeout;
+        self.parser.sync_timeout().pending_timeout()
+    }
+
+    pub fn sync_deadline(&self) -> Option<std::time::Instant> {
+        self.parser.sync_timeout().sync_timeout()
+    }
+
+    /// Apply a synchronized update whose 150ms timeout has elapsed.
+    pub fn flush_expired_sync(&mut self) -> bool {
+        if self.held_output.is_some() {
+            return false;
+        }
+        let Some(deadline) = self.sync_deadline() else {
+            return false;
+        };
+        if std::time::Instant::now() < deadline {
+            return false;
+        }
+        self.parser.stop_sync(&mut self.model);
+        true
     }
 
     /// Freeze the grid for a drag-select. Bytes are applied when the drag ends.
@@ -197,8 +225,8 @@ impl Terminal {
         if let Some(uri) = self.hyperlink_at(point).filter(|uri| !uri.is_empty()) {
             return Some(uri);
         }
-        let line = self.line_text(point.line)?;
-        if let Some(url) = http_url_at(&line, point.column.0) {
+        let (column, line) = self.wrapped_line_text(point)?;
+        if let Some(url) = http_url_at(&line, column) {
             return Some(url.to_owned());
         }
         // Only a short underlined affordance stands in for a stripped OSC 8
@@ -211,8 +239,17 @@ impl Terminal {
         if let Some(url) = first_http_url(&line) {
             return Some(url.to_owned());
         }
+        use grid::Dimensions;
+        let top = self.model.grid().topmost_line().0;
+        let bottom = self.size.rows() as i32 - 1;
         for delta in [-1_i32, 1] {
-            let Some(nearby) = self.line_text(index::Line(point.line.0 + delta)) else {
+            let nearby_line = point.line.0 + delta;
+            if nearby_line < top || nearby_line > bottom {
+                continue;
+            }
+            let Some((_, nearby)) =
+                self.wrapped_line_text(index::Point::new(index::Line(nearby_line), point.column))
+            else {
                 continue;
             };
             if let Some(url) = first_http_url(&nearby) {
@@ -220,6 +257,53 @@ impl Terminal {
             }
         }
         None
+    }
+
+    fn line_wraps(&self, line: index::Line) -> bool {
+        let last = index::Column(self.size.columns().saturating_sub(1));
+        self.model.grid()[line][last]
+            .flags
+            .contains(term::cell::Flags::WRAPLINE)
+    }
+
+    /// Soft-wrapped rows joined into one logical line, and the click column
+    /// inside that join. Trailing spaces are kept on wrapping rows so a URL
+    /// split at the margin is still one string.
+    fn wrapped_line_text(&self, point: index::Point) -> Option<(usize, String)> {
+        use grid::Dimensions;
+        let point = self.clamp_point(point);
+        let top = self.model.grid().topmost_line().0;
+        let bottom = self.size.rows() as i32 - 1;
+        let mut start = point.line.0;
+        while start > top && self.line_wraps(index::Line(start - 1)) {
+            start -= 1;
+        }
+        let mut text = String::new();
+        let mut column = 0;
+        let mut row = start;
+        loop {
+            if row == point.line.0 {
+                column = text.chars().count() + point.column.0;
+            }
+            let wraps = self.line_wraps(index::Line(row));
+            let mut piece = self.model.bounds_to_string(
+                index::Point::new(index::Line(row), index::Column(0)),
+                index::Point::new(
+                    index::Line(row),
+                    index::Column(self.size.columns().saturating_sub(1)),
+                ),
+            );
+            piece = piece.trim_end_matches(&['\r', '\n'][..]).to_owned();
+            if !wraps {
+                piece = piece.trim_end_matches(' ').to_owned();
+            }
+            text.push_str(&piece);
+            if !wraps || row >= bottom {
+                break;
+            }
+            row += 1;
+        }
+        Some((column, text))
     }
 
     /// Cells in the contiguous underlined run containing `point`, or 0 when the
@@ -244,24 +328,6 @@ impl Terminal {
             right += 1;
         }
         right - left + 1
-    }
-
-    fn line_text(&self, line: index::Line) -> Option<String> {
-        use grid::Dimensions;
-        let top = self.model.grid().topmost_line().0;
-        let bottom = self.size.rows() as i32 - 1;
-        if line.0 < top || line.0 > bottom {
-            return None;
-        }
-        Some(
-            self.model
-                .bounds_to_string(
-                    index::Point::new(line, index::Column(0)),
-                    index::Point::new(line, index::Column(self.size.columns() - 1)),
-                )
-                .trim_end_matches(&[' ', '\r', '\n'][..])
-                .to_owned(),
-        )
     }
 
     fn clamp_point(&self, point: index::Point) -> index::Point {
@@ -509,6 +575,41 @@ mod tests {
                 .is_none(),
             "a URL two lines away is not associated with the affordance"
         );
+    }
+
+    #[test]
+    fn a_url_split_across_wrapped_rows_copies_in_one_piece() {
+        let mut terminal = Terminal::new(core::Size::new(20, 4).unwrap(), 0);
+        terminal.feed(b"https://example.com/wrap-path");
+        assert_eq!(
+            terminal
+                .link_destination(index::Point::new(index::Line(0), index::Column(2)))
+                .as_deref(),
+            Some("https://example.com/wrap-path")
+        );
+        assert_eq!(
+            terminal
+                .link_destination(index::Point::new(index::Line(1), index::Column(2)))
+                .as_deref(),
+            Some("https://example.com/wrap-path"),
+            "the continuation row is the same URL"
+        );
+    }
+
+    #[test]
+    fn synchronized_updates_are_not_shown_until_esu() {
+        let mut terminal = Terminal::new(core::Size::new(20, 4).unwrap(), 0);
+        terminal.feed(b"old");
+        terminal.feed(b"\x1b[?2026h\x1b[2J\x1b[Hnew");
+        assert_eq!(
+            terminal.screen_lines()[0],
+            "old",
+            "a Grok/OpenTUI BSU must not paint the erase"
+        );
+        assert!(terminal.sync_pending());
+        terminal.feed(b"\x1b[?2026l");
+        assert!(!terminal.sync_pending());
+        assert_eq!(terminal.screen_lines()[0], "new");
     }
 
     #[test]

@@ -607,6 +607,9 @@ impl PaneUi {
                             }
                         }
                     }
+                    if !ui.input(|input| input.pointer.primary_down()) {
+                        pane.terminal.hold_output(false);
+                    }
                     if extend_drag
                         && let (Some((point, side)), Some(position)) = (pointer_point, pointer_pos)
                     {
@@ -827,7 +830,7 @@ impl PaneUi {
                 self.scroll_frac = viewport.frac;
                 pane.terminal.scroll_history(viewport.offset);
                 if controls && *focused == Some(pane_id) {
-                    let buttons = 3 + usize::from(can_kill) + neighbors.count();
+                    let buttons = 2 + usize::from(can_kill) * 2 + neighbors.count();
                     let width = 8.0 + buttons as f32 * 24.0;
                     let bar = egui::Rect::from_min_max(
                         egui::pos2(rect.max.x - width - 4.0, rect.min.y + 4.0),
@@ -857,15 +860,18 @@ impl PaneUi {
                                             {
                                                 events.push(input::Action::KillPane);
                                             }
-                                            let (zoom_icon, zoom_tip) = if zoomed {
-                                                (ChromeIcon::Restore, "Restore pane layout")
-                                            } else {
-                                                (ChromeIcon::Zoom, "Maximize this pane")
-                                            };
-                                            if chrome_button(ui, zoom_icon, zoom_tip) {
-                                                events.push(input::Action::ZoomPane);
-                                                ui.ctx()
-                                                    .memory_mut(|memory| memory.request_focus(id));
+                                            if can_kill {
+                                                let (zoom_icon, zoom_tip) = if zoomed {
+                                                    (ChromeIcon::Restore, "Restore pane layout")
+                                                } else {
+                                                    (ChromeIcon::Zoom, "Maximize this pane")
+                                                };
+                                                if chrome_button(ui, zoom_icon, zoom_tip) {
+                                                    events.push(input::Action::ZoomPane);
+                                                    ui.ctx().memory_mut(|memory| {
+                                                        memory.request_focus(id)
+                                                    });
+                                                }
                                             }
                                             for (icon, tip, other) in [
                                                 (ChromeIcon::MoveDown, "Move down", neighbors.down),

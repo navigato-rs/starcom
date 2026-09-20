@@ -337,7 +337,8 @@ pub struct View {
     /// tell an orderly detach apart from a server that went away.
     exit: Option<ExitReason>,
     /// Bumped when a notification changes what is on screen. Idle polls that
-    /// carry no output must not wake the GUI.
+    /// carry no output must not wake the GUI. Mid-2026 synchronized updates
+    /// do not bump this until ESU or timeout, so a torn erase is never painted.
     display_seq: u64,
 }
 
@@ -414,6 +415,26 @@ impl View {
         self.display_seq
     }
 
+    /// Soonest DECSET 2026 timeout across panes, if a synchronized update is open.
+    pub(crate) fn sync_deadline(&self) -> Option<std::time::Instant> {
+        self.panes
+            .values()
+            .filter_map(|pane| pane.terminal.sync_deadline())
+            .min()
+    }
+
+    /// Apply synchronized updates whose 150ms timeout elapsed.
+    pub(crate) fn flush_expired_sync(&mut self) -> bool {
+        let mut changed = false;
+        for pane in self.panes.values_mut() {
+            changed |= pane.terminal.flush_expired_sync();
+        }
+        if changed {
+            self.display_seq = self.display_seq.wrapping_add(1);
+        }
+        changed
+    }
+
     /// Why tmux ended this control session, if it said. `None` means the view
     /// was disconnected locally (cancelled, or the transport dropped first).
     pub fn exit_reason(&self) -> Option<&ExitReason> {
@@ -452,7 +473,9 @@ impl View {
                 match self.panes.get_mut(&pane) {
                     Some(terminal) if !bytes.is_empty() => {
                         terminal.terminal.feed(&bytes);
-                        self.display_seq = self.display_seq.wrapping_add(1);
+                        if !terminal.terminal.sync_pending() {
+                            self.display_seq = self.display_seq.wrapping_add(1);
+                        }
                     }
                     Some(_) => {}
                     None => {
@@ -737,6 +760,31 @@ mod tests {
         state.cursor = (2, 1);
         let pane = Pane::restore(state, &lines(&["abcdef", ""]), &[], &[], 0).unwrap();
         assert_eq!(pane.terminal.screen_lines(), ["abcd", "ef", ""]);
+    }
+
+    #[test]
+    fn synchronized_output_does_not_publish_a_torn_frame() {
+        let pane = Pane::restore(state(12, 3), &lines(&["old", "", ""]), &[], &[], 0).unwrap();
+        let mut view = View::new(tmuxctl::SessionId(0), vec![pane]).unwrap();
+        let seq = view.display_seq();
+        view.apply(tmuxctl::Notification::Output {
+            pane: tmuxctl::PaneId(1),
+            bytes: b"\x1b[?2026h\x1b[2J\x1b[Htorn".to_vec(),
+        });
+        assert_eq!(view.display_seq(), seq, "BSU must not wake the GUI");
+        assert_eq!(
+            view.panes()[&tmuxctl::PaneId(1)].terminal.screen_lines()[0],
+            "old"
+        );
+        view.apply(tmuxctl::Notification::Output {
+            pane: tmuxctl::PaneId(1),
+            bytes: b"\x1b[?2026l".to_vec(),
+        });
+        assert_ne!(view.display_seq(), seq);
+        assert_eq!(
+            view.panes()[&tmuxctl::PaneId(1)].terminal.screen_lines()[0],
+            "torn"
+        );
     }
 
     #[test]
