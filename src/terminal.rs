@@ -55,16 +55,19 @@ impl Terminal {
         }
     }
 
-    pub fn feed(&mut self, bytes: &[u8]) {
+    /// Returns whether the grid may have changed. False while a DECSET 2026
+    /// update is still buffered (no ESU yet, timeout not elapsed).
+    pub fn feed(&mut self, bytes: &[u8]) -> bool {
         if let Some(held) = self.held_output.as_mut() {
             let room = MAX_HELD_OUTPUT.saturating_sub(held.len());
             held.extend_from_slice(&bytes[..bytes.len().min(room)]);
-            return;
+            return false;
         }
         // OpenTUI/Grok use DECSET 2026. VTE buffers those bytes until ESU or
         // the 150ms timeout; Alacritty's PTY loop calls stop_sync, we must too.
-        let _ = self.flush_expired_sync();
+        let flushed = self.flush_expired_sync();
         self.parser.advance(&mut self.model, bytes);
+        flushed || !self.sync_pending()
     }
 
     /// True while a DECSET 2026 synchronized update has not been applied.

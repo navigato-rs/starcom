@@ -472,8 +472,7 @@ impl View {
             | tmuxctl::Notification::ExtendedOutput { pane, bytes, .. } => {
                 match self.panes.get_mut(&pane) {
                     Some(terminal) if !bytes.is_empty() => {
-                        terminal.terminal.feed(&bytes);
-                        if !terminal.terminal.sync_pending() {
+                        if terminal.terminal.feed(&bytes) {
                             self.display_seq = self.display_seq.wrapping_add(1);
                         }
                     }

@@ -1168,13 +1168,19 @@ fn watch(
                 }
                 let view = state.view.as_mut().expect("view published");
                 let seq = view.display_seq();
+                let had_output = !notifications.is_empty();
                 for notification in notifications {
                     view.apply(notification);
                 }
                 view.flush_expired_sync();
                 let changed = view.display_seq() != seq;
                 drop(state);
-                last_alive = reconnect::AliveClock::now();
+                // Idle and nudge wakes are not I/O. Stamping last_alive here
+                // hid laptop suspend: the worker reset the clock and sat on a
+                // dead socket until TCP noticed, instead of reconnecting.
+                if had_output {
+                    last_alive = reconnect::AliveClock::now();
+                }
                 if changed {
                     wake();
                 }

@@ -8,6 +8,9 @@
   frozen, colors the tab red, and leaves **Exit** on the status bar for the
   user. Only **Exit** (or closing the chip) removes it.
 - Hide the maximize button when the window has a single pane.
+- Reconnect immediately after laptop suspend. Idle SSH polls and nudge
+  wakes must not stamp the alive clock, or the worker hides the suspend
+  and sits on a dead socket until TCP times out.
 - Apply DECSET 2026 synchronized updates atomically (and on the 150ms
   timeout) so Grok/OpenTUI erase-then-redraw does not leave leftover lines.
 - Do not forward SGR mouse clicks after a TUI has left mouse reporting.
