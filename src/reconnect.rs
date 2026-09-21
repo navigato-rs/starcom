@@ -450,6 +450,17 @@ mod tests {
             time::Duration::from_secs(60)
         ));
         assert!(!AliveClock::now().suspended());
+        // An idle poll or nudge after wakeup must not replace this clock with
+        // now(): that would hide the suspend and sit on a dead SSH socket.
+        let slept = AliveClock {
+            instant: time::Instant::now(),
+            wall: time::SystemTime::now() - time::Duration::from_secs(60),
+        };
+        assert!(slept.suspended());
+        assert!(
+            !AliveClock::now().suspended(),
+            "stamping last_alive on an empty poll would drop the suspend"
+        );
     }
 
     #[test]
