@@ -27,9 +27,10 @@ is provided by the desktop client.
 
 ## SSH-config discovery
 
-The desktop loads the user's `~/.ssh/config` when the workspace starts and on
-**Reload config**. Literal `Host` names are shown as suggestions. Wildcard host
-blocks still provide defaults but are not listed as destinations.
+The desktop loads the user's `~/.ssh/config` when the workspace starts, again
+when **+** opens a new connection, and on **Reload config**. Literal `Host`
+names are shown as suggestions. Wildcard host blocks still provide defaults
+but are not listed as destinations.
 
 The embedded resolver currently supports:
 
