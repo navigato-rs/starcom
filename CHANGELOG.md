@@ -8,6 +8,9 @@
   frozen, colors the tab red, and leaves **Exit** on the status bar for the
   user. Only **Exit** (or closing the chip) removes it.
 - Hide the maximize button when the window has a single pane.
+- Confirm a tab rename on Enter even when egui runs extra layout passes in
+  the same frame (the later pass was sending Enter to the terminal and
+  dropping the rename).
 - Reconnect immediately after laptop suspend. Idle SSH polls and nudge
   wakes must not stamp the alive clock, or the worker hides the suspend
   and sits on a dead socket until TCP times out.

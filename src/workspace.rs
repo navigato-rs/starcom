@@ -17,6 +17,27 @@ struct SessionRename {
     focus: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RenameKey {
+    Keep,
+    Submit,
+    Cancel,
+}
+
+/// Enter confirms even when the field also loses focus (egui single-line
+/// TextEdit surrenders on Enter). Escape and click-away cancel.
+fn rename_key_outcome(enter: bool, escape: bool, lost_focus: bool) -> RenameKey {
+    if escape {
+        RenameKey::Cancel
+    } else if enter {
+        RenameKey::Submit
+    } else if lost_focus {
+        RenameKey::Cancel
+    } else {
+        RenameKey::Keep
+    }
+}
+
 struct Tab {
     id: u64,
     label: String,
@@ -77,6 +98,9 @@ pub(crate) struct Workspace {
     shut_down: bool,
     /// In-place session rename on a tab chip.
     renaming: Option<SessionRename>,
+    /// Survives extra egui layout passes in the same frame. The last `show`
+    /// would otherwise overwrite a RenameSession with terminal Enter.
+    submitted_rename: Option<(u64, String)>,
 }
 
 /// A restored tab is labelled by where it points, not by a live connection.
@@ -279,6 +303,7 @@ impl Workspace {
             local_dirty: false,
             shut_down: false,
             renaming: None,
+            submitted_rename: None,
         };
         if startup != desktop::Startup::Demo {
             workspace.reload_config();
@@ -774,6 +799,7 @@ impl Workspace {
         }
         self.composer.ui.cancel_transient();
         self.renaming = None;
+        self.submitted_rename = None;
     }
 
     pub fn terminal_focused(&self, ctx: &egui::Context) -> bool {
@@ -926,20 +952,24 @@ impl Workspace {
                                         }
                                         let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
                                         let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
-                                        if escape {
-                                            self.renaming = None;
-                                        } else if enter {
-                                            let draft = self
-                                                .renaming
-                                                .as_ref()
-                                                .expect("checked")
-                                                .draft
-                                                .trim()
-                                                .to_owned();
-                                            rename_to = Some((id, draft));
-                                            self.renaming = None;
-                                        } else if response.lost_focus() {
-                                            self.renaming = None;
+                                        match rename_key_outcome(
+                                            enter,
+                                            escape,
+                                            response.lost_focus(),
+                                        ) {
+                                            RenameKey::Submit => {
+                                                let draft = self
+                                                    .renaming
+                                                    .as_ref()
+                                                    .expect("checked")
+                                                    .draft
+                                                    .trim()
+                                                    .to_owned();
+                                                rename_to = Some((id, draft));
+                                                self.renaming = None;
+                                            }
+                                            RenameKey::Cancel => self.renaming = None,
+                                            RenameKey::Keep => {}
                                         }
                                         return;
                                     }
@@ -1028,6 +1058,11 @@ impl Workspace {
                                         && phase == desktop::Phase::Watching
                                     {
                                         self.notice = None;
+                                        ui.ctx().memory_mut(|memory| {
+                                            if let Some(focused) = memory.focused() {
+                                                memory.surrender_focus(focused);
+                                            }
+                                        });
                                         self.renaming = Some(SessionRename {
                                             id,
                                             draft: self.tabs[index].ui.session_name().to_owned(),
@@ -1102,6 +1137,9 @@ impl Workspace {
             navigation = Action::Reorder { id, insert_at };
         }
         if let Some((id, name)) = rename_to {
+            self.submitted_rename = Some((id, name));
+        }
+        if let Some((id, name)) = self.submitted_rename.clone() {
             return Action::Tab(id, Box::new(ui::Action::RenameSession(name)));
         }
         if matches!(
@@ -1221,6 +1259,7 @@ impl Workspace {
                                     .create_session(connection, crate::core::Size::default())
                             }
                             ui::Action::RenameSession(name) => {
+                                self.submitted_rename = None;
                                 let parsed = core::SessionName::new(name)?;
                                 let previous = tab.ui.session_name().to_owned();
                                 if parsed.as_str() == previous {
@@ -1343,6 +1382,47 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enter_confirms_rename_even_when_the_field_also_loses_focus() {
+        assert_eq!(rename_key_outcome(true, false, true), RenameKey::Submit);
+        assert_eq!(rename_key_outcome(true, false, false), RenameKey::Submit);
+        assert_eq!(rename_key_outcome(false, true, true), RenameKey::Cancel);
+        assert_eq!(rename_key_outcome(false, false, true), RenameKey::Cancel);
+        assert_eq!(rename_key_outcome(false, false, false), RenameKey::Keep);
+    }
+
+    #[test]
+    fn a_submitted_rename_survives_a_second_show_pass() {
+        let mut workspace = Workspace::new(sync::Arc::new(|| {}), desktop::Startup::Demo).unwrap();
+        let id = workspace.tabs[0].id;
+        workspace.submitted_rename = Some((id, "renamed".into()));
+        let ctx = egui::Context::default();
+        crate::window::configure(&ctx);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 760.0),
+            )),
+            ..Default::default()
+        };
+        let mut action = Action::None;
+        let _ = ctx.run_ui(input.clone(), |root| {
+            action = workspace.show(root);
+        });
+        assert!(
+            matches!(action, Action::Tab(tab, ref inner) if tab == id && matches!(**inner, ui::Action::RenameSession(ref name) if name == "renamed")),
+            "first pass keeps the submitted rename"
+        );
+        let mut action = Action::None;
+        let _ = ctx.run_ui(input, |root| {
+            action = workspace.show(root);
+        });
+        assert!(
+            matches!(action, Action::Tab(tab, ref inner) if tab == id && matches!(**inner, ui::Action::RenameSession(ref name) if name == "renamed")),
+            "a later layout pass must not drop the rename for terminal Enter"
+        );
+    }
 
     #[test]
     fn a_quiet_connected_tab_turns_blue() {
@@ -1883,6 +1963,7 @@ mod tests {
             local_dirty: false,
             shut_down: false,
             renaming: None,
+            submitted_rename: None,
         }
     }
 
