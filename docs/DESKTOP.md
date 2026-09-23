@@ -76,9 +76,11 @@ bypass them by connecting directly or choosing another key. Hardware-backed
 `sk-ecdsa-*` keys are skipped at authentication with a named algorithm, not
 treated as a config blocker. Agent-held `sk-ssh-ed25519` is offered.
 
-Use **Reload config** after editing the file. Unknown or changed host keys fail
-instead of being accepted automatically. See [SSH.md](SSH.md) for the exact trust
-and authentication policy.
+**+** re-reads the file when it opens a connection, so a host added since
+startup is listed without a restart. **Reload config** re-reads it while the
+form is already open and applies it to every form. Unknown or changed host
+keys fail instead of being accepted automatically. See [SSH.md](SSH.md) for the
+exact trust and authentication policy.
 
 ## Saved tabs
 

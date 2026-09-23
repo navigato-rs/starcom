@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Opening **+** re-reads `~/.ssh/config`, so a host added since startup is
+  listed on the new-connection form. Sessions that are already open keep the
+  endpoint they resolved.
 - Copy a wrapped `http(s)` URL as one destination; a link split across
   soft-wrapped rows was only copying the clicked row.
 - Never auto-close a session tab. A broken connection keeps the last view

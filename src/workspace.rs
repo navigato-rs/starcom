@@ -663,6 +663,12 @@ impl Workspace {
 
     fn open_composer(&mut self) {
         self.cancel_transient();
+        // Re-read ~/.ssh/config for this form only. Open sessions keep the
+        // endpoint they already resolved.
+        self.read_ssh_config();
+        self.composer.ui.config = sync::Arc::clone(&self.config);
+        self.composer.ui.config_load_error = self.config_error.clone();
+        self.composer.ui.refresh_profile();
         self.composer_open = true;
     }
 
@@ -769,7 +775,7 @@ impl Workspace {
         id
     }
 
-    fn reload_config(&mut self) {
+    fn read_ssh_config(&mut self) {
         match desktop::home_path().map_or_else(
             || Err(anyhow::anyhow!("home directory is unavailable")),
             |home| ssh_config::Config::load(&home),
@@ -782,6 +788,10 @@ impl Workspace {
                 self.config_error = Some(format!("Could not load SSH config: {error:#}"));
             }
         }
+    }
+
+    fn reload_config(&mut self) {
+        self.read_ssh_config();
         for tab in self
             .tabs
             .iter_mut()
