@@ -345,7 +345,6 @@ mod tests {
                     control: true,
                     alt: true,
                     shift: true,
-                    ..Modifiers::default()
                 })
                 .unwrap(),
             "C-M-h"
