@@ -758,7 +758,7 @@ impl DesktopUi {
                                     !found.iter().any(|summary| summary.name == **name)
                                 });
                                 if found.is_empty() && pending.is_none() {
-                                    ui.weak("The host is running tmux with no sessions.");
+                                    ui.weak("No tmux sessions on this host.");
                                 } else {
                                     if !found
                                         .iter()

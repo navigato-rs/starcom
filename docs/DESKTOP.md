@@ -122,8 +122,9 @@ The demo neither reads nor writes this file.
 ## Finding and creating sessions
 
 Selecting a known host lists its sessions automatically. **Refresh** asks again.
-The query runs `tmux -N`, so it can never bring a tmux server into existence: a
-host with no tmux running says so. The last session this tab attached to is selected when it is still on the host;
+The query runs `tmux -N`, so it can never bring a tmux server into existence.
+A host with no server, or a server with no sessions, shows an empty list.
+The last session this tab attached to is selected when it is still on the host;
 otherwise the first name in the list. Choosing another only fills the field, and
 double-clicking attaches.
 

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- A host with no tmux sessions is an empty list, not a red error.
 - Send Ctrl+Backspace as `C-h` (ASCII BS) instead of the tmux name `C-BSpace`,
   which some applications insert as literal text.
 - Opening **+** re-reads `~/.ssh/config`, so a host added since startup is

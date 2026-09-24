@@ -40,7 +40,7 @@ impl Summary {
 }
 
 /// List the sessions on the host. `-N` forbids starting a server, so a host
-/// with no tmux running reports that instead of gaining one.
+/// with no tmux running stays that way and lists nothing.
 pub fn list(options: &ssh::Options, socket: Option<&str>) -> anyhow::Result<Vec<Summary>> {
     let mut wire = "exec tmux -N".to_owned();
     if let Some(socket) = socket {
@@ -51,7 +51,12 @@ pub fn list(options: &ssh::Options, socket: Option<&str>) -> anyhow::Result<Vec<
     // tmux rejects control characters in names.
     wire.push_str(" list-sessions -F '#{session_name}\t#{session_windows}\t#{session_attached}'");
     let output = run(options, &wire)?;
-    parse(&output)
+    // "no sessions" and "no server running" are tmux's way of saying the list
+    // is empty. Anything else on stderr is still a failure.
+    if output.stdout.is_empty() && host_has_no_sessions(&output.stderr) {
+        return Ok(Vec::new());
+    }
+    parse(&stdout_text(output)?)
 }
 
 /// Create a session, then leave. This starts a tmux server when none is running,
@@ -76,12 +81,17 @@ pub fn create(
         size.columns(),
         size.rows()
     ));
-    run(options, &wire).map(|_| ())
+    stdout_text(run(options, &wire)?).map(|_| ())
+}
+
+struct CommandOutput {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
 }
 
 /// One bounded, non-PTY command. Separate from the control-mode attachment: it
 /// opens its own connection, runs one command, and closes.
-fn run(options: &ssh::Options, wire: &str) -> anyhow::Result<String> {
+fn run(options: &ssh::Options, wire: &str) -> anyhow::Result<CommandOutput> {
     let deadline = time::Instant::now() + options.timeout;
     let mut channel = ssh::Connection::connect(options)?.exec(wire)?;
     let mut stdout = Vec::new();
@@ -124,10 +134,14 @@ fn run(options: &ssh::Options, wire: &str) -> anyhow::Result<String> {
             channel.wait(deadline)?;
         }
     }
-    if stdout.is_empty() && !stderr.is_empty() {
-        // tmux says "no server running on ..." here. Escape it: this is remote
-        // text on its way to a GUI label, not to a terminal.
-        let detail: String = String::from_utf8_lossy(&stderr)
+    Ok(CommandOutput { stdout, stderr })
+}
+
+/// Stdout from the command. A stderr-only complaint is escaped before it
+/// can reach a GUI label.
+fn stdout_text(output: CommandOutput) -> anyhow::Result<String> {
+    if output.stdout.is_empty() && !output.stderr.is_empty() {
+        let detail: String = String::from_utf8_lossy(&output.stderr)
             .chars()
             .take(512)
             .collect::<String>()
@@ -135,7 +149,30 @@ fn run(options: &ssh::Options, wire: &str) -> anyhow::Result<String> {
             .to_string();
         anyhow::bail!("tmux reported: {detail}");
     }
-    String::from_utf8(stdout).context("remote output is not UTF-8")
+    String::from_utf8(output.stdout).context("remote output is not UTF-8")
+}
+
+/// tmux exits 1 with one of these lines when there is nothing to list.
+fn host_has_no_sessions(stderr: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(stderr);
+    let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
+    let Some(line) = lines.next() else {
+        return false;
+    };
+    if lines.next().is_some() {
+        return false;
+    }
+    let line = line.to_ascii_lowercase();
+    line == "no sessions"
+        || line.starts_with("no server running")
+        || error_connecting_to_nothing(&line)
+}
+
+fn error_connecting_to_nothing(line: &str) -> bool {
+    let Some(rest) = line.strip_prefix("error connecting to ") else {
+        return false;
+    };
+    rest.ends_with("(no such file or directory)") || rest.ends_with("(connection refused)")
 }
 
 enum Stream {
@@ -197,6 +234,21 @@ mod tests {
         assert_eq!(sessions[0].describe(), "3 windows, attached");
         assert_eq!(sessions[1].describe(), "1 window");
         assert!(parse("").unwrap().is_empty());
+        for stderr in [
+            "no sessions\n",
+            "no server running on /tmp/tmux-1000/default\n",
+            "error connecting to /tmp/tmux.sock (No such file or directory)\n",
+            "error connecting to /tmp/tmux.sock (Connection refused)\n",
+        ] {
+            assert!(host_has_no_sessions(stderr.as_bytes()), "{stderr}");
+        }
+        for stderr in [
+            "error connecting to /tmp/tmux.sock (Permission denied)\n",
+            "no sessions\ntmux: command not found\n",
+            "",
+        ] {
+            assert!(!host_has_no_sessions(stderr.as_bytes()), "{stderr}");
+        }
         let many = "s\t1\t0\n".repeat(MAX_SESSIONS + 1);
         assert!(parse(&many).is_err());
     }
