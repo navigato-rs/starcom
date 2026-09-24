@@ -40,15 +40,27 @@ impl Key {
         // Shift+Enter / Shift+Backspace have no portable terminal encoding.
         // Passing `S-Enter` or `S-BSpace` to tmux makes some tmux/application
         // combinations surface the key name as literal input. Treat them like
-        // a conventional terminal does: the unshifted key.
-        let modifiers = if matches!(self, Self::Enter | Self::Backspace) {
-            Modifiers {
+        // a conventional terminal does: the unshifted key. `C-BSpace` is the
+        // same class of leak; xterm-style Ctrl+Backspace is ASCII BS (`C-h`).
+        let modifiers = match self {
+            Self::Enter => Modifiers {
+                shift: false,
+                control: false,
+                ..modifiers
+            },
+            Self::Backspace => Modifiers {
                 shift: false,
                 ..modifiers
-            }
-        } else {
-            modifiers
+            },
+            _ => modifiers,
         };
+        if matches!(self, Self::Backspace) && modifiers.control {
+            return Ok(if modifiers.alt {
+                "C-M-h".to_owned()
+            } else {
+                "C-h".to_owned()
+            });
+        }
         let name = match self {
             Self::Enter => "Enter".to_owned(),
             Self::Backspace => "BSpace".to_owned(),
@@ -316,6 +328,38 @@ mod tests {
                 .unwrap(),
             "BSpace",
             "Shift+Backspace must not become literal S-BSpace input"
+        );
+        assert_eq!(
+            Key::Backspace
+                .name(Modifiers {
+                    control: true,
+                    ..Modifiers::default()
+                })
+                .unwrap(),
+            "C-h",
+            "Ctrl+Backspace must not become literal C-BSpace input"
+        );
+        assert_eq!(
+            Key::Backspace
+                .name(Modifiers {
+                    control: true,
+                    alt: true,
+                    shift: true,
+                    ..Modifiers::default()
+                })
+                .unwrap(),
+            "C-M-h"
+        );
+        assert_eq!(
+            Key::Enter
+                .name(Modifiers {
+                    control: true,
+                    shift: true,
+                    ..Modifiers::default()
+                })
+                .unwrap(),
+            "Enter",
+            "Ctrl+Enter must not become literal C-Enter input"
         );
         assert_eq!(
             Key::Left

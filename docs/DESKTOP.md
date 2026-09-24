@@ -165,7 +165,8 @@ F1-F20 are sent through tmux's key handling. Plain terminal control combinations
 such as Ctrl-C, Ctrl-X, Ctrl-V, and Ctrl-Z remain application input.
 Traditional terminal input has no portable distinct Shift-Enter encoding, so
 Starcom sends it as Enter instead of letting an extended `S-Enter` key name
-surface as literal text.
+surface as literal text. Ctrl+Backspace is sent as `C-h` for the same reason
+(`C-BSpace` is not a key applications bind).
 
 Local clipboard shortcuts are:
 

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Send Ctrl+Backspace as `C-h` (ASCII BS) instead of the tmux name `C-BSpace`,
+  which some applications insert as literal text.
 - Opening **+** re-reads `~/.ssh/config`, so a host added since startup is
   listed on the new-connection form. Sessions that are already open keep the
   endpoint they resolved.
