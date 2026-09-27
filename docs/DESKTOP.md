@@ -195,14 +195,13 @@ rather than changing the user's option or risking broadcast.
 
 Wheel handling follows the pane, not a global shortcut. Shift+wheel always
 scrolls local history. An application that enabled mouse reporting receives
-CSI mouse-wheel bytes on either screen. Alternate screen without mouse
-reporting receives Page Up/Down (not cursor Up/Down: Codex uses arrows for
-prompt history). Starcom never substitutes tmux `Up`/`Down` or `WheelUp` key
-names for wheel input; everything else scrolls local history. Discrete mouse
-notches are one remote tick each. Typing, paste, and other keyboard input jump
-local history back to the live tip; the wheel does not. The scrollbar is
-always local history navigation, including when a TUI owns wheel events; its
-gutter cannot start selection or send mouse input remotely.
+CSI mouse-wheel bytes on either screen. Starcom never turns the wheel into
+keys (`Up`/`Down`, Page Up/Down, or tmux `WheelUp`). Everything else scrolls
+local history. Discrete mouse notches are one remote tick each. Typing, paste,
+and other keyboard input jump local history back to the live tip; the wheel
+does not. The scrollbar is always local history navigation, including when a
+TUI owns wheel events; its gutter cannot start selection or send mouse input
+remotely.
 
 A click on a link copies its destination to the local clipboard: OSC 8 if the
 cell has one, otherwise an `http(s)` URL covering the cell (including when
@@ -243,6 +242,9 @@ remote grid matches the glyphs on screen.
 
 The status bar's bottom-left three-dot pulse advances when the selected terminal
 contents refresh or the user scrolls it; it stays still when that panel is idle.
+Beside the pane size, **A**, **K**, and **M** show alternate screen, whether
+keys go to this pane, and mouse reporting (green yes, red no). Hover a letter
+for the current meaning.
 The same fixed-size pulse appears in a yellow connecting tab without changing
 the chip's dimensions. Next to the status mark, when a recent small tmux command has
 finished, its round-trip time is shown. That is not a probe: nothing extra is
