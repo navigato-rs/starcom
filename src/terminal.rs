@@ -358,10 +358,11 @@ impl Terminal {
         self.model.mode().contains(term::TermMode::SGR_MOUSE)
     }
 
-    /// Wheel should be delivered to the application: explicit mouse reporting,
-    /// or xterm alternate-scroll (wheel becomes arrows on the alternate screen).
+    /// Wheel belongs to the application only when it enabled mouse reporting.
+    /// Alternate screen alone is not enough: xterm alternate-scroll (wheel as
+    /// Up/Down) is prompt-history in Codex and similar TUIs.
     pub fn wants_wheel(&self) -> bool {
-        self.reports_mouse() || self.is_alternate_screen()
+        self.reports_mouse()
     }
 
     /// Lines between the live tip and the local history viewport. 0 follows
@@ -630,7 +631,7 @@ mod tests {
     }
 
     #[test]
-    fn mouse_reporting_and_alternate_scroll_are_observable() {
+    fn mouse_reporting_owns_the_wheel_alternate_screen_does_not() {
         let mut terminal = Terminal::new(core::Size::new(20, 4).unwrap(), 0);
         assert!(!terminal.reports_mouse());
         assert!(!terminal.wants_wheel());
@@ -641,7 +642,10 @@ mod tests {
         terminal.feed(b"\x1b[?1000l\x1b[?1006l\x1b[?1049h");
         assert!(!terminal.reports_mouse());
         assert!(terminal.is_alternate_screen());
-        assert!(terminal.wants_wheel());
+        assert!(
+            !terminal.wants_wheel(),
+            "alt screen without mouse must not turn the wheel into Up/Down"
+        );
     }
 
     #[test]
