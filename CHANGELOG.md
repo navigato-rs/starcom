@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- After a window or pane resize, wait for the application's SIGWINCH redraw
+  before `no-output` snapshot. Capturing mid-redraw dropped the rest of a
+  frame (wrapped markdown tables, truncated lines).
 - Send Ctrl+Backspace as `C-h` (ASCII BS) instead of the tmux name `C-BSpace`,
   which some applications insert as literal text.
 - Opening **+** re-reads `~/.ssh/config`, so a host added since startup is

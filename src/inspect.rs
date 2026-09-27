@@ -188,10 +188,57 @@ impl Inspector {
     }
 
     /// Tell tmux this client's cell size so pane widths match the GUI font.
+    /// Returns notifications that arrived with the reply (layout-change and a
+    /// TUI's SIGWINCH redraw). Callers must not drop them: restore starts with
+    /// `no-output`, so a redraw that finishes after capture never reaches us.
     #[cfg(feature = "gui")]
-    pub(crate) fn set_client_size(&mut self, size: core::Size) -> anyhow::Result<()> {
-        self.request(command::Command::client_size(size).as_str())?;
-        Ok(())
+    pub(crate) fn set_client_size(
+        &mut self,
+        size: core::Size,
+    ) -> anyhow::Result<Vec<tmuxctl::Notification>> {
+        let batch =
+            self.request_batch(&[command::Command::client_size(size).as_str().to_owned()])?;
+        Ok(batch
+            .notifications
+            .into_iter()
+            .map(|(_, event)| event)
+            .collect())
+    }
+
+    /// Deadline for waiting on a SIGWINCH redraw before `no-output` capture.
+    #[cfg(feature = "gui")]
+    pub(crate) fn resize_drain_until(&self) -> time::Instant {
+        let wait = self
+            .last_rtt
+            .unwrap_or(time::Duration::from_millis(40))
+            .saturating_mul(3)
+            .clamp(
+                time::Duration::from_millis(50),
+                time::Duration::from_millis(200),
+            );
+        time::Instant::now() + wait
+    }
+
+    /// Read until the control stream is quiet or `until`. After a resize,
+    /// SIGWINCH redraws must finish while output is still enabled.
+    #[cfg(feature = "gui")]
+    pub(crate) fn drain_notifications(
+        &mut self,
+        until: time::Instant,
+    ) -> anyhow::Result<Vec<tmuxctl::Notification>> {
+        let mut out = Vec::new();
+        loop {
+            let now = time::Instant::now();
+            if now >= until {
+                break;
+            }
+            let notes = self.poll(until)?;
+            if notes.is_empty() {
+                break;
+            }
+            out.extend(notes);
+        }
+        Ok(out)
     }
 
     /// Rename the attached session. A duplicate name is a user-facing failure

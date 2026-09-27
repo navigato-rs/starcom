@@ -1054,19 +1054,31 @@ fn watch(
                             if !state.allow_resize {
                                 continue;
                             }
-                            state.view.as_mut().expect("view published").invalidate();
-                            state.phase = Phase::Resynchronizing;
-                            state.discard_actions();
                             drop(state);
-                            inspector.set_client_size(size)?;
+                            let mut notifications = inspector.set_client_size(size)?;
+                            // SIGWINCH redraws must complete before restore's
+                            // no-output+capture, or a TUI is frozen mid-frame
+                            // (wrapped tables, missing lines).
+                            notifications.extend(
+                                inspector.drain_notifications(inspector.resize_drain_until())?,
+                            );
                             last_alive = reconnect::AliveClock::now();
                             let mut state = shared
                                 .0
                                 .lock()
                                 .unwrap_or_else(sync::PoisonError::into_inner);
-                            if state.accepts(epoch) {
-                                state.last_rtt = inspector.last_rtt;
+                            if !state.accepts(epoch) {
+                                return Ok(Outcome::Cancelled);
                             }
+                            if let Some(ref mut view) = state.view {
+                                for event in notifications {
+                                    view.apply(event);
+                                }
+                                view.invalidate();
+                            }
+                            state.phase = Phase::Resynchronizing;
+                            state.discard_actions();
+                            state.last_rtt = inspector.last_rtt;
                             continue;
                         }
                         if state.target(pending.target.pane) != Some(pending.target)
@@ -1100,26 +1112,20 @@ fn watch(
                             state.action_bytes -= next.action.size();
                             actions.push(next.action);
                         }
-                        if resizing {
-                            state.view.as_mut().expect("view published").invalidate();
-                            state.phase = Phase::Resynchronizing;
-                            if !state.actions.is_empty() {
-                                state.error = Some(
-                                    "Layout changed; queued input was discarded, not replayed."
-                                        .to_owned(),
-                                );
-                            }
-                            state.discard_actions();
-                        }
-                        Some((target, actions))
+                        Some((target, actions, resizing))
                     } else {
                         None
                     }
                 };
-                if let Some((target, actions)) = pending {
+                if let Some((target, actions, resizing)) = pending {
                     // The pop above is the dispatch boundary. Cancellation may
                     // follow while I/O is in flight; these actions are NEVER requeued.
-                    let outcome = inspector.interact(target, &actions)?;
+                    let mut outcome = inspector.interact(target, &actions)?;
+                    if resizing && outcome.applied {
+                        outcome.notifications.extend(
+                            inspector.drain_notifications(inspector.resize_drain_until())?,
+                        );
+                    }
                     let mut state = shared
                         .0
                         .lock()
@@ -1129,6 +1135,17 @@ fn watch(
                     }
                     for event in outcome.notifications {
                         state.view.as_mut().expect("view published").apply(event);
+                    }
+                    if resizing && outcome.applied {
+                        state.view.as_mut().expect("view published").invalidate();
+                        state.phase = Phase::Resynchronizing;
+                        if !state.actions.is_empty() {
+                            state.error = Some(
+                                "Layout changed; queued input was discarded, not replayed."
+                                    .to_owned(),
+                            );
+                        }
+                        state.discard_actions();
                     }
                     if !outcome.applied {
                         state.error = Some("tmux blocked this action: the pane changed, is in a mode, or synchronize-panes/zoom is enabled. Nothing was retried.".to_owned());

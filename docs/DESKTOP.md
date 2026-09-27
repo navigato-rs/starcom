@@ -284,8 +284,11 @@ ordinary client would use, so other attached clients see them.
 
 Dragging a divider previews the split locally. On release, an interactive
 connection sends `resize-pane` to tmux — the same shared layout change a normal
-tmux client would make — then reconstructs from the server's geometry. Cells
-stay at the real font size; they are not scaled.
+tmux client would make — waits for the pane to redraw, then reconstructs from
+the server's geometry. Cells stay at the real font size; they are not scaled.
+A window or font-size change reports `refresh-client -C` the same way: the
+TUI's SIGWINCH redraw is allowed to finish before capture, so a snapshot
+cannot freeze a half-drawn table.
 
 Nested or unusual layouts that cannot be mapped to a safe tmux boundary stay
 local-only.
