@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-- Do not turn the mouse wheel into Up/Down on an alternate screen that has
-  not enabled mouse reporting. That xterm alternate-scroll path is Codex
-  prompt-history, not conversation scroll.
+- On an alternate screen without mouse reporting, the wheel sends Page Up/Down
+  instead of cursor Up/Down. Codex treats arrows as prompt history and pages
+  as conversation scroll; local history is empty on that screen.
 - Split a pane in the source pane's working directory (`#{pane_current_path}`).
 - After a window or pane resize, wait for the application's SIGWINCH redraw
   before `no-output` snapshot. Capturing mid-redraw dropped the rest of a

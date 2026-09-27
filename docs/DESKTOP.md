@@ -195,14 +195,14 @@ rather than changing the user's option or risking broadcast.
 
 Wheel handling follows the pane, not a global shortcut. Shift+wheel always
 scrolls local history. An application that enabled mouse reporting receives
-CSI mouse-wheel bytes on either screen. Alternate screen alone does not: that
-xterm trick sends Up/Down, which Codex treats as prompt history. Starcom never
-substitutes tmux `Up`/`Down` or `WheelUp` key names for wheel input; everything
-else scrolls local history. Discrete mouse notches are one remote tick each.
-Typing, paste, and other keyboard input jump local history back to the live
-tip; the wheel does not. The scrollbar is always local history navigation,
-including when a TUI owns wheel events; its gutter cannot start selection or
-send mouse input remotely.
+CSI mouse-wheel bytes on either screen. Alternate screen without mouse
+reporting receives Page Up/Down (not cursor Up/Down: Codex uses arrows for
+prompt history). Starcom never substitutes tmux `Up`/`Down` or `WheelUp` key
+names for wheel input; everything else scrolls local history. Discrete mouse
+notches are one remote tick each. Typing, paste, and other keyboard input jump
+local history back to the live tip; the wheel does not. The scrollbar is
+always local history navigation, including when a TUI owns wheel events; its
+gutter cannot start selection or send mouse input remotely.
 
 A click on a link copies its destination to the local clipboard: OSC 8 if the
 cell has one, otherwise an `http(s)` URL covering the cell (including when
