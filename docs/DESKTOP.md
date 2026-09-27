@@ -264,6 +264,7 @@ Each interactive pane has window-style buttons in its top-right corner:
 
 - split right (`split-window -h`)
 - split below (`split-window -v`)
+  Both start in the source pane's working directory (`#{pane_current_path}`).
 - move left / right / up / down (`swap-pane` with the neighbor that shares
   that edge). Hidden when there is no neighbor on that side.
 - maximize / restore (`resize-pane -Z`); the icon changes to overlapping

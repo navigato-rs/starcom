@@ -1122,9 +1122,9 @@ fn watch(
                     // follow while I/O is in flight; these actions are NEVER requeued.
                     let mut outcome = inspector.interact(target, &actions)?;
                     if resizing && outcome.applied {
-                        outcome.notifications.extend(
-                            inspector.drain_notifications(inspector.resize_drain_until())?,
-                        );
+                        outcome
+                            .notifications
+                            .extend(inspector.drain_notifications(inspector.resize_drain_until())?);
                     }
                     let mut state = shared
                         .0
