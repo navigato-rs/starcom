@@ -50,7 +50,7 @@ impl Command {
 
     pub fn split_pane(pane: tmuxctl::PaneId, axis: input::Axis) -> Self {
         Self(format!(
-            "split-window {} -t {pane}\n",
+            "split-window {} -c \"#{{pane_current_path}}\" -t {pane}\n",
             match axis {
                 input::Axis::Columns => "-h",
                 input::Axis::Rows => "-v",
@@ -171,11 +171,11 @@ mod tests {
         );
         assert_eq!(
             Command::split_pane(tmuxctl::PaneId(3), input::Axis::Columns).as_str(),
-            "split-window -h -t %3\n"
+            "split-window -h -c \"#{pane_current_path}\" -t %3\n"
         );
         assert_eq!(
             Command::split_pane(tmuxctl::PaneId(3), input::Axis::Rows).as_str(),
-            "split-window -v -t %3\n"
+            "split-window -v -c \"#{pane_current_path}\" -t %3\n"
         );
         assert_eq!(
             Command::kill_pane(tmuxctl::PaneId(3)).as_str(),

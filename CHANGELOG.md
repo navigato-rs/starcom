@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Split a pane in the source pane's working directory (`#{pane_current_path}`).
 - After a window or pane resize, wait for the application's SIGWINCH redraw
   before `no-output` snapshot. Capturing mid-redraw dropped the rest of a
   frame (wrapped markdown tables, truncated lines).
