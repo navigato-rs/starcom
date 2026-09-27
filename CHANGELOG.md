@@ -2,9 +2,11 @@
 
 ## Unreleased
 
-- On an alternate screen without mouse reporting, the wheel sends Page Up/Down
-  instead of cursor Up/Down. Codex treats arrows as prompt history and pages
-  as conversation scroll; local history is empty on that screen.
+- Status bar shows **A** / **K** / **M** for the focused pane: alternate
+  screen, keyboard input live, and mouse reporting. Green if on, red if not.
+- Do not turn the mouse wheel into keys. It is CSI mouse-wheel bytes only when
+  the pane enabled mouse reporting; otherwise local history. Alternate-screen
+  Codex without mouse was getting Up/Down (prompt history) or Page Up/Down.
 - Split a pane in the source pane's working directory (`#{pane_current_path}`).
 - After a window or pane resize, wait for the application's SIGWINCH redraw
   before `no-output` snapshot. Capturing mid-redraw dropped the rest of a

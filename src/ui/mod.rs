@@ -1149,6 +1149,28 @@ impl DesktopUi {
                 }) {
                     let size = pane.terminal.size();
                     ui.small(format!("{}×{}", size.columns(), size.rows()));
+                    // Status is right-to-left; add M, K, A so they read A K M.
+                    mode_letter(
+                        ui,
+                        'M',
+                        pane.terminal.reports_mouse(),
+                        "App enabled mouse reporting: wheel and clicks go to it.",
+                        "App did not enable mouse: wheel is local history, drags select.",
+                    );
+                    mode_letter(
+                        ui,
+                        'K',
+                        state.input_ready(),
+                        "Keys go to this pane.",
+                        "This pane is not taking keys (disconnected or not live).",
+                    );
+                    mode_letter(
+                        ui,
+                        'A',
+                        pane.terminal.is_alternate_screen(),
+                        "Alternate screen: the app owns a fullscreen canvas.",
+                        "Primary screen: output accumulates in terminal history.",
+                    );
                 }
                 ui.with_layout(
                     egui::Layout::left_to_right(egui::Align::Center),
@@ -1774,6 +1796,23 @@ fn paste_remote_paths(paths: &[String]) -> anyhow::Result<String> {
         .map(|path| crate::command::shell_quote(path))
         .collect();
     quoted.map(|paths| paths.join(" "))
+}
+
+/// Green = the focused pane's app enabled this mode; red = it did not.
+fn mode_letter(ui: &mut egui::Ui, letter: char, on: bool, on_tip: &str, off_tip: &str) {
+    let color = if on {
+        egui::Color32::from_rgb(72, 196, 112)
+    } else {
+        egui::Color32::from_rgb(220, 88, 88)
+    };
+    ui.label(
+        egui::RichText::new(letter.to_string())
+            .monospace()
+            .strong()
+            .size(14.0)
+            .color(color),
+    )
+    .on_hover_text(if on { on_tip } else { off_tip });
 }
 
 /// Click-only: arrows, Tab, and Escape must stay with the focused pane.

@@ -423,34 +423,25 @@ impl PaneUi {
                         if ticks != 0 {
                             let up = ticks > 0;
                             let n = ticks.unsigned_abs();
-                            if mouse {
-                                // Mouse reporting is independent of which screen
-                                // buffer is active.
-                                let (column, row) = response
-                                    .hover_pos()
-                                    .map(|position| {
-                                        screen_cell(
-                                            position,
-                                            content,
-                                            cell_width,
-                                            row_height,
-                                            columns,
-                                            screen_rows,
-                                            row_origin,
-                                        )
-                                    })
-                                    .unwrap_or((0, 0));
-                                for _ in 0..n {
-                                    events.push(input::Action::Bytes(input::mouse_wheel_bytes(
-                                        up, column, row, sgr_mouse,
-                                    )));
-                                }
-                            } else {
-                                // Alternate screen without mouse: Page Up/Down,
-                                // not cursor Up/Down (Codex prompt history).
-                                for _ in 0..n {
-                                    events.push(input::Action::Bytes(input::page_scroll_bytes(up)));
-                                }
+                            // Only CSI mouse-wheel, never synthesized keys.
+                            let (column, row) = response
+                                .hover_pos()
+                                .map(|position| {
+                                    screen_cell(
+                                        position,
+                                        content,
+                                        cell_width,
+                                        row_height,
+                                        columns,
+                                        screen_rows,
+                                        row_origin,
+                                    )
+                                })
+                                .unwrap_or((0, 0));
+                            for _ in 0..n {
+                                events.push(input::Action::Bytes(input::mouse_wheel_bytes(
+                                    up, column, row, sgr_mouse,
+                                )));
                             }
                         }
                         if remainder.abs() >= WHEEL_LINE {

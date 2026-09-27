@@ -262,7 +262,7 @@ impl Pane {
         self.terminal.reports_mouse()
     }
 
-    /// Wheel belongs to the application (mouse reporting or alternate screen).
+    /// Wheel belongs to the application only when it enabled mouse reporting.
     pub fn wants_wheel(&self) -> bool {
         self.terminal.wants_wheel()
     }

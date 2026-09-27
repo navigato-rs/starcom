@@ -348,6 +348,13 @@ impl Terminal {
         self.model.mode().contains(term::TermMode::ALT_SCREEN)
     }
 
+    /// Application cursor keys (DECCKM) or application keypad (DECKPAM).
+    pub fn app_keyboard(&self) -> bool {
+        self.model
+            .mode()
+            .intersects(term::TermMode::APP_CURSOR | term::TermMode::APP_KEYPAD)
+    }
+
     /// DECSET 1000/1002/1003. The application asked for mouse reports, so the
     /// wheel belongs to it rather than local history scrolling.
     pub fn reports_mouse(&self) -> bool {
@@ -358,10 +365,9 @@ impl Terminal {
         self.model.mode().contains(term::TermMode::SGR_MOUSE)
     }
 
-    /// Wheel belongs to the application when it enabled mouse reporting, or
-    /// when it is on the alternate screen (page-scroll CSI, not Up/Down).
+    /// Wheel belongs to the application only when it enabled mouse reporting.
     pub fn wants_wheel(&self) -> bool {
-        self.reports_mouse() || self.is_alternate_screen()
+        self.reports_mouse()
     }
 
     /// Lines between the live tip and the local history viewport. 0 follows
@@ -630,7 +636,7 @@ mod tests {
     }
 
     #[test]
-    fn mouse_reporting_and_alternate_screen_own_the_wheel() {
+    fn mouse_reporting_owns_the_wheel_alternate_screen_does_not() {
         let mut terminal = Terminal::new(core::Size::new(20, 4).unwrap(), 0);
         assert!(!terminal.reports_mouse());
         assert!(!terminal.wants_wheel());
@@ -642,9 +648,12 @@ mod tests {
         assert!(!terminal.reports_mouse());
         assert!(terminal.is_alternate_screen());
         assert!(
-            terminal.wants_wheel(),
-            "alt screen without mouse still gets the wheel, as Page Up/Down"
+            !terminal.wants_wheel(),
+            "alt screen without mouse must not synthesize keys for the wheel"
         );
+        assert!(!terminal.app_keyboard());
+        terminal.feed(b"\x1b[?1h\x1b=");
+        assert!(terminal.app_keyboard());
     }
 
     #[test]

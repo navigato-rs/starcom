@@ -247,17 +247,6 @@ pub enum Error {
     ResizeSize,
 }
 
-/// CSI Page Up/Down when the application is on the alternate screen but did
-/// not enable mouse reporting. Cursor Up/Down is Codex prompt history;
-/// Page Up/Down is conversation scroll there, and pages `less`/`vim`.
-pub fn page_scroll_bytes(up: bool) -> Vec<u8> {
-    if up {
-        b"\x1b[5~".to_vec()
-    } else {
-        b"\x1b[6~".to_vec()
-    }
-}
-
 /// CSI mouse wheel report at a 0-based pane cell. Used when the application
 /// enabled 1000/1002/1003 so local history scrolling would steal its input.
 pub fn mouse_wheel_bytes(up: bool, column: usize, row: usize, sgr: bool) -> Vec<u8> {
@@ -390,8 +379,6 @@ mod tests {
 
     #[test]
     fn mouse_wheel_reports_sgr_and_x10() {
-        assert_eq!(page_scroll_bytes(true), b"\x1b[5~");
-        assert_eq!(page_scroll_bytes(false), b"\x1b[6~");
         assert_eq!(mouse_wheel_bytes(true, 0, 0, true), b"\x1b[<64;1;1M");
         assert_eq!(mouse_wheel_bytes(false, 9, 4, true), b"\x1b[<65;10;5M");
         assert_eq!(
