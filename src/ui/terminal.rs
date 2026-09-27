@@ -423,39 +423,27 @@ impl PaneUi {
                         if ticks != 0 {
                             let up = ticks > 0;
                             let n = ticks.unsigned_abs();
-                            if mouse {
-                                // Mouse reporting is independent of which screen
-                                // buffer is active. Preserve wheel semantics on
-                                // both primary- and alternate-screen TUIs.
-                                let (column, row) = response
-                                    .hover_pos()
-                                    .map(|position| {
-                                        screen_cell(
-                                            position,
-                                            content,
-                                            cell_width,
-                                            row_height,
-                                            columns,
-                                            screen_rows,
-                                            row_origin,
-                                        )
-                                    })
-                                    .unwrap_or((0, 0));
-                                for _ in 0..n {
-                                    events.push(input::Action::Bytes(input::mouse_wheel_bytes(
-                                        up, column, row, sgr_mouse,
-                                    )));
-                                }
-                            } else {
-                                // Xterm alternate-scroll translates wheel input
-                                // into cursor bytes. Do not route it through
-                                // tmux's named Up/Down keys: that changes the
-                                // application's input semantics.
-                                for _ in 0..n {
-                                    events.push(input::Action::Bytes(
-                                        input::alternate_scroll_bytes(up),
-                                    ));
-                                }
+                            // Mouse reporting is independent of which screen
+                            // buffer is active. Without it, the wheel stays
+                            // local: synthesizing Up/Down is Codex prompt history.
+                            let (column, row) = response
+                                .hover_pos()
+                                .map(|position| {
+                                    screen_cell(
+                                        position,
+                                        content,
+                                        cell_width,
+                                        row_height,
+                                        columns,
+                                        screen_rows,
+                                        row_origin,
+                                    )
+                                })
+                                .unwrap_or((0, 0));
+                            for _ in 0..n {
+                                events.push(input::Action::Bytes(input::mouse_wheel_bytes(
+                                    up, column, row, sgr_mouse,
+                                )));
                             }
                         }
                         if remainder.abs() >= WHEEL_LINE {
