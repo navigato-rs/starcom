@@ -263,6 +263,11 @@ erase on screen.
 
 ## Pane controls
 
+Panes without mouse reporting show the working folder
+(`#{pane_current_path}`) in the top-left corner, so a split of shells is
+easy to tell apart. Hover the label for the full path. It updates on
+snapshot and after pane output (for example `cd`).
+
 Each interactive pane has window-style buttons in its top-right corner:
 
 - split right (`split-window -h`)
