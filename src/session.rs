@@ -251,7 +251,8 @@ pub(crate) fn restore(
             "state changed inside snapshot batch"
         );
     }
-    let final_session = &batch.replies[ids.len() * 4 + 1];
+    let paths = snapshot::parse_paths(&batch.replies[ids.len() * 4 + 1]);
+    let final_session = &batch.replies[ids.len() * 4 + 2];
     anyhow::ensure!(
         final_session.len() == 1 && final_session[0] == session.to_string(),
         "attached session changed during restore"
@@ -259,13 +260,15 @@ pub(crate) fn restore(
     let mut restored = Vec::new();
     for (index, state) in states.into_iter().enumerate() {
         let start = index * 4;
-        restored.push(snapshot::Pane::restore(
+        let mut pane = snapshot::Pane::restore(
             state,
             &batch.replies[start + 1],
             &batch.replies[start + 2],
             &batch.replies[start + 3],
             history,
-        )?);
+        )?;
+        pane.cwd = paths.get(&pane.state.pane).cloned();
+        restored.push(pane);
     }
     let mut view = snapshot::View::new(session, restored)?;
     for (completed, notification) in batch.notifications {
@@ -372,6 +375,7 @@ fn snapshot_commands(panes: &[tmuxctl::PaneId], history: usize) -> Vec<String> {
         commands.push(format!("capture-pane -p -P -C -t {pane}"));
     }
     commands.push(format!("list-panes -s -F '{}'", snapshot::STATE_FORMAT));
+    commands.push(format!("list-panes -s -F '{}'", snapshot::PATH_FORMAT));
     commands.push("display-message -p '#{session_id}'".to_owned());
     // The reply to this LAST command is the snapshot/live cut. tmux queues
     // subsequent pane output behind it, even under a slow SSH reader.
@@ -398,10 +402,11 @@ mod tests {
     #[test]
     fn snapshot_commands_form_one_synchronous_bounded_list() {
         let commands = snapshot_commands(&[tmuxctl::PaneId(1), tmuxctl::PaneId(2)], 200);
-        assert_eq!(commands.len(), 11);
+        assert_eq!(commands.len(), 12);
         assert!(commands[0].contains("display-message -p -t %1"));
         assert!(commands[4].contains("display-message -p -t %2"));
         assert!(commands[3].contains("-P"));
+        assert!(commands[9].contains("pane_current_path"));
         assert_eq!(commands.last().unwrap(), "refresh-client -f '!no-output'");
         assert!(commands.iter().all(|line| !line.contains('\n')));
         let maximum: Vec<_> = (0..snapshot::MAX_PANES)

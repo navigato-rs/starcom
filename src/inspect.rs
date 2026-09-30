@@ -147,6 +147,26 @@ impl Inspector {
         })
     }
 
+    /// Working directories for every pane in the session. Notifications that
+    /// arrived with the reply must still be applied; this is not a snapshot.
+    #[cfg(feature = "gui")]
+    pub(crate) fn pane_paths(
+        &mut self,
+    ) -> anyhow::Result<(
+        collections::BTreeMap<tmuxctl::PaneId, String>,
+        Vec<tmuxctl::Notification>,
+    )> {
+        let batch =
+            self.request_batch(&[format!("list-panes -s -F '{}'\n", snapshot::PATH_FORMAT)])?;
+        let paths = snapshot::parse_paths(batch.replies.first().map_or(&[], Vec::as_slice));
+        let notifications = batch
+            .notifications
+            .into_iter()
+            .map(|(_, event)| event)
+            .collect();
+        Ok((paths, notifications))
+    }
+
     pub(crate) fn panes(&mut self) -> anyhow::Result<Vec<Pane>> {
         let lines = self.request(concat!(
             "list-panes -s -F '",

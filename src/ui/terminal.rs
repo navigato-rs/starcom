@@ -39,6 +39,8 @@ pub struct PaneUi {
     /// Pointer gesture state machine: turns per-frame egui signals into one
     /// link-copy / app-click / local-selection decision.
     pointer: gesture::Pointer,
+    /// Painted cwd overlay, when this pane is not capturing the mouse.
+    pub(crate) overlay_cwd: Option<String>,
 }
 
 impl Default for PaneUi {
@@ -50,6 +52,7 @@ impl Default for PaneUi {
             scroll_frac: 0.0,
             stuck: true,
             pointer: gesture::Pointer::default(),
+            overlay_cwd: None,
         }
     }
 }
@@ -260,6 +263,7 @@ impl PaneUi {
     ) -> Vec<input::Action> {
         self.rect = rect;
         self.painted_rows = 0;
+        self.overlay_cwd = None;
         let pane_id = pane.state.pane;
         let id = focus_id(generation, pane_id);
         if rect.width() < 16.0 || rect.height() < 40.0 {
@@ -815,9 +819,32 @@ impl PaneUi {
                 self.stuck = viewport.stuck;
                 self.scroll_frac = viewport.frac;
                 pane.terminal.scroll_history(viewport.offset);
-                if controls && *focused == Some(pane_id) {
+                let show_chrome = controls && *focused == Some(pane_id);
+                let chrome_width = if show_chrome {
                     let buttons = 2 + usize::from(can_kill) * 2 + neighbors.count();
-                    let width = 8.0 + buttons as f32 * 24.0;
+                    8.0 + buttons as f32 * 24.0 + 8.0
+                } else {
+                    0.0
+                };
+                if !mouse {
+                    let overlay = paint_cwd_overlay(
+                        ui,
+                        id,
+                        rect,
+                        pane.cwd.as_deref(),
+                        font_size,
+                        chrome_width,
+                    );
+                    if let Some((label, clicked)) = overlay {
+                        self.overlay_cwd = Some(label);
+                        if clicked {
+                            *focused = Some(pane_id);
+                            ui.ctx().memory_mut(|memory| memory.request_focus(id));
+                        }
+                    }
+                }
+                if show_chrome {
+                    let width = chrome_width - 8.0;
                     let bar = egui::Rect::from_min_max(
                         egui::pos2(rect.max.x - width - 4.0, rect.min.y + 4.0),
                         egui::pos2(rect.max.x - 4.0, rect.min.y + 28.0),
@@ -921,6 +948,73 @@ enum ChromeIcon {
     Zoom,
     Restore,
     Close,
+}
+
+/// Keep the distinctive end of a path. `max_chars` is a monospace budget.
+fn fit_cwd(path: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    let count = path.chars().count();
+    if count <= max_chars {
+        return path.to_owned();
+    }
+    let take = max_chars.saturating_sub(1);
+    if take == 0 {
+        return "…".to_owned();
+    }
+    let skip = count - take;
+    let suffix: String = path.chars().skip(skip).collect();
+    if let Some(idx) = suffix.find('/')
+        && idx + 1 < suffix.len()
+    {
+        return format!("…{}", &suffix[idx..]);
+    }
+    format!("…{suffix}")
+}
+
+fn paint_cwd_overlay(
+    ui: &mut egui::Ui,
+    focus_id: egui::Id,
+    rect: egui::Rect,
+    cwd: Option<&str>,
+    font_size: f32,
+    chrome_width: f32,
+) -> Option<(String, bool)> {
+    let path = cwd?;
+    let font = egui::FontId::monospace((font_size * 0.85).max(10.0));
+    let char_w = ui.fonts_mut(|fonts| fonts.glyph_width(&font, 'M')).max(1.0);
+    let max_w = (rect.width() - 20.0 - chrome_width).max(0.0);
+    let max_chars = (max_w / char_w).floor() as usize;
+    if max_chars < 2 {
+        return None;
+    }
+    let label = fit_cwd(path, max_chars);
+    if label.is_empty() {
+        return None;
+    }
+    let pos = egui::pos2(rect.min.x + 6.0, rect.min.y + 6.0);
+    let clicked = egui::Area::new(focus_id.with("cwd"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(pos)
+        .constrain_to(rect)
+        .show(ui.ctx(), |ui| {
+            egui::Frame::NONE
+                .fill(egui::Color32::from_rgba_unmultiplied(16, 18, 22, 220))
+                .corner_radius(5.0)
+                .inner_margin(egui::Margin::symmetric(6, 2))
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(&label)
+                            .font(font.clone())
+                            .color(egui::Color32::from_gray(180)),
+                    )
+                    .on_hover_text(path);
+                });
+        })
+        .response
+        .clicked();
+    Some((label, clicked))
 }
 
 fn chrome_button(ui: &mut egui::Ui, icon: ChromeIcon, tip: &str) -> bool {
@@ -1174,6 +1268,15 @@ mod tests {
         assert!(frozen.r() > frozen.g(), "hue is kept, only dimmed");
         assert!(frozen.r() < 255);
         assert!(frozen.r() > BACKGROUND.r());
+    }
+
+    #[test]
+    fn fit_cwd_keeps_the_end_and_breaks_on_a_slash() {
+        assert_eq!(fit_cwd("/x/Code/starcom", 20), "/x/Code/starcom");
+        assert_eq!(fit_cwd("/x/Code/starcom", 8), "…starcom");
+        assert_eq!(fit_cwd("/very/long/path/name", 12), "…/path/name");
+        assert_eq!(fit_cwd("/x", 1), "…");
+        assert_eq!(fit_cwd("/x", 0), "");
     }
 
     #[test]

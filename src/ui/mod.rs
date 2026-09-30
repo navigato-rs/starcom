@@ -2423,6 +2423,29 @@ mod tests {
     }
 
     #[test]
+    fn shell_panes_show_cwd_until_the_app_captures_the_mouse() {
+        let mut ui = DesktopUi::default();
+        let mut state = desktop::State::interactive_demo().unwrap();
+        paint(&mut ui, &mut state);
+        let pane = tmuxctl::PaneId(0);
+        assert_eq!(
+            ui.pane_ui[&pane].overlay_cwd.as_deref(),
+            Some("/home/demo/starcom")
+        );
+        state
+            .view
+            .as_mut()
+            .unwrap()
+            .panes_mut()
+            .get_mut(&pane)
+            .unwrap()
+            .terminal
+            .feed(b"\x1b[?1000h");
+        paint(&mut ui, &mut state);
+        assert!(ui.pane_ui[&pane].overlay_cwd.is_none());
+    }
+
+    #[test]
     fn a_destroyed_session_keeps_the_frozen_tab() {
         let mut ui = DesktopUi::default();
         let mut state = desktop::State::interactive_demo().unwrap();

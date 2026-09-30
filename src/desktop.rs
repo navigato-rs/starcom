@@ -904,6 +904,7 @@ fn watch(
     // from the short delay again instead of inheriting an old backoff.
     backoff.reset();
     let mut last_alive = reconnect::AliveClock::now();
+    let mut last_cwd = time::Instant::now();
     wake();
     loop {
         let status = {
@@ -1201,6 +1202,45 @@ fn watch(
                 if changed {
                     wake();
                 }
+                // Refresh cwd after output so `cd` is visible. At most once a
+                // second; idle sessions send nothing extra. Skip on resync:
+                // PATH_FORMAT is already in that snapshot.
+                let still_watching = {
+                    let state = shared
+                        .0
+                        .lock()
+                        .unwrap_or_else(sync::PoisonError::into_inner);
+                    if !state.accepts(epoch) {
+                        return Ok(Outcome::Cancelled);
+                    }
+                    state
+                        .view
+                        .as_ref()
+                        .is_some_and(|view| view.status() == snapshot::Status::Watching)
+                };
+                if still_watching
+                    && had_output
+                    && last_cwd.elapsed() >= time::Duration::from_secs(1)
+                {
+                    let (paths, notes) = inspector.pane_paths()?;
+                    let mut state = shared
+                        .0
+                        .lock()
+                        .unwrap_or_else(sync::PoisonError::into_inner);
+                    if !state.accepts(epoch) {
+                        return Ok(Outcome::Cancelled);
+                    }
+                    let view = state.view.as_mut().expect("view published");
+                    for event in notes {
+                        view.apply(event);
+                    }
+                    let cwd_changed = view.apply_paths(&paths);
+                    last_cwd = time::Instant::now();
+                    drop(state);
+                    if cwd_changed {
+                        wake();
+                    }
+                }
             }
         }
     }
@@ -1282,6 +1322,11 @@ pub(crate) fn demo_view() -> anyhow::Result<snapshot::View> {
             state,
             terminal,
             history_may_be_truncated: false,
+            cwd: Some(if id == 0 {
+                "/home/demo/starcom".to_owned()
+            } else {
+                "/var/log".to_owned()
+            }),
         });
     }
     snapshot::View::new(tmuxctl::SessionId(0), panes)
