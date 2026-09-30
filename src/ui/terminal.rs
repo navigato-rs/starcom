@@ -39,7 +39,7 @@ pub struct PaneUi {
     /// Pointer gesture state machine: turns per-frame egui signals into one
     /// link-copy / app-click / local-selection decision.
     pointer: gesture::Pointer,
-    /// Cwd chip on the selected primary-screen pane without mouse reporting.
+    /// Cwd text on the selected pane's chrome bar.
     pub(crate) overlay_cwd: Option<String>,
 }
 
@@ -822,31 +822,31 @@ impl PaneUi {
                 let selected = *focused == Some(pane_id);
                 let show_icons = controls && selected;
                 let show_cwd = selected && !mouse && !pane.terminal.is_alternate_screen();
-                let chrome_width = if show_icons {
+                if show_icons || show_cwd {
                     let buttons = 2 + usize::from(can_kill) * 2 + neighbors.count();
-                    8.0 + buttons as f32 * 24.0 + 8.0
-                } else {
-                    0.0
-                };
-                if show_cwd {
-                    let overlay = paint_cwd_overlay(
-                        ui,
-                        id,
-                        rect,
-                        pane.cwd.as_deref(),
-                        font_size,
-                        chrome_width,
-                    );
-                    if let Some((label, clicked)) = overlay {
-                        self.overlay_cwd = Some(label);
-                        if clicked {
-                            *focused = Some(pane_id);
-                            ui.ctx().memory_mut(|memory| memory.request_focus(id));
-                        }
-                    }
-                }
-                if show_icons {
-                    let width = chrome_width - 8.0;
+                    let icon_width = if show_icons {
+                        8.0 + buttons as f32 * 24.0
+                    } else {
+                        0.0
+                    };
+                    let font = egui::FontId::monospace((font_size * 0.85).max(10.0));
+                    let char_w = ui.fonts_mut(|fonts| fonts.glyph_width(&font, 'M')).max(1.0);
+                    let cwd_label = pane
+                        .cwd
+                        .as_deref()
+                        .filter(|_| show_cwd)
+                        .map(|path| {
+                            let max_chars =
+                                ((rect.width() - 24.0 - icon_width) / char_w).floor() as usize;
+                            (path, fit_cwd(path, max_chars.max(2)))
+                        })
+                        .filter(|(_, label)| !label.is_empty());
+                    let cwd_width = cwd_label
+                        .as_ref()
+                        .map(|(_, label)| char_w * label.chars().count() as f32 + 16.0)
+                        .unwrap_or(0.0);
+                    self.overlay_cwd = cwd_label.as_ref().map(|(_, label)| label.clone());
+                    let width = (icon_width + cwd_width).max(8.0);
                     let bar = egui::Rect::from_min_max(
                         egui::pos2(rect.max.x - width - 4.0, rect.min.y + 4.0),
                         egui::pos2(rect.max.x - 4.0, rect.min.y + 28.0),
@@ -866,67 +866,23 @@ impl PaneUi {
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
                                             ui.spacing_mut().item_spacing.x = 2.0;
-                                            if can_kill
-                                                && chrome_button(
+                                            if show_icons {
+                                                chrome_icons(
                                                     ui,
-                                                    ChromeIcon::Close,
-                                                    "Close this pane",
+                                                    &mut events,
+                                                    id,
+                                                    can_kill,
+                                                    neighbors,
+                                                    zoomed,
+                                                );
+                                            }
+                                            if let Some((path, label)) = cwd_label.as_ref() {
+                                                ui.label(
+                                                    egui::RichText::new(label)
+                                                        .font(font.clone())
+                                                        .color(egui::Color32::from_gray(180)),
                                                 )
-                                            {
-                                                events.push(input::Action::KillPane);
-                                            }
-                                            if can_kill {
-                                                let (zoom_icon, zoom_tip) = if zoomed {
-                                                    (ChromeIcon::Restore, "Restore pane layout")
-                                                } else {
-                                                    (ChromeIcon::Zoom, "Maximize this pane")
-                                                };
-                                                if chrome_button(ui, zoom_icon, zoom_tip) {
-                                                    events.push(input::Action::ZoomPane);
-                                                    ui.ctx().memory_mut(|memory| {
-                                                        memory.request_focus(id)
-                                                    });
-                                                }
-                                            }
-                                            for (icon, tip, other) in [
-                                                (ChromeIcon::MoveDown, "Move down", neighbors.down),
-                                                (ChromeIcon::MoveUp, "Move up", neighbors.up),
-                                                (
-                                                    ChromeIcon::MoveRight,
-                                                    "Move right",
-                                                    neighbors.right,
-                                                ),
-                                                (ChromeIcon::MoveLeft, "Move left", neighbors.left),
-                                            ] {
-                                                if let Some(other) = other
-                                                    && chrome_button(ui, icon, tip)
-                                                {
-                                                    events.push(input::Action::SwapPane(other));
-                                                    ui.ctx().memory_mut(|memory| {
-                                                        memory.request_focus(id)
-                                                    });
-                                                }
-                                            }
-                                            if chrome_button(
-                                                ui,
-                                                ChromeIcon::SplitBelow,
-                                                "Split below",
-                                            ) {
-                                                events
-                                                    .push(input::Action::Split(input::Axis::Rows));
-                                                ui.ctx()
-                                                    .memory_mut(|memory| memory.request_focus(id));
-                                            }
-                                            if chrome_button(
-                                                ui,
-                                                ChromeIcon::SplitRight,
-                                                "Split right",
-                                            ) {
-                                                events.push(input::Action::Split(
-                                                    input::Axis::Columns,
-                                                ));
-                                                ui.ctx()
-                                                    .memory_mut(|memory| memory.request_focus(id));
+                                                .on_hover_text(*path);
                                             }
                                         },
                                     );
@@ -975,48 +931,52 @@ fn fit_cwd(path: &str, max_chars: usize) -> String {
     format!("…{suffix}")
 }
 
-fn paint_cwd_overlay(
+fn chrome_icons(
     ui: &mut egui::Ui,
-    focus_id: egui::Id,
-    rect: egui::Rect,
-    cwd: Option<&str>,
-    font_size: f32,
-    chrome_width: f32,
-) -> Option<(String, bool)> {
-    let path = cwd?;
-    let font = egui::FontId::monospace((font_size * 0.85).max(10.0));
-    let char_w = ui.fonts_mut(|fonts| fonts.glyph_width(&font, 'M')).max(1.0);
-    let max_w = (rect.width() - 20.0 - chrome_width).max(0.0);
-    let max_chars = (max_w / char_w).floor() as usize;
-    if max_chars < 2 {
-        return None;
+    events: &mut Vec<input::Action>,
+    focus: egui::Id,
+    can_kill: bool,
+    neighbors: layout::Neighbors,
+    zoomed: bool,
+) {
+    let keep_focus = |ui: &egui::Ui| {
+        ui.ctx().memory_mut(|memory| memory.request_focus(focus));
+    };
+    if can_kill && chrome_button(ui, ChromeIcon::Close, "Close this pane") {
+        events.push(input::Action::KillPane);
     }
-    let label = fit_cwd(path, max_chars);
-    if label.is_empty() {
-        return None;
+    if can_kill {
+        let (zoom_icon, zoom_tip) = if zoomed {
+            (ChromeIcon::Restore, "Restore pane layout")
+        } else {
+            (ChromeIcon::Zoom, "Maximize this pane")
+        };
+        if chrome_button(ui, zoom_icon, zoom_tip) {
+            events.push(input::Action::ZoomPane);
+            keep_focus(ui);
+        }
     }
-    let pos = egui::pos2(rect.min.x + 6.0, rect.min.y + 6.0);
-    let clicked = egui::Area::new(focus_id.with("cwd"))
-        .order(egui::Order::Foreground)
-        .fixed_pos(pos)
-        .constrain_to(rect)
-        .show(ui.ctx(), |ui| {
-            egui::Frame::NONE
-                .fill(egui::Color32::from_rgba_unmultiplied(16, 18, 22, 220))
-                .corner_radius(5.0)
-                .inner_margin(egui::Margin::symmetric(6, 2))
-                .show(ui, |ui| {
-                    ui.label(
-                        egui::RichText::new(&label)
-                            .font(font.clone())
-                            .color(egui::Color32::from_gray(180)),
-                    )
-                    .on_hover_text(path);
-                });
-        })
-        .response
-        .clicked();
-    Some((label, clicked))
+    for (icon, tip, other) in [
+        (ChromeIcon::MoveDown, "Move down", neighbors.down),
+        (ChromeIcon::MoveUp, "Move up", neighbors.up),
+        (ChromeIcon::MoveRight, "Move right", neighbors.right),
+        (ChromeIcon::MoveLeft, "Move left", neighbors.left),
+    ] {
+        if let Some(other) = other
+            && chrome_button(ui, icon, tip)
+        {
+            events.push(input::Action::SwapPane(other));
+            keep_focus(ui);
+        }
+    }
+    if chrome_button(ui, ChromeIcon::SplitBelow, "Split below") {
+        events.push(input::Action::Split(input::Axis::Rows));
+        keep_focus(ui);
+    }
+    if chrome_button(ui, ChromeIcon::SplitRight, "Split right") {
+        events.push(input::Action::Split(input::Axis::Columns));
+        keep_focus(ui);
+    }
 }
 
 fn chrome_button(ui: &mut egui::Ui, icon: ChromeIcon, tip: &str) -> bool {
