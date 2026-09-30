@@ -39,7 +39,7 @@ pub struct PaneUi {
     /// Pointer gesture state machine: turns per-frame egui signals into one
     /// link-copy / app-click / local-selection decision.
     pointer: gesture::Pointer,
-    /// Painted cwd overlay, when this pane is not capturing the mouse.
+    /// Cwd chip on the selected primary-screen pane without mouse reporting.
     pub(crate) overlay_cwd: Option<String>,
 }
 
@@ -819,14 +819,16 @@ impl PaneUi {
                 self.stuck = viewport.stuck;
                 self.scroll_frac = viewport.frac;
                 pane.terminal.scroll_history(viewport.offset);
-                let show_chrome = controls && *focused == Some(pane_id);
-                let chrome_width = if show_chrome {
+                let selected = *focused == Some(pane_id);
+                let show_icons = controls && selected;
+                let show_cwd = selected && !mouse && !pane.terminal.is_alternate_screen();
+                let chrome_width = if show_icons {
                     let buttons = 2 + usize::from(can_kill) * 2 + neighbors.count();
                     8.0 + buttons as f32 * 24.0 + 8.0
                 } else {
                     0.0
                 };
-                if !mouse {
+                if show_cwd {
                     let overlay = paint_cwd_overlay(
                         ui,
                         id,
@@ -843,7 +845,7 @@ impl PaneUi {
                         }
                     }
                 }
-                if show_chrome {
+                if show_icons {
                     let width = chrome_width - 8.0;
                     let bar = egui::Rect::from_min_max(
                         egui::pos2(rect.max.x - width - 4.0, rect.min.y + 4.0),

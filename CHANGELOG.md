@@ -2,9 +2,10 @@
 
 ## Unreleased
 
-- Panes without mouse reporting show the working folder
-  (`#{pane_current_path}`) in the top-left corner. Hover for the full
-  path. It updates after `cd` as well as on snapshot.
+- The selected pane's top row shows the working folder
+  (`#{pane_current_path}`) and the split/move/zoom/close icons. The path
+  is for the primary screen without mouse reporting. Hover for the full
+  path; it updates after `cd`.
 - Status bar shows **A** / **K** / **M** for the focused pane: alternate
   screen, keyboard input live, and mouse reporting. Green if on, red if not.
 - Do not turn the mouse wheel into keys. It is CSI mouse-wheel bytes only when

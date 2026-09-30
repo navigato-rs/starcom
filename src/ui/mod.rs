@@ -2423,25 +2423,49 @@ mod tests {
     }
 
     #[test]
-    fn shell_panes_show_cwd_until_the_app_captures_the_mouse() {
-        let mut ui = DesktopUi::default();
-        let mut state = desktop::State::interactive_demo().unwrap();
-        paint(&mut ui, &mut state);
-        let pane = tmuxctl::PaneId(0);
+    fn the_selected_shell_shows_cwd_until_mouse_or_alt_screen() {
+        let (ctx, mut ui, mut state, pane, _target) = focus_demo_pane();
         assert_eq!(
             ui.pane_ui[&pane].overlay_cwd.as_deref(),
             Some("/home/demo/starcom")
         );
-        state
-            .view
-            .as_mut()
-            .unwrap()
-            .panes_mut()
-            .get_mut(&pane)
-            .unwrap()
-            .terminal
-            .feed(b"\x1b[?1000h");
-        paint(&mut ui, &mut state);
+        let other = tmuxctl::PaneId(1);
+        assert!(
+            ui.pane_ui
+                .get(&other)
+                .is_none_or(|pane_ui| pane_ui.overlay_cwd.is_none())
+        );
+
+        let feed = |state: &mut desktop::State, bytes: &[u8]| {
+            state
+                .view
+                .as_mut()
+                .unwrap()
+                .panes_mut()
+                .get_mut(&pane)
+                .unwrap()
+                .terminal
+                .feed(bytes);
+        };
+        let paint_focused = |ui: &mut DesktopUi, state: &mut desktop::State| {
+            let _ = ctx.run_ui(screen_input(), |root| {
+                ui.show(root, state);
+            });
+        };
+
+        feed(&mut state, b"\x1b[?1000h");
+        paint_focused(&mut ui, &mut state);
+        assert!(ui.pane_ui[&pane].overlay_cwd.is_none());
+
+        feed(&mut state, b"\x1b[?1000l");
+        paint_focused(&mut ui, &mut state);
+        assert_eq!(
+            ui.pane_ui[&pane].overlay_cwd.as_deref(),
+            Some("/home/demo/starcom")
+        );
+
+        feed(&mut state, b"\x1b[?1049h");
+        paint_focused(&mut ui, &mut state);
         assert!(ui.pane_ui[&pane].overlay_cwd.is_none());
     }
 
