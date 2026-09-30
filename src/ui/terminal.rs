@@ -842,13 +842,36 @@ impl PaneUi {
                         })
                         .filter(|(_, label)| !label.is_empty());
                     self.overlay_cwd = cwd_label.as_ref().map(|(_, label)| label.clone());
+                    let cwd_text_width = cwd_label
+                        .as_ref()
+                        .map(|(_, label)| {
+                            ui.fonts_mut(|fonts| {
+                                fonts
+                                    .layout_no_wrap(
+                                        label.clone(),
+                                        font.clone(),
+                                        egui::Color32::from_gray(180),
+                                    )
+                                    .size()
+                                    .x
+                            })
+                        })
+                        .unwrap_or(0.0);
+                    // egui Area's first frame uses Spacing::default_area_size (600px).
+                    // Pin the bar to the path plus icons so the first terminal
+                    // line stays selectable; the Xvfb smoke test copies cyan
+                    // "Starcom" from that row.
+                    let width = (icon_width + cwd_text_width + 16.0)
+                        .min((rect.width() - 8.0).max(32.0))
+                        .max(8.0);
                     egui::Area::new(id.with("chrome"))
                         .order(egui::Order::Foreground)
                         .pivot(egui::Align2::RIGHT_TOP)
                         .fixed_pos(egui::pos2(rect.max.x - 4.0, rect.min.y + 4.0))
+                        .default_size(egui::vec2(width, 28.0))
                         .constrain_to(rect)
                         .show(ui.ctx(), |ui| {
-                            ui.set_max_width((rect.width() - 8.0).max(32.0));
+                            ui.set_max_width(width);
                             egui::Frame::NONE
                                 .fill(egui::Color32::from_rgba_unmultiplied(16, 18, 22, 220))
                                 .corner_radius(5.0)
