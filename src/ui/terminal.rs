@@ -837,26 +837,18 @@ impl PaneUi {
                         .filter(|_| show_cwd)
                         .map(|path| {
                             let max_chars =
-                                ((rect.width() - 24.0 - icon_width) / char_w).floor() as usize;
+                                ((rect.width() - 16.0 - icon_width) / char_w).floor() as usize;
                             (path, fit_cwd(path, max_chars.max(2)))
                         })
                         .filter(|(_, label)| !label.is_empty());
-                    let cwd_width = cwd_label
-                        .as_ref()
-                        .map(|(_, label)| char_w * label.chars().count() as f32 + 16.0)
-                        .unwrap_or(0.0);
                     self.overlay_cwd = cwd_label.as_ref().map(|(_, label)| label.clone());
-                    let width = (icon_width + cwd_width).max(8.0);
-                    let bar = egui::Rect::from_min_max(
-                        egui::pos2(rect.max.x - width - 4.0, rect.min.y + 4.0),
-                        egui::pos2(rect.max.x - 4.0, rect.min.y + 28.0),
-                    )
-                    .intersect(rect);
                     egui::Area::new(id.with("chrome"))
                         .order(egui::Order::Foreground)
-                        .fixed_pos(bar.min)
+                        .pivot(egui::Align2::RIGHT_TOP)
+                        .fixed_pos(egui::pos2(rect.max.x - 4.0, rect.min.y + 4.0))
+                        .constrain_to(rect)
                         .show(ui.ctx(), |ui| {
-                            ui.set_max_size(bar.size());
+                            ui.set_max_width((rect.width() - 8.0).max(32.0));
                             egui::Frame::NONE
                                 .fill(egui::Color32::from_rgba_unmultiplied(16, 18, 22, 220))
                                 .corner_radius(5.0)
@@ -877,10 +869,13 @@ impl PaneUi {
                                                 );
                                             }
                                             if let Some((path, label)) = cwd_label.as_ref() {
-                                                ui.label(
-                                                    egui::RichText::new(label)
-                                                        .font(font.clone())
-                                                        .color(egui::Color32::from_gray(180)),
+                                                ui.add(
+                                                    egui::Label::new(
+                                                        egui::RichText::new(label.as_str())
+                                                            .font(font.clone())
+                                                            .color(egui::Color32::from_gray(180)),
+                                                    )
+                                                    .extend(),
                                                 )
                                                 .on_hover_text(*path);
                                             }
