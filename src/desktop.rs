@@ -1289,7 +1289,9 @@ pub(crate) fn demo_view() -> anyhow::Result<snapshot::View> {
         ))?;
         let mut terminal = terminal::Terminal::new(state.size, 300);
         if id == 0 {
-            terminal.feed(b"\x1b[36mStarcom\x1b[0m  /  terminal workspace\r\n\r\n");
+            // Blank first row holds the selected pane's cwd chrome. Cyan
+            // "Starcom" on the next row is what the Xvfb smoke test copies.
+            terminal.feed(b"\r\n\x1b[36mStarcom\x1b[0m  /  terminal workspace\r\n\r\n");
             terminal
                 .feed(b"\x1b[90mThis is built-in demo data, not an SSH session.\x1b[0m\r\n\r\n");
             terminal.feed(b"\x1b[32mdemo@workstation\x1b[0m:~/starcom$ cargo test\r\n\r\n");

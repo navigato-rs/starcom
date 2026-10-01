@@ -62,8 +62,9 @@ def find_demo_word(window):
     """Locate the first cyan terminal word without assuming sidebar geometry."""
     width, height, data = pixels(window)
     rows = []
-    # The first demo row is "Starcom" in cyan. After dropping extra chrome it
-    # sits just below the toolbar; a later cyan sentence must not win.
+    # Cyan "Starcom" is the demo title, on the row under the selected pane's
+    # cwd chrome. After dropping extra window chrome it sits just below the
+    # toolbar; a later cyan sentence must not win.
     for y in range(40, min(height, 500)):
         matches = []
         for x in range(width // 2):
@@ -119,8 +120,8 @@ with (ARTIFACTS / "desktop.log").open("w") as log:
         time.sleep(0.3)
         save_png(window, ARTIFACTS / "desktop-native.png")
         origin = root.translate_coords(window, 0, 0)
-        # The demo's first terminal row says "Starcom". Locate the rendered word
-        # so tab chrome or toolbar changes do not invalidate the native test.
+        # The demo title says "Starcom". Locate the rendered word so tab chrome
+        # or toolbar changes do not invalidate the native test.
         start_x, row_y, end_x = find_demo_word(window)
         move(origin.x + start_x, origin.y + row_y)
         mouse(X.ButtonPress)

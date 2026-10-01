@@ -263,11 +263,11 @@ erase on screen.
 
 ## Pane controls
 
-The selected pane shows a top-right chrome bar with the working folder
-(`#{pane_current_path}`) beside the window-style buttons. The path is
-shown on the primary screen when the pane has not enabled mouse
-reporting. Hover the label for the full path. It updates on snapshot
-and after pane output (for example `cd`).
+The selected pane shows a top chrome bar: the working folder
+(`#{pane_current_path}`) left-aligned, and the window-style buttons on
+the right. The path is shown on the primary screen when the pane has
+not enabled mouse reporting. Hover the label for the full path. It
+updates on snapshot and after pane output (for example `cd`).
 
 The buttons:
 
