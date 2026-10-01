@@ -39,7 +39,7 @@ pub struct PaneUi {
     /// Pointer gesture state machine: turns per-frame egui signals into one
     /// link-copy / app-click / local-selection decision.
     pointer: gesture::Pointer,
-    /// Cwd text on the selected pane's chrome bar.
+    /// Cwd text on the selected pane's top-left chrome.
     pub(crate) overlay_cwd: Option<String>,
 }
 
@@ -842,55 +842,27 @@ impl PaneUi {
                         })
                         .filter(|(_, label)| !label.is_empty());
                     self.overlay_cwd = cwd_label.as_ref().map(|(_, label)| label.clone());
-                    let cwd_text_width = cwd_label
-                        .as_ref()
-                        .map(|(_, label)| {
-                            ui.fonts_mut(|fonts| {
-                                fonts
-                                    .layout_no_wrap(
-                                        label.clone(),
-                                        font.clone(),
-                                        egui::Color32::from_gray(180),
-                                    )
-                                    .size()
-                                    .x
-                            })
-                        })
-                        .unwrap_or(0.0);
-                    // egui Area's first frame uses Spacing::default_area_size (600px).
-                    // Pin the bar to the path plus icons so the first terminal
-                    // line stays selectable; the Xvfb smoke test copies cyan
-                    // "Starcom" from that row.
-                    let width = (icon_width + cwd_text_width + 16.0)
-                        .min((rect.width() - 8.0).max(32.0))
-                        .max(8.0);
+                    // Pin the first-frame size: egui Area otherwise starts at
+                    // Spacing::default_area_size (600px).
+                    let bar_width = (rect.width() - 8.0).max(32.0);
                     egui::Area::new(id.with("chrome"))
                         .order(egui::Order::Foreground)
-                        .pivot(egui::Align2::RIGHT_TOP)
-                        .fixed_pos(egui::pos2(rect.max.x - 4.0, rect.min.y + 4.0))
-                        .default_size(egui::vec2(width, 28.0))
+                        .pivot(egui::Align2::LEFT_TOP)
+                        .fixed_pos(egui::pos2(rect.min.x + 4.0, rect.min.y + 4.0))
+                        .default_size(egui::vec2(bar_width, 24.0))
                         .constrain_to(rect)
                         .show(ui.ctx(), |ui| {
-                            ui.set_max_width(width);
+                            ui.set_min_width(bar_width);
+                            ui.set_max_width(bar_width);
                             egui::Frame::NONE
                                 .fill(egui::Color32::from_rgba_unmultiplied(16, 18, 22, 220))
                                 .corner_radius(5.0)
                                 .inner_margin(egui::Margin::symmetric(4, 2))
                                 .show(ui, |ui| {
+                                    ui.spacing_mut().item_spacing.x = 2.0;
                                     ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        egui::Layout::left_to_right(egui::Align::Center),
                                         |ui| {
-                                            ui.spacing_mut().item_spacing.x = 2.0;
-                                            if show_icons {
-                                                chrome_icons(
-                                                    ui,
-                                                    &mut events,
-                                                    id,
-                                                    can_kill,
-                                                    neighbors,
-                                                    zoomed,
-                                                );
-                                            }
                                             if let Some((path, label)) = cwd_label.as_ref() {
                                                 ui.add(
                                                     egui::Label::new(
@@ -902,6 +874,21 @@ impl PaneUi {
                                                 )
                                                 .on_hover_text(*path);
                                             }
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| {
+                                                    if show_icons {
+                                                        chrome_icons(
+                                                            ui,
+                                                            &mut events,
+                                                            id,
+                                                            can_kill,
+                                                            neighbors,
+                                                            zoomed,
+                                                        );
+                                                    }
+                                                },
+                                            );
                                         },
                                     );
                                 });

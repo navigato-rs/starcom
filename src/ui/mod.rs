@@ -2436,8 +2436,8 @@ mod tests {
             })
             .expect("selected pane paints chrome");
         assert!(
-            chrome.left() > pane_rect.left() + 80.0,
-            "chrome {chrome:?} covers the first demo line in {pane_rect:?}"
+            chrome.left() < pane_rect.left() + 20.0,
+            "cwd is left-aligned, chrome {chrome:?} in {pane_rect:?}"
         );
         let other = tmuxctl::PaneId(1);
         assert!(
