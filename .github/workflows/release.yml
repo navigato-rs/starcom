@@ -16,6 +16,7 @@ on:
 
 env:
   NAVIGATO_PRIVATE_REPORT_EMAIL: ${{ secrets.NAVIGATO_PRIVATE_REPORT_EMAIL }}
+  SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT || vars.SENTRY_PROJECT || github.event.repository.name }}
 
 permissions:
   contents: write
@@ -99,7 +100,7 @@ jobs:
           output: target/symbols/portable
           auth-token: ${{ secrets.SENTRY_AUTH_TOKEN }}
           org: ${{ secrets.SENTRY_ORG || vars.SENTRY_ORG }}
-          project: ${{ secrets.SENTRY_PROJECT || vars.SENTRY_PROJECT }}
+          project: ${{ env.SENTRY_PROJECT }}
 
       - name: Bundle (Linux)
         if: matrix.os == 'ubuntu-latest'
@@ -144,7 +145,7 @@ jobs:
           bundle-executable: target/aarch64-apple-darwin/release/bundle/osx/Starcom.app/Contents/MacOS/starcom
           auth-token: ${{ secrets.SENTRY_AUTH_TOKEN }}
           org: ${{ secrets.SENTRY_ORG || vars.SENTRY_ORG }}
-          project: ${{ secrets.SENTRY_PROJECT || vars.SENTRY_PROJECT }}
+          project: ${{ env.SENTRY_PROJECT }}
 
       - name: Package (macOS)
         if: matrix.os == 'macos-latest'
@@ -172,7 +173,7 @@ jobs:
           output: target/symbols/windows
           auth-token: ${{ secrets.SENTRY_AUTH_TOKEN }}
           org: ${{ secrets.SENTRY_ORG || vars.SENTRY_ORG }}
-          project: ${{ secrets.SENTRY_PROJECT || vars.SENTRY_PROJECT }}
+          project: ${{ env.SENTRY_PROJECT }}
 
       - name: Package zip (Windows)
         if: matrix.os == 'windows-latest'
