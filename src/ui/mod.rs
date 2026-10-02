@@ -2593,63 +2593,6 @@ mod tests {
     }
 
     #[test]
-    fn the_selected_shell_shows_cwd_until_mouse_or_alt_screen() {
-        let (ctx, mut ui, mut state, pane, _target) = focus_demo_pane();
-        assert_eq!(
-            ui.pane_ui[&pane].overlay_cwd.as_deref(),
-            Some("/home/demo/starcom")
-        );
-        let pane_rect = ui.pane_ui[&pane].rect;
-        let chrome = ctx
-            .memory(|memory| {
-                memory.area_rect(terminal::focus_id(ui.generation, pane).with("chrome"))
-            })
-            .expect("selected pane paints chrome");
-        assert!(
-            chrome.left() < pane_rect.left() + 20.0,
-            "cwd is left-aligned, chrome {chrome:?} in {pane_rect:?}"
-        );
-        let other = tmuxctl::PaneId(1);
-        assert!(
-            ui.pane_ui
-                .get(&other)
-                .is_none_or(|pane_ui| pane_ui.overlay_cwd.is_none())
-        );
-
-        let feed = |state: &mut desktop::State, bytes: &[u8]| {
-            state
-                .view
-                .as_mut()
-                .unwrap()
-                .panes_mut()
-                .get_mut(&pane)
-                .unwrap()
-                .terminal
-                .feed(bytes);
-        };
-        let paint_focused = |ui: &mut DesktopUi, state: &mut desktop::State| {
-            let _ = ctx.run_ui(screen_input(), |root| {
-                ui.show(root, state);
-            });
-        };
-
-        feed(&mut state, b"\x1b[?1000h");
-        paint_focused(&mut ui, &mut state);
-        assert!(ui.pane_ui[&pane].overlay_cwd.is_none());
-
-        feed(&mut state, b"\x1b[?1000l");
-        paint_focused(&mut ui, &mut state);
-        assert_eq!(
-            ui.pane_ui[&pane].overlay_cwd.as_deref(),
-            Some("/home/demo/starcom")
-        );
-
-        feed(&mut state, b"\x1b[?1049h");
-        paint_focused(&mut ui, &mut state);
-        assert!(ui.pane_ui[&pane].overlay_cwd.is_none());
-    }
-
-    #[test]
     fn a_destroyed_session_keeps_the_frozen_tab() {
         let mut ui = DesktopUi::default();
         let mut state = desktop::State::interactive_demo().unwrap();

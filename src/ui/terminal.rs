@@ -39,8 +39,6 @@ pub struct PaneUi {
     /// Pointer gesture state machine: turns per-frame egui signals into one
     /// link-copy / app-click / local-selection decision.
     pointer: gesture::Pointer,
-    /// Cwd text on the selected pane's top-left chrome.
-    pub(crate) overlay_cwd: Option<String>,
 }
 
 impl Default for PaneUi {
@@ -52,7 +50,6 @@ impl Default for PaneUi {
             scroll_frac: 0.0,
             stuck: true,
             pointer: gesture::Pointer::default(),
-            overlay_cwd: None,
         }
     }
 }
@@ -264,7 +261,6 @@ impl PaneUi {
     ) -> Vec<input::Action> {
         self.rect = rect;
         self.painted_rows = 0;
-        self.overlay_cwd = None;
         let pane_id = pane.state.pane;
         let id = focus_id(generation, pane_id);
         if rect.width() < 16.0 || rect.height() < 40.0 {
@@ -822,37 +818,18 @@ impl PaneUi {
                 pane.terminal.scroll_history(viewport.offset);
                 let selected = *focused == Some(pane_id);
                 let show_icons = controls && selected;
-                let show_cwd = selected && !mouse && !pane.terminal.is_alternate_screen();
-                if show_icons || show_cwd {
+                if show_icons {
                     let buttons = 2
                         + usize::from(can_move_to_session)
                         + usize::from(can_kill) * 2
                         + neighbors.count();
-                    let icon_width = if show_icons {
-                        8.0 + buttons as f32 * 24.0
-                    } else {
-                        0.0
-                    };
-                    let font = egui::FontId::monospace((font_size * 0.85).max(10.0));
-                    let char_w = ui.fonts_mut(|fonts| fonts.glyph_width(&font, 'M')).max(1.0);
-                    let cwd_label = pane
-                        .cwd
-                        .as_deref()
-                        .filter(|_| show_cwd)
-                        .map(|path| {
-                            let max_chars =
-                                ((rect.width() - 16.0 - icon_width) / char_w).floor() as usize;
-                            (path, fit_cwd(path, max_chars.max(2)))
-                        })
-                        .filter(|(_, label)| !label.is_empty());
-                    self.overlay_cwd = cwd_label.as_ref().map(|(_, label)| label.clone());
                     // Pin the first-frame size: egui Area otherwise starts at
                     // Spacing::default_area_size (600px).
-                    let bar_width = (rect.width() - 8.0).max(32.0);
+                    let bar_width = (8.0 + buttons as f32 * 24.0).min(rect.width() - 8.0);
                     egui::Area::new(id.with("chrome"))
                         .order(egui::Order::Foreground)
-                        .pivot(egui::Align2::LEFT_TOP)
-                        .fixed_pos(egui::pos2(rect.min.x + 4.0, rect.min.y + 4.0))
+                        .pivot(egui::Align2::RIGHT_TOP)
+                        .fixed_pos(egui::pos2(rect.max.x - 4.0, rect.min.y + 4.0))
                         .default_size(egui::vec2(bar_width, 24.0))
                         .constrain_to(rect)
                         .show(ui.ctx(), |ui| {
@@ -865,34 +842,16 @@ impl PaneUi {
                                 .show(ui, |ui| {
                                     ui.spacing_mut().item_spacing.x = 2.0;
                                     ui.with_layout(
-                                        egui::Layout::left_to_right(egui::Align::Center),
+                                        egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
-                                            if let Some((path, label)) = cwd_label.as_ref() {
-                                                ui.add(
-                                                    egui::Label::new(
-                                                        egui::RichText::new(label.as_str())
-                                                            .font(font.clone())
-                                                            .color(egui::Color32::from_gray(180)),
-                                                    )
-                                                    .extend(),
-                                                )
-                                                .on_hover_text(*path);
-                                            }
-                                            ui.with_layout(
-                                                egui::Layout::right_to_left(egui::Align::Center),
-                                                |ui| {
-                                                    if show_icons {
-                                                        chrome_icons(
-                                                            ui,
-                                                            &mut events,
-                                                            id,
-                                                            can_kill,
-                                                            can_move_to_session,
-                                                            neighbors,
-                                                            zoomed,
-                                                        );
-                                                    }
-                                                },
+                                            chrome_icons(
+                                                ui,
+                                                &mut events,
+                                                id,
+                                                can_kill,
+                                                can_move_to_session,
+                                                neighbors,
+                                                zoomed,
                                             );
                                         },
                                     );
@@ -917,29 +876,6 @@ enum ChromeIcon {
     Zoom,
     Restore,
     Close,
-}
-
-/// Keep the distinctive end of a path. `max_chars` is a monospace budget.
-fn fit_cwd(path: &str, max_chars: usize) -> String {
-    if max_chars == 0 {
-        return String::new();
-    }
-    let count = path.chars().count();
-    if count <= max_chars {
-        return path.to_owned();
-    }
-    let take = max_chars.saturating_sub(1);
-    if take == 0 {
-        return "…".to_owned();
-    }
-    let skip = count - take;
-    let suffix: String = path.chars().skip(skip).collect();
-    if let Some(idx) = suffix.find('/')
-        && idx + 1 < suffix.len()
-    {
-        return format!("…{}", &suffix[idx..]);
-    }
-    format!("…{suffix}")
 }
 
 fn chrome_icons(
@@ -1263,15 +1199,6 @@ mod tests {
         assert!(frozen.r() > frozen.g(), "hue is kept, only dimmed");
         assert!(frozen.r() < 255);
         assert!(frozen.r() > BACKGROUND.r());
-    }
-
-    #[test]
-    fn fit_cwd_keeps_the_end_and_breaks_on_a_slash() {
-        assert_eq!(fit_cwd("/x/Code/starcom", 20), "/x/Code/starcom");
-        assert_eq!(fit_cwd("/x/Code/starcom", 8), "…starcom");
-        assert_eq!(fit_cwd("/very/long/path/name", 12), "…/path/name");
-        assert_eq!(fit_cwd("/x", 1), "…");
-        assert_eq!(fit_cwd("/x", 0), "");
     }
 
     #[test]

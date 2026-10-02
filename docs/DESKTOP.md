@@ -278,11 +278,9 @@ erase on screen.
 
 ## Pane controls
 
-The selected pane shows a top chrome bar: the working folder
-(`#{pane_current_path}`) left-aligned, and the window-style buttons on
-the right. The path is shown on the primary screen when the pane has
-not enabled mouse reporting. Hover the label for the full path. It
-updates on snapshot and after pane output (for example `cd`).
+The selected pane shows its window-style controls in a compact bar at the top
+right. Working directories are not repeated in pane chrome; session names are
+the persistent workspace labels.
 
 The buttons:
 

@@ -20,7 +20,6 @@ never appended to the models of a lost attachment.
    scopes. Send one newline-terminated command list containing, for
    each pane, state metadata, joined current screen/history, saved primary
    screen/history, and pending parser bytes. End with a fresh state table,
-   a working-directory table (`#{pane_id}` tab `#{pane_current_path}`),
    session identity, and `refresh-client -f '!no-output'`.
 4. Correlate each command reply. Validate IDs, dimensions, modes, budgets, and the
    final state table before allocating replacement models. A missing pane,

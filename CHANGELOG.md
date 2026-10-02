@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Pane chrome no longer displays or polls each pane's working directory. Session
+  names are the workspace label; pane chrome is reserved for controls. Splits
+  still start in the source pane's current directory through tmux itself.
 - Session tabs show names only and use browser-tab geometry. The active server
   moved to the status bar beside latency.
 - Choosing a host focuses the new-session field. Sessions already attached on

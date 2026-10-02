@@ -424,7 +424,6 @@ mod tests {
             state,
             terminal: crate::terminal::Terminal::new(size, 0),
             history_may_be_truncated: false,
-            cwd: None,
         }
     }
 
