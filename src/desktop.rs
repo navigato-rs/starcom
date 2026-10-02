@@ -87,6 +87,7 @@ impl Target {
 struct Pending {
     target: Target,
     action: input::Action,
+    queued_at: time::Instant,
 }
 
 /// What the worker has been asked to do next. Discovery and creation are
@@ -141,6 +142,8 @@ pub(crate) struct State {
     pub discovery: Option<Discovery>,
     /// Last interactive-command round trip, from traffic we already send.
     pub last_rtt: Option<time::Duration>,
+    /// Breakdown for the last acknowledged ordinary-input transaction.
+    pub input_latency: Option<inspect::InputLatency>,
     /// Pending in-band `rename-session` (new name, previous name).
     rename: Option<(core::SessionName, String)>,
     /// The rename is queued or waiting for tmux's bounded reply.
@@ -176,6 +179,7 @@ impl Default for State {
             failure: None,
             discovery: None,
             last_rtt: None,
+            input_latency: None,
             rename: None,
             renaming: false,
             renamed: None,
@@ -200,6 +204,7 @@ impl State {
         self.retry = None;
         self.continuity = None;
         self.failure = None;
+        self.input_latency = None;
         self.rename = None;
         self.renaming = false;
         self.renamed = None;
@@ -284,13 +289,18 @@ impl State {
             && let Some(Pending {
                 target: previous,
                 action: input::Action::Bytes(queued),
+                ..
             }) = self.actions.back_mut()
             && *previous == target
             && queued.len() + bytes.len() <= crate::command::MAX_INPUT_BYTES
         {
             queued.extend_from_slice(bytes);
         } else {
-            self.actions.push_back(Pending { target, action });
+            self.actions.push_back(Pending {
+                target,
+                action,
+                queued_at: time::Instant::now(),
+            });
         }
         self.action_bytes += size;
         if let Some(ref wake) = self.io_wake {
@@ -931,6 +941,59 @@ fn renew_epoch(shared: &Shared, wake: &Wake, epoch: u64) -> Option<u64> {
     Some(renewed)
 }
 
+fn take_ordinary_input(
+    state: &mut State,
+) -> anyhow::Result<Option<(input::Target, Vec<input::Action>, time::Duration)>> {
+    // A rename is a session-scoped ordering barrier. Once requested, drain
+    // input already on the wire instead of letting newly typed input postpone
+    // it indefinitely.
+    if !state.input_ready() || state.rename.is_some() {
+        return Ok(None);
+    }
+    loop {
+        let Some(front) = state.actions.front() else {
+            return Ok(None);
+        };
+        if !matches!(
+            front.action,
+            input::Action::Bytes(_) | input::Action::Key(..)
+        ) {
+            return Ok(None);
+        }
+        let pending = state.actions.pop_front().expect("front checked");
+        state.action_bytes -= pending.action.size();
+        if state.target(pending.target.pane) != Some(pending.target) {
+            continue;
+        }
+        let target = session::action_target(
+            state.view.as_ref().expect("input-ready view"),
+            pending.target.pane,
+        )?;
+        let queue = time::Instant::now().saturating_duration_since(pending.queued_at);
+        let mut actions = vec![pending.action];
+        while actions.len() < 32
+            && state.actions.front().is_some_and(|next| {
+                next.target == pending.target
+                    && matches!(
+                        next.action,
+                        input::Action::Bytes(_) | input::Action::Key(..)
+                    )
+            })
+        {
+            let next = state.actions.pop_front().expect("front checked");
+            state.action_bytes -= next.action.size();
+            actions.push(next.action);
+        }
+        return Ok(Some((target, actions, queue)));
+    }
+}
+
+fn slow_input(latency: inspect::InputLatency) -> bool {
+    latency.queue >= time::Duration::from_millis(100)
+        || latency.control >= time::Duration::from_millis(100)
+        || latency.max_output_lag_ms >= 100
+}
+
 fn watch(
     shared: &Shared,
     wake: &Wake,
@@ -1016,7 +1079,10 @@ fn watch(
             if !state.accepts(epoch) {
                 return Ok(Outcome::Cancelled);
             }
-            state.rename.take()
+            inspector
+                .input_idle()
+                .then(|| state.rename.take())
+                .flatten()
         };
         if let Some((name, previous)) = rename {
             // Once written, the command must never be replayed. Point any
@@ -1076,6 +1142,79 @@ fn watch(
                     drop(state);
                     wake();
                 }
+            }
+            continue;
+        }
+
+        // Ordinary input is the latency-sensitive path. Keep several guarded
+        // transactions in flight, but never move one across a paste, resize,
+        // layout action, or rename. UI wakes interrupt `poll_input`, allowing a
+        // newly typed key to be written without waiting for an earlier reply.
+        while inspector.can_pipeline_input() {
+            let next = {
+                let mut state = shared
+                    .0
+                    .lock()
+                    .unwrap_or_else(sync::PoisonError::into_inner);
+                if !state.accepts(epoch) {
+                    return Ok(Outcome::Cancelled);
+                }
+                take_ordinary_input(&mut state)?
+            };
+            let Some((target, actions, queue)) = next else {
+                break;
+            };
+            inspector.start_input(target, &actions, queue)?;
+        }
+        if !inspector.input_idle() {
+            let progress = inspector.poll_input()?;
+            let had_network = progress.received;
+            let mut state = shared
+                .0
+                .lock()
+                .unwrap_or_else(sync::PoisonError::into_inner);
+            if !state.accepts(epoch) {
+                return Ok(Outcome::Cancelled);
+            }
+            let mut changed = !progress.notifications.is_empty();
+            if let Some(ref mut view) = state.view {
+                for event in progress.notifications {
+                    view.apply(event);
+                }
+            }
+            for completion in progress.completions {
+                changed = true;
+                state.last_rtt = Some(completion.latency.control);
+                state.input_latency = Some(completion.latency);
+                if slow_input(completion.latency) {
+                    log::warn!(
+                        "slow terminal input: queue={}ms control={}ms output={}B/{} events tmux_lag={}ms",
+                        completion.latency.queue.as_millis(),
+                        completion.latency.control.as_millis(),
+                        completion.latency.output_bytes,
+                        completion.latency.output_events,
+                        completion.latency.max_output_lag_ms,
+                    );
+                }
+                if !completion.applied {
+                    state.error = Some(
+                        "tmux blocked input because the pane or layout changed. Nothing was retried."
+                            .to_owned(),
+                    );
+                    if let Some(ref mut view) = state.view {
+                        view.invalidate();
+                    }
+                }
+            }
+            drop(state);
+            // `poll_input` also returns when the UI wakes the SSH channel. A
+            // local wake is not evidence that the remote stream survived a
+            // suspend.
+            if had_network {
+                last_alive = reconnect::AliveClock::now();
+            }
+            if changed {
+                wake();
             }
             continue;
         }
@@ -1216,27 +1355,17 @@ fn watch(
                         let source_ended =
                             matches!(pending.action, input::Action::MoveToNewSession)
                                 && state.view.as_ref().expect("view published").panes().len() == 1;
-                        let ordinary = matches!(
-                            pending.action,
-                            input::Action::Bytes(_) | input::Action::Key(..)
+                        // Ordinary input is consumed by the bounded pipeline
+                        // above. Reaching this synchronous path with it would
+                        // reintroduce one-acknowledgment-per-input latency.
+                        anyhow::ensure!(
+                            !matches!(
+                                pending.action,
+                                input::Action::Bytes(_) | input::Action::Key(..)
+                            ),
+                            "ordinary input bypassed the pipeline"
                         );
-                        let mut actions = vec![pending.action];
-                        // Pipeline adjacent keystrokes in one tmux transaction,
-                        // without moving them across a paste/resize or pane switch.
-                        while ordinary
-                            && actions.len() < 32
-                            && state.actions.front().is_some_and(|next| {
-                                next.target == pending.target
-                                    && matches!(
-                                        next.action,
-                                        input::Action::Bytes(_) | input::Action::Key(..)
-                                    )
-                            })
-                        {
-                            let next = state.actions.pop_front().expect("front checked");
-                            state.action_bytes -= next.action.size();
-                            actions.push(next.action);
-                        }
+                        let actions = vec![pending.action];
                         Some((target, actions, resizing, source_ended))
                     } else {
                         None
@@ -1570,6 +1699,53 @@ mod tests {
         );
         assert_eq!(state.actions[2].target, b);
         assert_eq!(state.action_bytes, 6 + 32 + 5);
+    }
+
+    #[test]
+    fn ordinary_input_batches_stop_at_synchronous_barriers() {
+        let mut state = editable();
+        let target = state.target(tmuxctl::PaneId(0)).unwrap();
+        state
+            .enqueue(target, input::Action::Bytes(b"hello".to_vec()))
+            .unwrap();
+        state
+            .enqueue(
+                target,
+                input::Action::Key(input::Key::Enter, input::Modifiers::default()),
+            )
+            .unwrap();
+        state
+            .enqueue(
+                target,
+                input::Action::Paste(input::Paste::new("barrier").unwrap()),
+            )
+            .unwrap();
+        state
+            .enqueue(target, input::Action::Bytes(b"later".to_vec()))
+            .unwrap();
+
+        let (_, actions, _) = take_ordinary_input(&mut state).unwrap().unwrap();
+        assert_eq!(actions.len(), 2);
+        assert!(matches!(&actions[0], input::Action::Bytes(bytes) if bytes == b"hello"));
+        assert!(matches!(
+            actions[1],
+            input::Action::Key(input::Key::Enter, _)
+        ));
+        assert!(matches!(state.actions[0].action, input::Action::Paste(_)));
+        assert!(matches!(state.actions[1].action, input::Action::Bytes(_)));
+        assert_eq!(state.action_bytes, "barrier".len() + "later".len());
+    }
+
+    #[test]
+    fn queued_rename_is_an_input_pipeline_barrier() {
+        let mut state = editable();
+        let target = state.target(tmuxctl::PaneId(0)).unwrap();
+        state
+            .enqueue(target, input::Action::Bytes(b"held".to_vec()))
+            .unwrap();
+        state.rename = Some((core::SessionName::new("renamed").unwrap(), "old".to_owned()));
+        assert!(take_ordinary_input(&mut state).unwrap().is_none());
+        assert_eq!(state.actions.len(), 1);
     }
 
     #[test]

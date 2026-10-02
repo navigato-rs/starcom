@@ -64,6 +64,43 @@ pub(crate) struct Interaction {
 }
 
 #[cfg(feature = "gui")]
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct InputLatency {
+    pub queue: time::Duration,
+    pub control: time::Duration,
+    pub output_bytes: usize,
+    pub output_events: usize,
+    pub max_output_lag_ms: u64,
+}
+
+#[cfg(feature = "gui")]
+pub(crate) struct InputCompletion {
+    pub applied: bool,
+    pub latency: InputLatency,
+}
+
+#[cfg(feature = "gui")]
+pub(crate) struct InputProgress {
+    pub completions: Vec<InputCompletion>,
+    pub notifications: Vec<tmuxctl::Notification>,
+    /// The SSH channel yielded bytes. A local wake returns false.
+    pub received: bool,
+}
+
+#[cfg(feature = "gui")]
+struct PendingInput {
+    ids: Vec<tmuxctl::CommandId>,
+    replies: Vec<Vec<String>>,
+    sent_at: time::Instant,
+    deadline: time::Instant,
+    queue: time::Duration,
+    wire_bytes: usize,
+    output_bytes: usize,
+    output_events: usize,
+    max_output_lag_ms: u64,
+}
+
+#[cfg(feature = "gui")]
 pub(crate) struct PaneMove {
     pub applied: bool,
     pub session: core::SessionName,
@@ -76,6 +113,8 @@ pub struct Inspector {
     stderr: Vec<u8>,
     input_buffer_prefix: Option<String>,
     input_sequence: u64,
+    #[cfg(feature = "gui")]
+    pending_input: collections::VecDeque<PendingInput>,
     /// Set once tmux has answered anything at all. Until then, an ending control
     /// session means the attach never happened, which is a different failure
     /// from a session that ended later.
@@ -110,6 +149,8 @@ impl Inspector {
             stderr: Vec::new(),
             input_buffer_prefix: None,
             input_sequence: 0,
+            #[cfg(feature = "gui")]
+            pending_input: collections::VecDeque::new(),
             answered: false,
             last_rtt: None,
         })
@@ -430,38 +471,14 @@ impl Inspector {
             wire.len() < 512 * 1024,
             "control transaction exceeds budget"
         );
+        #[cfg(feature = "gui")]
+        anyhow::ensure!(
+            self.pending_input.is_empty(),
+            "synchronous command attempted while input replies are pending"
+        );
         let started = time::Instant::now();
         let deadline = started + self.channel.timeout().min(timeout);
-        let mut ids = Vec::with_capacity(reply_count);
-        for _ in 0..reply_count {
-            ids.push(self.control.register_command()?);
-        }
-        let mut unsent = wire.as_bytes();
-        while !unsent.is_empty() {
-            if time::Instant::now() >= deadline {
-                return Err(ssh::Error::timeout(
-                    "tmux write deadline expired; delivery is uncertain",
-                )
-                .into());
-            }
-            match io::Write::write(&mut self.channel, unsent) {
-                Ok(0) => {
-                    return Err(ssh::Error::transport(
-                        "tmux channel closed during write; delivery is uncertain",
-                    )
-                    .into());
-                }
-                Ok(count) => unsent = &unsent[count..],
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    self.channel.take_wakeup();
-                    self.channel.wait(deadline)?
-                }
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                Err(error) => {
-                    return Err(error).context("tmux write failed; delivery is uncertain");
-                }
-            }
-        }
+        let ids = self.register_and_write(wire, reply_count, deadline)?;
         let mut batch = Batch {
             replies: Vec::new(),
             notifications: Vec::new(),
@@ -528,6 +545,50 @@ impl Inspector {
                 return Ok(batch);
             }
         }
+    }
+
+    fn register_and_write(
+        &mut self,
+        wire: &str,
+        reply_count: usize,
+        deadline: time::Instant,
+    ) -> anyhow::Result<Vec<tmuxctl::CommandId>> {
+        anyhow::ensure!(reply_count > 0 && reply_count <= 256, "invalid reply count");
+        anyhow::ensure!(
+            wire.len() < 512 * 1024,
+            "control transaction exceeds budget"
+        );
+        let mut ids = Vec::with_capacity(reply_count);
+        for _ in 0..reply_count {
+            ids.push(self.control.register_command()?);
+        }
+        let mut unsent = wire.as_bytes();
+        while !unsent.is_empty() {
+            if time::Instant::now() >= deadline {
+                return Err(ssh::Error::timeout(
+                    "tmux write deadline expired; delivery is uncertain",
+                )
+                .into());
+            }
+            match io::Write::write(&mut self.channel, unsent) {
+                Ok(0) => {
+                    return Err(ssh::Error::transport(
+                        "tmux channel closed during write; delivery is uncertain",
+                    )
+                    .into());
+                }
+                Ok(count) => unsent = &unsent[count..],
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    self.channel.take_wakeup();
+                    self.channel.wait(deadline)?
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) => {
+                    return Err(error).context("tmux write failed; delivery is uncertain");
+                }
+            }
+        }
+        Ok(ids)
     }
 
     /// Read at most one stdout/stderr chunk. None is an idle deadline, not EOF.
@@ -765,11 +826,11 @@ impl Inspector {
             .collect())
     }
 
-    pub(crate) fn interact(
+    fn interaction_wire(
         &mut self,
         target: input::Target,
         actions: &[input::Action],
-    ) -> anyhow::Result<Interaction> {
+    ) -> anyhow::Result<(String, usize)> {
         anyhow::ensure!(
             !actions.is_empty() && actions.len() <= 32,
             "invalid input batch"
@@ -862,7 +923,16 @@ impl Inspector {
             wire.push_str("display-message -p '' ; ");
         }
         wire.push_str("display-message -p STARCOM-BLOCKED }\n");
-        let result = self.exchange(&wire, commands.len() + 2);
+        Ok((wire, commands.len() + 2))
+    }
+
+    pub(crate) fn interact(
+        &mut self,
+        target: input::Target,
+        actions: &[input::Action],
+    ) -> anyhow::Result<Interaction> {
+        let (wire, reply_count) = self.interaction_wire(target, actions)?;
+        let result = self.exchange(&wire, reply_count);
         if result.is_err() {
             self.abort();
         }
@@ -873,15 +943,7 @@ impl Inspector {
         // it, a channel that died mid-transaction looks like an unrecognized
         // protocol fault and reconnection policy would refuse to retry it. The
         // dropped action itself is still never resubmitted.
-        const OPAQUE: &str =
-            "interactive request failed; delivery may be uncertain and was not retried";
-        let batch = result.map_err(|error| {
-            if crate::reconnect::classify(&error) == crate::reconnect::Failure::Transport {
-                anyhow::Error::new(ssh::Error::transport(OPAQUE))
-            } else {
-                anyhow::anyhow!(OPAQUE)
-            }
-        })?;
+        let batch = result.map_err(opaque_interaction_error)?;
         let last = batch
             .replies
             .last()
@@ -900,9 +962,202 @@ impl Inspector {
         })
     }
 
+    #[cfg(feature = "gui")]
+    pub(crate) fn input_idle(&self) -> bool {
+        self.pending_input.is_empty()
+    }
+
+    #[cfg(feature = "gui")]
+    pub(crate) fn can_pipeline_input(&self) -> bool {
+        // One ordinary transaction has at most 32 actions plus `if-shell` and
+        // its result marker. Keep a second bound below Control's hard cap so a
+        // burst cannot monopolize the stream indefinitely.
+        self.pending_input.len() < 8 && self.control.pending_commands() <= 222
+    }
+
+    /// Send ordinary key/byte input without waiting for earlier acknowledgments.
+    /// Every transaction remains guarded and ordered by tmux. Once registered,
+    /// it is never replayed, including after an uncertain write or disconnect.
+    #[cfg(feature = "gui")]
+    pub(crate) fn start_input(
+        &mut self,
+        target: input::Target,
+        actions: &[input::Action],
+        queue: time::Duration,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            actions
+                .iter()
+                .all(|action| matches!(action, input::Action::Bytes(_) | input::Action::Key(..))),
+            "only ordinary terminal input may be pipelined"
+        );
+        anyhow::ensure!(self.can_pipeline_input(), "input pipeline is full");
+        let (wire, reply_count) = self.interaction_wire(target, actions)?;
+        let sent_at = time::Instant::now();
+        let deadline = sent_at + self.channel.timeout();
+        match self.register_and_write(&wire, reply_count, deadline) {
+            Ok(ids) => {
+                self.pending_input.push_back(PendingInput {
+                    ids,
+                    replies: Vec::with_capacity(reply_count),
+                    sent_at,
+                    deadline,
+                    queue,
+                    wire_bytes: 0,
+                    output_bytes: 0,
+                    output_events: 0,
+                    max_output_lag_ms: 0,
+                });
+                Ok(())
+            }
+            Err(error) => {
+                self.abort();
+                Err(opaque_interaction_error(error))
+            }
+        }
+    }
+
+    /// Process at most one SSH chunk, or return when newly queued local input
+    /// wakes the worker. This lets the caller add more guarded transactions
+    /// while earlier replies are still in flight.
+    #[cfg(feature = "gui")]
+    pub(crate) fn poll_input(&mut self) -> anyhow::Result<InputProgress> {
+        let result = self.poll_input_inner();
+        if result.is_err() {
+            self.abort();
+        }
+        result.map_err(opaque_interaction_error)
+    }
+
+    #[cfg(feature = "gui")]
+    fn poll_input_inner(&mut self) -> anyhow::Result<InputProgress> {
+        let deadline = self
+            .pending_input
+            .front()
+            .context("input pipeline is empty")?
+            .deadline;
+        let Some((events, bytes)) = self.read_events(deadline, ReadPurpose::Poll)? else {
+            anyhow::ensure!(
+                time::Instant::now() < deadline,
+                ssh::Error::timeout("tmux input reply deadline expired")
+            );
+            return Ok(InputProgress {
+                completions: Vec::new(),
+                notifications: Vec::new(),
+                received: false,
+            });
+        };
+        for pending in &mut self.pending_input {
+            pending.wire_bytes = pending
+                .wire_bytes
+                .checked_add(bytes)
+                .context("wire budget overflow")?;
+            anyhow::ensure!(
+                pending.wire_bytes <= MAX_TRANSFER,
+                "tmux input pipeline exceeds 8 MiB wire budget"
+            );
+        }
+
+        let mut progress = InputProgress {
+            completions: Vec::new(),
+            notifications: Vec::new(),
+            received: true,
+        };
+        for event in events {
+            match event {
+                tmuxctl::Incoming::Notification(notification) => {
+                    let (output_bytes, lag) = notification_output(&notification);
+                    if output_bytes != 0 {
+                        for pending in &mut self.pending_input {
+                            pending.output_bytes = pending
+                                .output_bytes
+                                .checked_add(output_bytes)
+                                .context("output byte count overflow")?;
+                            pending.output_events += 1;
+                            pending.max_output_lag_ms = pending.max_output_lag_ms.max(lag);
+                        }
+                    }
+                    progress.notifications.push(notification);
+                }
+                tmuxctl::Incoming::Reply { id, result } => {
+                    let complete = {
+                        let pending = self
+                            .pending_input
+                            .front_mut()
+                            .context("unexpected pipelined input reply")?;
+                        anyhow::ensure!(
+                            pending.ids.get(pending.replies.len()) == Some(&id),
+                            "unexpected pipelined input reply"
+                        );
+                        pending.replies.push(
+                            result
+                                .map_err(|_| anyhow::anyhow!("tmux rejected pipelined input"))?
+                                .lines,
+                        );
+                        self.answered = true;
+                        pending.replies.len() == pending.ids.len()
+                    };
+                    if complete {
+                        let pending = self.pending_input.pop_front().expect("front checked");
+                        let last = pending
+                            .replies
+                            .last()
+                            .context("missing pipelined input result")?;
+                        anyhow::ensure!(
+                            last.len() == 1
+                                && matches!(
+                                    last[0].as_str(),
+                                    "STARCOM-APPLIED" | "STARCOM-BLOCKED"
+                                ),
+                            "invalid pipelined input result"
+                        );
+                        let control = pending.sent_at.elapsed();
+                        self.last_rtt = Some(control);
+                        progress.completions.push(InputCompletion {
+                            applied: last[0] == "STARCOM-APPLIED",
+                            latency: InputLatency {
+                                queue: pending.queue,
+                                control,
+                                output_bytes: pending.output_bytes,
+                                output_events: pending.output_events,
+                                max_output_lag_ms: pending.max_output_lag_ms,
+                            },
+                        });
+                    }
+                }
+            }
+        }
+        Ok(progress)
+    }
+
     pub(crate) fn abort(&mut self) {
         let _ = self.control.finish(|_| {});
         self.channel.abort();
+        #[cfg(feature = "gui")]
+        self.pending_input.clear();
+    }
+}
+
+#[cfg(feature = "gui")]
+fn notification_output(notification: &tmuxctl::Notification) -> (usize, u64) {
+    match *notification {
+        tmuxctl::Notification::Output { ref bytes, .. } => (bytes.len(), 0),
+        tmuxctl::Notification::ExtendedOutput {
+            ref bytes,
+            ms_behind,
+            ..
+        } => (bytes.len(), ms_behind),
+        _ => (0, 0),
+    }
+}
+
+fn opaque_interaction_error(error: anyhow::Error) -> anyhow::Error {
+    const OPAQUE: &str =
+        "interactive request failed; delivery may be uncertain and was not retried";
+    if crate::reconnect::classify(&error) == crate::reconnect::Failure::Transport {
+        anyhow::Error::new(ssh::Error::transport(OPAQUE))
+    } else {
+        anyhow::anyhow!(OPAQUE)
     }
 }
 
@@ -1090,6 +1345,30 @@ mod tests {
                 .unwrap()
                 .as_str(),
             "pane-8"
+        );
+    }
+
+    #[cfg(feature = "gui")]
+    #[test]
+    fn output_notifications_report_payload_and_tmux_lag() {
+        assert_eq!(
+            notification_output(&tmuxctl::Notification::Output {
+                pane: tmuxctl::PaneId(3),
+                bytes: b"redraw".to_vec(),
+            }),
+            (6, 0)
+        );
+        assert_eq!(
+            notification_output(&tmuxctl::Notification::ExtendedOutput {
+                pane: tmuxctl::PaneId(3),
+                ms_behind: 417,
+                bytes: b"frame".to_vec(),
+            }),
+            (5, 417)
+        );
+        assert_eq!(
+            notification_output(&tmuxctl::Notification::SessionsChanged),
+            (0, 0)
         );
     }
 

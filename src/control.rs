@@ -370,6 +370,33 @@ mod tests {
     }
 
     #[test]
+    fn several_registered_commands_complete_in_wire_order() {
+        let mut control = Control::default();
+        let ids = [
+            control.register_command().unwrap(),
+            control.register_command().unwrap(),
+            control.register_command().unwrap(),
+        ];
+        assert_eq!(control.pending_commands(), ids.len());
+        let mut events = Vec::new();
+        control
+            .feed(
+                b"%begin 1 2 1\none\n%end 1 2 1\n%output %3 x\n%begin 1 3 1\ntwo\n%end 1 3 1\n%begin 1 4 1\nthree\n%end 1 4 1\n",
+                |event| events.push(event),
+            )
+            .unwrap();
+        let completed: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                tmuxctl::Incoming::Reply { id, .. } => Some(*id),
+                tmuxctl::Incoming::Notification(_) => None,
+            })
+            .collect();
+        assert_eq!(completed, ids);
+        assert_eq!(control.pending_commands(), 0);
+    }
+
+    #[test]
     fn malformed_reply_closes_and_fails_pending_commands() {
         let mut control = Control::default();
         let id = control.register_command().unwrap();

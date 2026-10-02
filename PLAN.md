@@ -306,6 +306,9 @@ pinned fork.
 
 ### M5 — Performance and release hardening
 
+- [x] Add bounded ordinary-input pipelining and safe latency diagnostics for
+  queue time, control acknowledgment, competing output, and tmux flow-control
+  lag. Keep paste, layout, resize, move, and rename as ordering barriers.
 - [ ] Measure startup, idle CPU, RAM per pane/history, sustained-output throughput,
   and input latency. First baselines, x86-64 Linux, thin LTO: a clean release
   build takes about 3 minutes and produces a 14.4 MiB stripped binary.
