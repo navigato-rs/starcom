@@ -1004,7 +1004,6 @@ fn watch(
     // from the short delay again instead of inheriting an old backoff.
     backoff.reset();
     let mut last_alive = reconnect::AliveClock::now();
-    let mut last_cwd = time::Instant::now();
     wake();
     loop {
         // Rename before resync/input. It is session-scoped and does not depend
@@ -1369,45 +1368,6 @@ fn watch(
                 if changed {
                     wake();
                 }
-                // Refresh cwd after output so `cd` is visible. At most once a
-                // second; idle sessions send nothing extra. Skip on resync:
-                // PATH_FORMAT is already in that snapshot.
-                let still_watching = {
-                    let state = shared
-                        .0
-                        .lock()
-                        .unwrap_or_else(sync::PoisonError::into_inner);
-                    if !state.accepts(epoch) {
-                        return Ok(Outcome::Cancelled);
-                    }
-                    state
-                        .view
-                        .as_ref()
-                        .is_some_and(|view| view.status() == snapshot::Status::Watching)
-                };
-                if still_watching
-                    && had_output
-                    && last_cwd.elapsed() >= time::Duration::from_secs(1)
-                {
-                    let (paths, notes) = inspector.pane_paths()?;
-                    let mut state = shared
-                        .0
-                        .lock()
-                        .unwrap_or_else(sync::PoisonError::into_inner);
-                    if !state.accepts(epoch) {
-                        return Ok(Outcome::Cancelled);
-                    }
-                    let view = state.view.as_mut().expect("view published");
-                    for event in notes {
-                        view.apply(event);
-                    }
-                    let cwd_changed = view.apply_paths(&paths);
-                    last_cwd = time::Instant::now();
-                    drop(state);
-                    if cwd_changed {
-                        wake();
-                    }
-                }
             }
         }
     }
@@ -1456,8 +1416,7 @@ pub(crate) fn demo_view() -> anyhow::Result<snapshot::View> {
         ))?;
         let mut terminal = terminal::Terminal::new(state.size, 300);
         if id == 0 {
-            // Blank first row holds the selected pane's cwd chrome. Cyan
-            // "Starcom" on the next row is what the Xvfb smoke test copies.
+            // Cyan "Starcom" is what the Xvfb smoke test copies.
             terminal.feed(b"\r\n\x1b[36mStarcom\x1b[0m  /  terminal workspace\r\n\r\n");
             terminal
                 .feed(b"\x1b[90mThis is built-in demo data, not an SSH session.\x1b[0m\r\n\r\n");
@@ -1491,11 +1450,6 @@ pub(crate) fn demo_view() -> anyhow::Result<snapshot::View> {
             state,
             terminal,
             history_may_be_truncated: false,
-            cwd: Some(if id == 0 {
-                "/home/demo/starcom".to_owned()
-            } else {
-                "/var/log".to_owned()
-            }),
         });
     }
     snapshot::View::new(tmuxctl::SessionId(0), panes)

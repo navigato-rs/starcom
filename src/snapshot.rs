@@ -26,11 +26,6 @@ pub const STATE_FORMAT: &str = concat!(
     "#{mouse_utf8_flag}|#{mouse_sgr_flag}|#{bracket_paste_flag}|#{pane_tabs}"
 );
 
-/// Working directory is free-form, so it is a tab-separated table rather than
-/// `STATE_FORMAT`. Control characters are stripped; empty paths are omitted.
-pub const PATH_FORMAT: &str = "#{pane_id}\t#{pane_current_path}";
-const MAX_PATH_BYTES: usize = 1024;
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct State {
     pub pane: tmuxctl::PaneId,
@@ -219,8 +214,6 @@ pub struct Pane {
     pub state: State,
     pub terminal: terminal::Terminal,
     pub history_may_be_truncated: bool,
-    /// tmux `#{pane_current_path}` at the last snapshot or path refresh.
-    pub cwd: Option<String>,
 }
 
 impl Pane {
@@ -260,7 +253,6 @@ impl Pane {
             state,
             terminal,
             history_may_be_truncated,
-            cwd: None,
         })
     }
 
@@ -279,43 +271,6 @@ impl Pane {
     pub fn sgr_mouse(&self) -> bool {
         self.terminal.sgr_mouse()
     }
-}
-
-/// Parse `PATH_FORMAT` lines. A bad line is skipped so overlay metadata cannot
-/// fail a snapshot.
-pub fn parse_paths(lines: &[String]) -> collections::BTreeMap<tmuxctl::PaneId, String> {
-    let mut paths = collections::BTreeMap::new();
-    for line in lines {
-        let Some((id, path)) = parse_path_line(line) else {
-            continue;
-        };
-        paths.insert(id, path);
-    }
-    paths
-}
-
-fn parse_path_line(line: &str) -> Option<(tmuxctl::PaneId, String)> {
-    let (id, path) = line.split_once('\t').unwrap_or((line, ""));
-    let id = tmuxctl::PaneId(id.strip_prefix('%')?.parse().ok()?);
-    let path = sanitize_path(path)?;
-    Some((id, path))
-}
-
-fn sanitize_path(path: &str) -> Option<String> {
-    if path.is_empty() {
-        return None;
-    }
-    let mut out = String::new();
-    for ch in path.chars() {
-        if ch.is_control() {
-            continue;
-        }
-        out.push(ch);
-        if out.len() >= MAX_PATH_BYTES {
-            break;
-        }
-    }
-    if out.is_empty() { None } else { Some(out) }
 }
 
 fn feed_grid(terminal: &mut terminal::Terminal, lines: &[String]) -> anyhow::Result<()> {
@@ -499,23 +454,6 @@ impl View {
 
     pub(crate) fn window_closed(&self) -> bool {
         self.window_closed
-    }
-
-    /// Overlay cwd from `list-panes` `PATH_FORMAT`. A pane with no row, or an
-    /// empty path, has no overlay.
-    pub fn apply_paths(&mut self, paths: &collections::BTreeMap<tmuxctl::PaneId, String>) -> bool {
-        let mut changed = false;
-        for (id, pane) in &mut self.panes {
-            let next = paths.get(id).cloned();
-            if pane.cwd != next {
-                pane.cwd = next;
-                changed = true;
-            }
-        }
-        if changed {
-            self.display_seq = self.display_seq.wrapping_add(1);
-        }
-        changed
     }
 
     /// Keep each surviving pane's local history viewport across a snapshot
@@ -709,49 +647,6 @@ mod tests {
         for bytes in [br"\".as_slice(), br"\0", br"\400", br"\999", br"\x1b"] {
             assert!(decode_escaped(bytes).is_err());
         }
-    }
-
-    #[test]
-    fn path_lines_skip_junk_and_strip_controls() {
-        let paths = parse_paths(&[
-            "%1\t/home/kvark/code".to_owned(),
-            "%2\t".to_owned(),
-            "not-a-pane".to_owned(),
-            "%3\t/tmp/\twith-tab".to_owned(),
-            "%4\t/tmp/\u{7}bell".to_owned(),
-            "%1\t/replaced".to_owned(),
-        ]);
-        assert_eq!(
-            paths.get(&tmuxctl::PaneId(1)).map(String::as_str),
-            Some("/replaced")
-        );
-        assert!(!paths.contains_key(&tmuxctl::PaneId(2)));
-        assert_eq!(
-            paths.get(&tmuxctl::PaneId(3)).map(String::as_str),
-            Some("/tmp/with-tab")
-        );
-        assert_eq!(
-            paths.get(&tmuxctl::PaneId(4)).map(String::as_str),
-            Some("/tmp/bell")
-        );
-    }
-
-    #[test]
-    fn apply_paths_replaces_and_clears_cwd() {
-        let pane = Pane::restore(state(12, 3), &lines(&["a", "", ""]), &[], &[], 0).unwrap();
-        let mut view = View::new(tmuxctl::SessionId(0), vec![pane]).unwrap();
-        let seq = view.display_seq();
-        let mut paths = collections::BTreeMap::new();
-        paths.insert(tmuxctl::PaneId(1), "/x/Code/starcom".to_owned());
-        assert!(view.apply_paths(&paths));
-        assert_eq!(
-            view.panes()[&tmuxctl::PaneId(1)].cwd.as_deref(),
-            Some("/x/Code/starcom")
-        );
-        assert_ne!(view.display_seq(), seq);
-        assert!(!view.apply_paths(&paths));
-        assert!(view.apply_paths(&collections::BTreeMap::new()));
-        assert!(view.panes()[&tmuxctl::PaneId(1)].cwd.is_none());
     }
 
     #[test]
