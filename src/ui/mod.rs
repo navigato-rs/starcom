@@ -1333,12 +1333,9 @@ impl DesktopUi {
                                 .request_repaint_after(time::Duration::from_millis(50));
                         }
                         if let Some(rtt) = state.last_rtt {
-                            ui.separator();
-                            let response = ui.small(if rtt.as_millis() == 0 {
-                                "<1 ms".to_owned()
-                            } else {
-                                format!("{} ms", rtt.as_millis())
-                            });
+                            let response = ui.label(
+                                egui::RichText::new(latency_label(rtt)).monospace().small(),
+                            );
                             if let Some(latency) = state.input_latency {
                                 response.on_hover_text(format!(
                                     "Last input: {} ms queued, {} ms awaiting tmux; {} bytes in {} output events; maximum tmux output lag {} ms",
@@ -2036,6 +2033,13 @@ fn paint_input_backlog(ui: &egui::Ui, rect: egui::Rect, backlog: desktop::InputB
     }
 }
 
+fn latency_label(rtt: time::Duration) -> String {
+    match rtt.as_millis() {
+        0 => "<1 ms".to_owned(),
+        millis => format!("{millis:>2} ms"),
+    }
+}
+
 fn field(ui: &mut egui::Ui, label: &str, value: &mut String) {
     ui.label(label);
     ui.add(
@@ -2063,6 +2067,15 @@ mod tests {
         assert_eq!(input_backlog_width(5), 19.0);
         assert_eq!(input_backlog_width(8), 31.0);
         assert_eq!(input_backlog_width(64), 40.0);
+    }
+
+    #[test]
+    fn latency_reserves_two_monospace_digits() {
+        assert_eq!(latency_label(time::Duration::ZERO), "<1 ms");
+        assert_eq!(latency_label(time::Duration::from_millis(1)), " 1 ms");
+        assert_eq!(latency_label(time::Duration::from_millis(9)), " 9 ms");
+        assert_eq!(latency_label(time::Duration::from_millis(10)), "10 ms");
+        assert_eq!(latency_label(time::Duration::from_millis(125)), "125 ms");
     }
 
     fn tilde_identity(file: &str) -> String {
