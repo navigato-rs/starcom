@@ -347,6 +347,105 @@ exec sleep 600
         .status();
 }
 
+#[cfg(feature = "gui")]
+#[test]
+#[ignore = "requires the isolated SSH/tmux fixture"]
+fn desktop_worker_moves_a_pane_to_a_fresh_session() {
+    use starcom::{core, desktop, input, session};
+    use std::sync;
+
+    let source = "starcom-pane-move";
+    let _ = tmux().args(["kill-session", "-t", source]).status();
+    assert!(
+        tmux()
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                source,
+                "-x",
+                "80",
+                "-y",
+                "24",
+                "sleep 600",
+            ])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        tmux()
+            .args(["split-window", "-h", "-t", source, "sleep 600"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let pane_output = tmux()
+        .args(["list-panes", "-t", source, "-F", "#{pane_id}"])
+        .output()
+        .unwrap();
+    assert!(pane_output.status.success());
+    let pane = String::from_utf8(pane_output.stdout)
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap()
+        .to_owned();
+    let pane_id = tmuxctl::PaneId(pane.strip_prefix('%').unwrap().parse().unwrap());
+    let moved = format!("pane-{}", pane_id.0);
+    let _ = tmux().args(["kill-session", "-t", &moved]).status();
+
+    let client = desktop::Client::new(sync::Arc::new(|| {})).unwrap();
+    client
+        .connect(desktop::Connection {
+            options: options(),
+            session: core::SessionName::new(source).unwrap(),
+            socket: Some(root().join("tmux.sock").to_str().unwrap().to_owned()),
+            history: 20,
+            access: session::Access::Interactive,
+            reconnect: false,
+        })
+        .unwrap();
+    wait_until(20, "worker did not attach for pane move", || {
+        client.phase() == desktop::Phase::Watching
+    });
+    let target = client.target(pane_id).expect("pane move target");
+    client
+        .submit(target, input::Action::MoveToNewSession)
+        .unwrap();
+    wait_until(20, "pane did not reach its generated session", || {
+        let output = tmux()
+            .args(["list-panes", "-t", &format!("={moved}"), "-F", "#{pane_id}"])
+            .output()
+            .unwrap();
+        output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == pane
+    });
+    wait_until(
+        20,
+        "source view did not resynchronize after pane move",
+        || client.phase() == desktop::Phase::Watching,
+    );
+    assert!(
+        client.target(pane_id).is_none(),
+        "moved pane stayed in source view"
+    );
+    let source_panes = tmux()
+        .args(["list-panes", "-t", source, "-F", "#{pane_id}"])
+        .output()
+        .unwrap();
+    assert!(source_panes.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&source_panes.stdout)
+            .lines()
+            .count(),
+        1
+    );
+
+    client.disconnect();
+    let _ = tmux().args(["kill-session", "-t", source]).status();
+    let _ = tmux().args(["kill-session", "-t", &moved]).status();
+}
+
 /// M3: a transport drop must reattach on its own, publish freshly reconstructed
 /// models under a new epoch, and never replay what was in flight when it dropped.
 #[cfg(feature = "gui")]

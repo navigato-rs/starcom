@@ -257,6 +257,7 @@ impl PaneUi {
         notice_until: &mut Option<std::time::Instant>,
         controls: bool,
         can_kill: bool,
+        can_move_to_session: bool,
         neighbors: layout::Neighbors,
         zoomed: bool,
         frozen: bool,
@@ -823,7 +824,10 @@ impl PaneUi {
                 let show_icons = controls && selected;
                 let show_cwd = selected && !mouse && !pane.terminal.is_alternate_screen();
                 if show_icons || show_cwd {
-                    let buttons = 2 + usize::from(can_kill) * 2 + neighbors.count();
+                    let buttons = 2
+                        + usize::from(can_move_to_session)
+                        + usize::from(can_kill) * 2
+                        + neighbors.count();
                     let icon_width = if show_icons {
                         8.0 + buttons as f32 * 24.0
                     } else {
@@ -883,6 +887,7 @@ impl PaneUi {
                                                             &mut events,
                                                             id,
                                                             can_kill,
+                                                            can_move_to_session,
                                                             neighbors,
                                                             zoomed,
                                                         );
@@ -902,6 +907,7 @@ impl PaneUi {
 
 #[derive(Clone, Copy)]
 enum ChromeIcon {
+    NewSession,
     SplitRight,
     SplitBelow,
     MoveLeft,
@@ -941,6 +947,7 @@ fn chrome_icons(
     events: &mut Vec<input::Action>,
     focus: egui::Id,
     can_kill: bool,
+    can_move_to_session: bool,
     neighbors: layout::Neighbors,
     zoomed: bool,
 ) {
@@ -949,6 +956,15 @@ fn chrome_icons(
     };
     if can_kill && chrome_button(ui, ChromeIcon::Close, "Close this pane") {
         events.push(input::Action::KillPane);
+    }
+    if can_move_to_session
+        && chrome_button(
+            ui,
+            ChromeIcon::NewSession,
+            "Move this pane to a new session",
+        )
+    {
+        events.push(input::Action::MoveToNewSession);
     }
     if can_kill {
         let (zoom_icon, zoom_tip) = if zoomed {
@@ -1022,6 +1038,18 @@ fn paint_chrome_icon(
 ) {
     let stroke = egui::Stroke::new(1.4_f32, color);
     match icon {
+        ChromeIcon::NewSession => {
+            let body = egui::Rect::from_min_max(
+                rect.min + egui::vec2(0.0, 3.0),
+                rect.max - egui::vec2(3.0, 0.0),
+            );
+            painter.rect_stroke(body, 1.0, stroke, egui::StrokeKind::Outside);
+            let from = egui::pos2(rect.center().x - 1.0, rect.center().y + 1.0);
+            let to = egui::pos2(rect.right(), rect.top());
+            painter.line_segment([from, to], stroke);
+            painter.line_segment([to, egui::pos2(to.x - 4.0, to.y)], stroke);
+            painter.line_segment([to, egui::pos2(to.x, to.y + 4.0)], stroke);
+        }
         ChromeIcon::SplitRight => {
             painter.rect_stroke(rect, 1.5, stroke, egui::StrokeKind::Outside);
             let x = rect.center().x;

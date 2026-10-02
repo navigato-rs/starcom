@@ -67,10 +67,14 @@ Use **+** to open the connection screen. Pick a `Host` from `~/.ssh/config` or t
 another destination; Starcom resolves supported user/host/port/key settings and
 resolves ProxyJump through Sunset’s shared client and reports unsupported policy
 instead of bypassing it.
-Choosing a known host lists its tmux sessions and selects the first one so
-**Connect** is the next click. A tab is registered for that session while it
-connects; failed first attachments return to **+** for repair instead of leaving
-an empty tab. Each tab shows one window of one session.
+Choosing a known host lists its tmux sessions and selects the first available one
+so **Connect** is the next click. Attached sessions are red and unavailable, and
+Host buttons already connected in this workspace are green. Typing is focused
+in the new-session field after the host choice. A tab is
+registered for that session while it connects; failed first attachments return
+to **+** for repair instead of leaving an empty tab. Tabs show session names only;
+the active server is shown in bold beside its latency. Each tab currently shows
+one window of one tmux session.
 
 Tabs are saved and resumed automatically by reconnecting to their previous host
 and tmux session; this can be disabled in **About**. Startup uses the same SSH
@@ -80,7 +84,8 @@ destinations, never credentials.
 first.
 
 The desktop currently supports local scrollback, selection and copying, pane
-split/move/zoom/close controls, session rename, and opt-in shared tmux pane
+split/move/zoom/close controls, moving a pane into an automatically named new
+session on the same server, session rename, and opt-in shared tmux pane
 resizing. Wheel events go to the application when it asked for mouse reports or
 uses the alternate screen; unmodified clicks go only when requested, while
 drags stay local selection. Focus a connected pane, then drop up to eight files
@@ -93,6 +98,7 @@ SSH and cryptography use Rust libraries; OpenSSL is not a build dependency.
 Host keys must already be trusted.
 
 [Desktop usage](docs/DESKTOP.md) · [SSH details](docs/SSH.md) ·
-[Synchronization limits](docs/SYNCHRONIZATION.md) · [Roadmap](PLAN.md)
+[Synchronization limits](docs/SYNCHRONIZATION.md) ·
+[next session model](docs/SESSION-MODEL.md) · [Roadmap](PLAN.md)
 
 Feedback and private diagnostics: [privacy and reporting](PRIVACY.md).

@@ -147,6 +147,8 @@ pub enum Action {
     KillPane,
     ZoomPane,
     SelectPane,
+    /// Detach this pane into a newly named tmux session on the same server.
+    MoveToNewSession,
     /// Swap this pane with the neighbor `PaneId` in the same window.
     SwapPane(tmuxctl::PaneId),
 }
@@ -174,6 +176,7 @@ impl Action {
                 | Self::ClientSize(_)
                 | Self::Split(_)
                 | Self::KillPane
+                | Self::MoveToNewSession
                 | Self::ZoomPane
                 | Self::SwapPane(_)
         )
@@ -192,6 +195,7 @@ impl Action {
             | Self::ClientSize(_)
             | Self::Split(_)
             | Self::KillPane
+            | Self::MoveToNewSession
             | Self::ZoomPane
             | Self::SelectPane
             | Self::SwapPane(_) => 32,

@@ -91,6 +91,10 @@ impl Session {
     ) -> anyhow::Result<()> {
         anyhow::ensure!(self.access == Access::Interactive, "read-only attachment");
         validate_action(&self.view, pane, action)?;
+        anyhow::ensure!(
+            !matches!(action, input::Action::MoveToNewSession),
+            "moving a pane to a new session requires the desktop workspace"
+        );
         let target = action_target(&self.view, pane)?;
         match self
             .inspector

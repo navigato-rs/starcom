@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased
+
+- Session tabs show names only and use browser-tab geometry. The active server
+  moved to the status bar beside latency.
+- Choosing a host focuses the new-session field. Sessions already attached on
+  the host, including ones already open in this Starcom workspace, are red and
+  unavailable instead of offering duplicate attachments. Host buttons with a
+  live connection are green.
+- Pane chrome can move a pane into a newly created session on the same server.
+  Starcom chooses a collision-free `pane-N` name, opens it as the selected tab,
+  and immediately opens its inline rename editor with the generated name
+  selected. The editor keeps keyboard focus while the new terminal view is
+  reconstructed. The action is hidden when the source session has one pane.
+- When the attached session loses its final window, its Starcom tab now closes
+  normally instead of remaining as a red disconnected tab. An ordinary detach
+  or unrelated server failure still preserves the frozen tab and its diagnostic.
+  Moving the final pane is still handled defensively if the layout changes
+  after the action was queued.
+- Opening the in-place tab rename editor now schedules its own repaint, instead
+  of depending on an unrelated terminal or timer update. Rename stays on the
+  existing control attachment and visibly reports progress for at most five
+  seconds. If tmux applies it but its completion reply is lost, Starcom drops
+  that questionable stream and reconnects once using the optimistically saved
+  new name; it never sends the rename twice. Publishing a successful rename now
+  releases the model mutex before waking the UI, fixing the self-deadlock that
+  previously froze the entire window after tmux had already changed the name.
+- The post-v0.3 host-workspace design is documented: one SSH/control attachment
+  per resolved server and one managed tmux window per user-visible session.
+  This ownership migration is planned, not yet implemented.
+
 ## v0.3.0
 
 Working-folder chrome, mouse and wheel, and reconnect after `v0.2.0`.

@@ -63,6 +63,13 @@ pub(crate) struct Interaction {
     pub notifications: Vec<tmuxctl::Notification>,
 }
 
+#[cfg(feature = "gui")]
+pub(crate) struct PaneMove {
+    pub applied: bool,
+    pub session: core::SessionName,
+    pub notifications: Vec<tmuxctl::Notification>,
+}
+
 pub struct Inspector {
     channel: ssh::Channel,
     control: control::Control,
@@ -261,8 +268,9 @@ impl Inspector {
         Ok(out)
     }
 
-    /// Rename the attached session. A duplicate name is a user-facing failure
-    /// and must not abort the control attachment.
+    /// Rename on the existing control stream. If tmux applies the command but
+    /// its final reply is lost, abort this stream so the caller can reconnect
+    /// to the optimistically saved name without replaying the command.
     #[cfg(feature = "gui")]
     pub(crate) fn rename_session(
         &mut self,
@@ -270,22 +278,119 @@ impl Inspector {
         name: &core::SessionName,
     ) -> anyhow::Result<Vec<tmuxctl::Notification>> {
         let command = command::Command::rename_session(session, name);
-        match self.exchange(command.as_str(), 1) {
+        match self.exchange_with_timeout(command.as_str(), 1, time::Duration::from_secs(5)) {
             Ok(batch) => Ok(batch
                 .notifications
                 .into_iter()
                 .map(|(_, event)| event)
                 .collect()),
             Err(error) => {
-                // `%error` still completes the reply, so the stream stays
-                // aligned. Abort only when the failure might have left it
-                // mid-transaction (timeout, drop, protocol).
-                if !error.to_string().contains("tmux rejected request") {
-                    self.abort();
+                if error.to_string().contains("tmux rejected request") {
+                    return Err(error);
                 }
-                Err(error)
+                self.abort();
+                Err(ssh::Error::transport(
+                    "tmux rename completion was not observed; the command was not retried",
+                )
+                .into())
             }
         }
+    }
+
+    /// Move one pane into a fresh detached session on this same tmux server.
+    /// The temporary pane id is read from tmux, so this is independent of the
+    /// user's base-index setting. A guarded rejection removes the empty target;
+    /// an uncertain transport result is never retried or cleaned up blindly.
+    #[cfg(feature = "gui")]
+    pub(crate) fn move_to_new_session(
+        &mut self,
+        target: input::Target,
+        size: core::Size,
+    ) -> anyhow::Result<PaneMove> {
+        anyhow::ensure!(self.input_buffer_prefix.is_some(), "read-only attachment");
+        let listed = self.request("list-sessions -F '#{session_name}'\n")?;
+        let mut existing: collections::BTreeSet<_> = listed.into_iter().collect();
+        let mut attempts = 0_u8;
+        let (name, created) = loop {
+            let name = move_session_name(&existing, target.pane)?;
+            let command = command::Command::new_detached_session(&name, size);
+            match self.exchange(command.as_str(), 1) {
+                Ok(batch) => break (name, batch.replies.into_iter().next().unwrap_or_default()),
+                Err(error) if error.to_string().contains("tmux rejected request") => {
+                    // A race can claim the name after the listing. `%error`
+                    // completed the reply, so it is safe to ask which case it
+                    // was and choose another name only when that name exists.
+                    let current: collections::BTreeSet<_> = self
+                        .request("list-sessions -F '#{session_name}'\n")?
+                        .into_iter()
+                        .collect();
+                    if !current.contains(name.as_str()) {
+                        return Err(error).context("could not create pane-move session");
+                    }
+                    existing = current;
+                    attempts += 1;
+                    anyhow::ensure!(attempts < 8, "session names kept changing during pane move");
+                }
+                Err(error) => {
+                    self.abort();
+                    return Err(error).context("could not create pane-move session");
+                }
+            }
+        };
+        anyhow::ensure!(created.len() == 1, "invalid new-session reply");
+        let placeholder = created[0]
+            .strip_prefix('%')
+            .context("invalid placeholder pane id")?
+            .parse()
+            .context("invalid placeholder pane id")?;
+        let placeholder = tmuxctl::PaneId(placeholder);
+        let commands = [
+            command::Command::join_pane(target.pane, placeholder),
+            command::Command::kill_pane(placeholder),
+        ];
+        let mut wire = format!(
+            "if-shell -F -t {} '{}' {{ ",
+            target.pane,
+            target.guard(true)
+        );
+        for command in &commands {
+            wire.push_str(command.as_str().trim_end_matches('\n'));
+            wire.push_str(" ; ");
+        }
+        wire.push_str("display-message -p STARCOM-APPLIED } { ");
+        for _ in &commands {
+            wire.push_str("display-message -p '' ; ");
+        }
+        wire.push_str("display-message -p STARCOM-BLOCKED }\n");
+        let result = self.exchange(&wire, commands.len() + 2);
+        if result.is_err() {
+            self.abort();
+        }
+        let batch =
+            result.context("pane move failed; delivery may be uncertain and was not retried")?;
+        let last = batch
+            .replies
+            .last()
+            .ok_or_else(|| anyhow::anyhow!("missing pane-move result"))?;
+        anyhow::ensure!(
+            last.len() == 1 && matches!(last[0].as_str(), "STARCOM-APPLIED" | "STARCOM-BLOCKED"),
+            "invalid pane-move result"
+        );
+        let applied = last[0] == "STARCOM-APPLIED";
+        let notifications = batch
+            .notifications
+            .into_iter()
+            .map(|(_, event)| event)
+            .collect::<Vec<_>>();
+        if !applied {
+            let cleanup = self.request(command::Command::kill_session(&name).as_str())?;
+            anyhow::ensure!(cleanup.is_empty(), "invalid move cleanup reply");
+        }
+        Ok(PaneMove {
+            applied,
+            session: name,
+            notifications,
+        })
     }
 
     /// One newline-terminated, synchronous tmux command list. Register every
@@ -331,13 +436,22 @@ impl Inspector {
     /// `if-shell -F` emits a reply for itself and each chosen branch command.
     /// Both branches of an interactive transaction have the same reply count.
     fn exchange(&mut self, wire: &str, reply_count: usize) -> anyhow::Result<Batch> {
+        self.exchange_with_timeout(wire, reply_count, self.channel.timeout())
+    }
+
+    fn exchange_with_timeout(
+        &mut self,
+        wire: &str,
+        reply_count: usize,
+        timeout: time::Duration,
+    ) -> anyhow::Result<Batch> {
         anyhow::ensure!(reply_count > 0 && reply_count <= 256, "invalid reply count");
         anyhow::ensure!(
             wire.len() < 512 * 1024,
             "control transaction exceeds budget"
         );
         let started = time::Instant::now();
-        let deadline = started + self.channel.timeout();
+        let deadline = started + self.channel.timeout().min(timeout);
         let mut ids = Vec::with_capacity(reply_count);
         for _ in 0..reply_count {
             ids.push(self.control.register_command()?);
@@ -399,6 +513,16 @@ impl Inspector {
                         self.answered = true;
                     }
                     tmuxctl::Incoming::Notification(tmuxctl::Notification::Exit(reason)) => {
+                        // Some successful commands deliberately remove the
+                        // attached session (notably a one-pane handoff). Once
+                        // every requested reply arrived, the transaction is
+                        // certain and the caller must be allowed to publish it.
+                        if batch.replies.len() == reply_count {
+                            if reply_count <= 8 {
+                                self.last_rtt = Some(started.elapsed());
+                            }
+                            return Ok(batch);
+                        }
                         // tmux reports a failed attach inside the control stream
                         // (a %begin/%error block) and then exits, before any of
                         // our commands are outstanding, so those lines are not
@@ -564,6 +688,10 @@ impl Inspector {
                         | "select-pane"
                         | "swap-pane"
                         | "rename-session"
+                        | "new-session"
+                        | "join-pane"
+                        | "kill-session"
+                        | "list-sessions"
                         | "if-shell"
                         | "display-message"
                 ),
@@ -611,6 +739,9 @@ impl Inspector {
                         | "after-select-pane"
                         | "after-swap-pane"
                         | "after-rename-session"
+                        | "after-new-session"
+                        | "after-join-pane"
+                        | "after-kill-session"
                         | "after-if-shell"
                         | "after-display-message"
                 ) {
@@ -710,6 +841,9 @@ impl Inspector {
                     );
                     commands.push(command::Command::select_pane(target.pane));
                 }
+                input::Action::MoveToNewSession => {
+                    anyhow::bail!("pane moves use their own transaction")
+                }
                 input::Action::SwapPane(other) => {
                     anyhow::ensure!(
                         actions.len() == 1,
@@ -797,6 +931,24 @@ impl Drop for Inspector {
         let _ = self.control.finish(|_| {});
         self.channel.abort();
     }
+}
+
+#[cfg(feature = "gui")]
+fn move_session_name(
+    existing: &collections::BTreeSet<String>,
+    pane: tmuxctl::PaneId,
+) -> anyhow::Result<core::SessionName> {
+    let stem = format!("pane-{}", pane.0);
+    if !existing.contains(&stem) {
+        return Ok(core::SessionName::new(stem)?);
+    }
+    for suffix in 2_u32.. {
+        let candidate = format!("{stem}-{suffix}");
+        if !existing.contains(&candidate) {
+            return Ok(core::SessionName::new(candidate)?);
+        }
+    }
+    unreachable!("u32 iterator is unbounded for practical session counts")
 }
 
 /// What makes one attachment the same session as the last one.
@@ -938,6 +1090,28 @@ fn parse_panes(lines: &[String]) -> anyhow::Result<Vec<Pane>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "gui")]
+    #[test]
+    fn pane_move_names_are_short_and_avoid_existing_sessions() {
+        let existing = collections::BTreeSet::from([
+            "pane-7".to_owned(),
+            "pane-7-2".to_owned(),
+            "unrelated".to_owned(),
+        ]);
+        assert_eq!(
+            move_session_name(&existing, tmuxctl::PaneId(7))
+                .unwrap()
+                .as_str(),
+            "pane-7-3"
+        );
+        assert_eq!(
+            move_session_name(&existing, tmuxctl::PaneId(8))
+                .unwrap()
+                .as_str(),
+            "pane-8"
+        );
+    }
 
     #[test]
     fn attachment_does_not_create_resize_or_change_environment() {

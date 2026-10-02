@@ -1,6 +1,6 @@
 # Starcom plan and roadmap
 
-Updated: 2026-09-07.
+Updated: 2026-10-02.
 
 **Current status:** M0 through M3 are done for the tested configuration, and M4
 is partly done. M2's gate is signed off; M3 is complete: transport loss is classified apart
@@ -13,8 +13,11 @@ change, plus a restarted tmux server, are covered by fixture tests.
 
 M4 now persists non-secret tabs, resumes their saved sessions by default with an
 opt-out setting, and adds explicit session discovery and creation. ProxyJump
-uses Sunset's shared std-only client. Connection reuse and certificate/MFA
-workflows remain open. M5 is next.
+uses Sunset's shared std-only client. After v0.3, the next management milestone
+is a host workspace: one SSH/control attachment per resolved server and one tmux
+window per user-visible Starcom session. The target model and migration hazards
+are recorded in `docs/SESSION-MODEL.md`; it is not implemented yet. Certificate
+and MFA workflows remain open. M5 follows the ownership migration.
 
 Development lands on protected `main` through short-lived pull requests. CI runs
 for pull requests and updates to `main`. Routine milestone branches, generated
@@ -214,7 +217,8 @@ terminal checkpoint.
 - [x] SSH-config alias suggestions and fail-closed profile resolution.
 - [x] Local scrollback, selection, copy, and pane layouts.
 - [x] Wheel to the application when it reports mouse or is on the alternate screen;
-  pane split/zoom/kill/move chrome; session rename; oversize drop confirm.
+  pane split/zoom/kill/move chrome; move a pane to an automatically named new
+  session; session rename; oversize drop confirm.
 - [x] Guarded keyboard input and paste; no stale/offline replay.
 - [x] Remote divider resizing followed by server-authoritative resync.
 - [x] Native Linux/X11 render, clipboard, resize, and clean-close smoke test.
@@ -262,11 +266,11 @@ verified to fail when automatic retry is disabled.
   Listing is also offered on its own after an attach fails because the session is
   missing: the user has already authenticated and the list is the answer. No
   other failure asks, and listing still never attaches or creates.
-- [ ] Reuse one SSH connection per host where the SSH backend supports it safely.
-  The fork caps a connection at `config::MAX_CHANNELS = 16`, so the sixteen tabs
-  could share one from a channel-count perspective. Sharing still couples every
-  tab on a host to one transport, and that is why it was deferred. The channel
-  count was never the blocker.
+- [ ] Replace persistent per-tab attachments with one host workspace per resolved
+  route. One managed tmux session (`starcom` by default) contains one window per
+  user-visible session, so this needs only one Sunset exec channel rather than
+  SSH channel pooling. Preserve exact routing/security identity and make the
+  host-wide reconnect blast radius explicit. See `docs/SESSION-MODEL.md`.
 - [x] Add ProxyJump/bastion support through the shared `sunset-client` package.
   Up to four flat hops use independent configuration, identity, and host-key checks.
   There is no direct fallback. Nested routes and ProxyCommand remain unsupported.
@@ -281,9 +285,24 @@ verified to fail when automatic retry is disabled.
 
 Gate: a user with several hosts can reopen yesterday's tabs, see what is running,
 and start what is missing, without Starcom authenticating or creating anything on
-its own. Met for persistence and discovery. The remaining three items are a
-milestone of their own; the forwarding blocker among them is now carried as a
-pinned fork, leaving the transport work rather than an open question.
+its own. Met for persistence and discovery. Host-workspace ownership and richer
+authentication remain; ProxyJump's former transport blocker is carried as a
+pinned fork.
+
+### M4.1 — Host workspaces and logical sessions
+
+- [x] Make top-level tabs session-name-only, move the bold server label beside
+  latency, use browser-tab geometry, focus the new-session field after choosing
+  a host, and prevent opening a session that already has an attached client.
+- [x] Specify the host/window ownership model, identity boundaries, lifecycle,
+  migration needs, and safety tests.
+- [ ] Capture and validate tmux window names and identities.
+- [ ] Own one worker/view/reconnect epoch per resolved server workspace.
+- [ ] Map logical tabs to uniquely named windows in the managed tmux session.
+- [ ] Restore grouped server workspaces and provide an explicit v0.3 migration
+  path for arbitrary existing tmux sessions.
+- [ ] Cover multi-window output, replacement, disconnect, sizing, and ordinary
+  tmux fallback in the isolated SSH fixture.
 
 ### M5 — Performance and release hardening
 

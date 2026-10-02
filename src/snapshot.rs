@@ -381,6 +381,11 @@ pub struct View {
     /// tmux's own `%exit` reason, when it gave one. Reconnection policy needs to
     /// tell an orderly detach apart from a server that went away.
     exit: Option<ExitReason>,
+    /// A linked window disappeared since the last coherent snapshot. If the
+    /// control client exits before a resync, that was the attached session's
+    /// final window rather than an unrelated detach or server failure.
+    window_closed: bool,
+    session_closed: bool,
     /// Bumped when a notification changes what is on screen. Idle polls that
     /// carry no output must not wake the GUI. Mid-2026 synchronized updates
     /// do not bump this until ESU or timeout, so a torn erase is never painted.
@@ -426,6 +431,8 @@ impl View {
             panes: map,
             status: Status::Watching,
             exit: None,
+            window_closed: false,
+            session_closed: false,
             display_seq: 0,
         })
     }
@@ -486,6 +493,14 @@ impl View {
         self.exit.as_ref()
     }
 
+    pub(crate) fn session_closed(&self) -> bool {
+        self.session_closed
+    }
+
+    pub(crate) fn window_closed(&self) -> bool {
+        self.window_closed
+    }
+
     /// Overlay cwd from `list-panes` `PATH_FORMAT`. A pane with no row, or an
     /// empty path, has no overlay.
     pub fn apply_paths(&mut self, paths: &collections::BTreeMap<tmuxctl::PaneId, String>) -> bool {
@@ -523,6 +538,15 @@ impl View {
         if let tmuxctl::Notification::Exit(ref reason) = notification {
             // Keep the FIRST reason: it explains why the session is ending.
             self.exit.get_or_insert_with(|| ExitReason(reason.clone()));
+            let explicitly_detached = reason
+                .as_deref()
+                .is_some_and(|reason| reason.to_ascii_lowercase().contains("detach"));
+            // Some tmux versions tear down a one-pane session without first
+            // emitting `%window-close`. An orderly, non-detach exit while our
+            // coherent model contains exactly one pane is the same terminal
+            // condition: there is no session left to keep as a red tab.
+            self.session_closed =
+                self.window_closed || (self.panes.len() == 1 && !explicitly_detached);
             self.disconnect();
             return;
         }
@@ -565,9 +589,13 @@ impl View {
             | tmuxctl::Notification::SessionWindowChanged { .. }
             | tmuxctl::Notification::ClientSessionChanged { .. }
             | tmuxctl::Notification::PaneModeChanged(_) => {}
+            tmuxctl::Notification::WindowClose(_) => {
+                self.window_closed = true;
+                self.status = Status::NeedsResync;
+                self.display_seq = self.display_seq.wrapping_add(1);
+            }
             tmuxctl::Notification::LayoutChange { .. }
             | tmuxctl::Notification::WindowAdd(_)
-            | tmuxctl::Notification::WindowClose(_)
             | tmuxctl::Notification::Pause(_)
             | tmuxctl::Notification::Continue(_)
             | tmuxctl::Notification::SessionChanged(..)
@@ -907,6 +935,28 @@ mod tests {
         );
         view.apply(tmuxctl::Notification::Exit(None));
         assert_eq!(view.status(), Status::Disconnected);
+    }
+
+    #[test]
+    fn window_close_followed_by_exit_marks_the_session_gone() {
+        let pane = Pane::restore(state(12, 3), &lines(&["", "", ""]), &[], &[], 0).unwrap();
+        let mut closed = View::new(tmuxctl::SessionId(0), vec![pane]).unwrap();
+        closed.apply(tmuxctl::Notification::WindowClose(tmuxctl::WindowId(2)));
+        closed.apply(tmuxctl::Notification::Exit(None));
+        assert!(closed.session_closed());
+
+        let pane = Pane::restore(state(12, 3), &lines(&["", "", ""]), &[], &[], 0).unwrap();
+        let mut one_pane = View::new(tmuxctl::SessionId(0), vec![pane]).unwrap();
+        one_pane.apply(tmuxctl::Notification::Exit(None));
+        assert!(
+            one_pane.session_closed(),
+            "older tmux may omit window-close for the final pane"
+        );
+
+        let pane = Pane::restore(state(12, 3), &lines(&["", "", ""]), &[], &[], 0).unwrap();
+        let mut detached = View::new(tmuxctl::SessionId(0), vec![pane]).unwrap();
+        detached.apply(tmuxctl::Notification::Exit(Some("detached".into())));
+        assert!(!detached.session_closed());
     }
 
     #[test]
