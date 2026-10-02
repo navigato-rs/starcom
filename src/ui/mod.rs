@@ -1332,11 +1332,11 @@ impl DesktopUi {
                             ui.ctx()
                                 .request_repaint_after(time::Duration::from_millis(50));
                         }
-                        if let Some(rtt) = state.last_rtt {
-                            let response = ui.label(
-                                egui::RichText::new(latency_label(rtt)).monospace().small(),
-                            );
-                            if let Some(latency) = state.input_latency {
+                        if !server.is_empty() {
+                            let response = paint_latency(ui, state.last_rtt);
+                            if state.last_rtt.is_some()
+                                && let Some(latency) = state.input_latency
+                            {
                                 response.on_hover_text(format!(
                                     "Last input: {} ms queued, {} ms awaiting tmux; {} bytes in {} output events; maximum tmux output lag {} ms",
                                     latency.queue.as_millis(),
@@ -2036,8 +2036,42 @@ fn paint_input_backlog(ui: &egui::Ui, rect: egui::Rect, backlog: desktop::InputB
 fn latency_label(rtt: time::Duration) -> String {
     match rtt.as_millis() {
         0 => "<1 ms".to_owned(),
-        millis => format!("{millis:>2} ms"),
+        millis => format!("{millis} ms"),
     }
+}
+
+/// Reserve the exact rendered width of two monospace digits and right-align
+/// the current latency within it. Leading whitespace in a Label is not a
+/// reliable geometry reservation.
+fn paint_latency(ui: &mut egui::Ui, rtt: Option<time::Duration>) -> egui::Response {
+    let mut font = egui::TextStyle::Small.resolve(ui.style());
+    font.family = egui::FontFamily::Monospace;
+    let color = ui.visuals().text_color();
+    let reserved = ui
+        .painter()
+        .layout_no_wrap("00 ms".to_owned(), font.clone(), color);
+    let galley = rtt.map(|value| {
+        ui.painter()
+            .layout_no_wrap(latency_label(value), font, color)
+    });
+    let width = galley.as_ref().map_or(reserved.size().x, |text| {
+        text.size().x.max(reserved.size().x)
+    });
+    let height = galley.as_ref().map_or(reserved.size().y, |text| {
+        text.size().y.max(reserved.size().y)
+    });
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+    if let Some(galley) = galley {
+        ui.painter().galley(
+            egui::pos2(
+                rect.right() - galley.size().x,
+                rect.center().y - galley.size().y * 0.5,
+            ),
+            galley,
+            color,
+        );
+    }
+    response
 }
 
 fn field(ui: &mut egui::Ui, label: &str, value: &mut String) {
@@ -2070,10 +2104,10 @@ mod tests {
     }
 
     #[test]
-    fn latency_reserves_two_monospace_digits() {
+    fn latency_labels_do_not_depend_on_leading_whitespace() {
         assert_eq!(latency_label(time::Duration::ZERO), "<1 ms");
-        assert_eq!(latency_label(time::Duration::from_millis(1)), " 1 ms");
-        assert_eq!(latency_label(time::Duration::from_millis(9)), " 9 ms");
+        assert_eq!(latency_label(time::Duration::from_millis(1)), "1 ms");
+        assert_eq!(latency_label(time::Duration::from_millis(9)), "9 ms");
         assert_eq!(latency_label(time::Duration::from_millis(10)), "10 ms");
         assert_eq!(latency_label(time::Duration::from_millis(125)), "125 ms");
     }
