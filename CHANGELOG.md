@@ -1,72 +1,37 @@
 # Changelog
 
-## Unreleased
+## v0.3.0
 
-- The selected pane's top chrome shows the working folder
-  (`#{pane_current_path}`) left-aligned, with split/move/zoom/close
-  icons on the right. The path is for the primary screen without mouse
-  reporting. Hover for the full path; it updates after `cd`.
-- Status bar shows **A** / **K** / **M** for the focused pane: alternate
-  screen, keyboard input live, and mouse reporting. Green if on, red if not.
-- Do not turn the mouse wheel into keys. It is CSI mouse-wheel bytes only when
-  the pane enabled mouse reporting; otherwise local history. Alternate-screen
-  Codex without mouse was getting Up/Down (prompt history) or Page Up/Down.
-- Split a pane in the source pane's working directory (`#{pane_current_path}`).
-- After a window or pane resize, wait for the application's SIGWINCH redraw
-  before `no-output` snapshot. Capturing mid-redraw dropped the rest of a
-  frame (wrapped markdown tables, truncated lines).
-- Send Ctrl+Backspace as `C-h` (ASCII BS) instead of the tmux name `C-BSpace`,
-  which some applications insert as literal text.
-- Opening **+** re-reads `~/.ssh/config`, so a host added since startup is
-  listed on the new-connection form. Sessions that are already open keep the
-  endpoint they resolved.
-- Copy a wrapped `http(s)` URL as one destination; a link split across
-  soft-wrapped rows was only copying the clicked row.
-- Never auto-close a session tab. A broken connection keeps the last view
-  frozen, colors the tab red, and leaves **Exit** on the status bar for the
-  user. Only **Exit** (or closing the chip) removes it.
-- Hide the maximize button when the window has a single pane.
-- Confirm a tab rename on Enter even when egui runs extra layout passes in
-  the same frame (the later pass was sending Enter to the terminal and
-  dropping the rename).
-- Reconnect immediately after laptop suspend. Idle SSH polls and nudge
-  wakes must not stamp the alive clock, or the worker hides the suspend
-  and sits on a dead socket until TCP times out.
-- Apply DECSET 2026 synchronized updates atomically (and on the 150ms
-  timeout) so Grok/OpenTUI erase-then-redraw does not leave leftover lines.
-- Do not forward SGR mouse clicks after a TUI has left mouse reporting.
-  Snapshot flags are applied at restore; later DECSET/DECRST follow the live
-  model. Restore 1003 from `mouse_all_flag`, not `mouse_any_flag`. A tap in
-  the shell was being typed as `0;col;rowM`.
-- Copy a link destination on click (OSC 8, an `http(s)` URL under the cell,
-  or, for a short underlined "click here" affordance whose OSC 8 was stripped,
-  a URL on the same or an adjacent line). A tap that stays on one cell is
-  forwarded as a paired mouse press and release when the pane asked for mouse
-  reports; a multi-cell drag stays local selection. Space and Enter are keys,
-  not fake pointer clicks, so they are not turned into mouse CSI.
-- Do not close a tab from under you when tmux or SSH fails, and do not dump
-  the diagnostic into the tab strip (that wrapped the chrome over the
-  terminal). Strip notices stay on one line.
-- Hold remote pane output during a drag-select so a live TUI cannot rewrite
-  the grid under the highlight.
-- Pin Sunset to `510efc5` so security-key identity files are skipped and signed by the agent, instead of failing with `signature error`.
-- Pin Sunset to `09708ad` (OpenSSH RSA host signatures and modulus precision).
-- Use Sunset's shared client for SSH configuration, trust, and ProxyJump routes.
-- Coalesce remote wakeups without dropping output; keep copy feedback at footer size.
-- Preserve wheel semantics: applications that enable mouse reporting receive
-  mouse-wheel bytes on either screen, while alternate-scroll uses terminal CSI
-  bytes instead of tmux `Up`/`Down` keys.
-- Treat paste text beginning with `-` as buffer data, not `set-buffer` options.
-  The `--no-version-check --store-token` encoding is unit-tested; the isolated
-  SSH/tmux input test pastes `--store-token` so the result still fits a split
-  pane.
-- Keep the connection form exclusively on **+**. Failed first attachments move
-  there with their fields and error intact, background failures are retired,
-  and **Exit** removes its registered session tab.
-- Keep scrollbar dragging local and usable even when a TUI owns wheel events.
-  The floating scrollbar gutter no longer overlaps terminal selection or mouse
-  reporting.
+Working-folder chrome, mouse and wheel, and reconnect after `v0.2.0`.
 
+- **Working folder.** The selected pane's top bar shows
+  `#{pane_current_path}` on the left and split/move/zoom/close on the
+  right. Shown on the primary screen while mouse reporting is off.
+  Hover for the full path; it updates after `cd`. Splits start in that
+  directory.
+- **Wheel and mouse.** The wheel sends CSI mouse-wheel bytes when the
+  pane reports mouse, and scrolls local history otherwise. Clicks follow
+  live DECSET. Status **A** / **K** / **M** mark alternate screen,
+  keyboard input, and mouse reporting.
+- **Tabs.** A broken connection keeps the frozen view, a red tab, and
+  **Exit**. Only **Exit** (or closing the chip) removes a tab. Maximize
+  hides on a single pane. Rename confirms on Enter. Opening **+**
+  re-reads `~/.ssh/config`.
+- **Reconnect and resize.** Immediate after laptop suspend. Snapshot
+  waits for the SIGWINCH redraw so wrapped lines stay whole.
+- **Input.** Ctrl+Backspace is `C-h`. A wrapped `http(s)` URL copies as
+  one destination. DECSET 2026 applies atomically; output holds during
+  drag-select.
+- **SSH.** Shared Sunset client for configuration, trust, and ProxyJump.
+  Pinned for agent-held security keys and OpenSSH RSA host signatures.
+
+Prebuilt Linux, macOS, and Windows artifacts are attached below. Linux and
+Windows builds are unsigned; macOS builds are ad-hoc codesigned, not notarized.
+
+Known limitations: MFA, host and user certificates, `ProxyCommand`,
+`sk-ecdsa` and file-based SK keys, and reusing one SSH connection across
+tabs are not supported. Remote hosts are Linux with stock OpenSSH and
+tmux. No performance baselines are published yet.
 
 ## v0.2.0
 
