@@ -1319,11 +1319,21 @@ impl DesktopUi {
                         }
                         if let Some(rtt) = state.last_rtt {
                             ui.separator();
-                            ui.small(if rtt.as_millis() == 0 {
+                            let response = ui.small(if rtt.as_millis() == 0 {
                                 "<1 ms".to_owned()
                             } else {
                                 format!("{} ms", rtt.as_millis())
                             });
+                            if let Some(latency) = state.input_latency {
+                                response.on_hover_text(format!(
+                                    "Last input: {} ms queued, {} ms awaiting tmux; {} bytes in {} output events; maximum tmux output lag {} ms",
+                                    latency.queue.as_millis(),
+                                    latency.control.as_millis(),
+                                    latency.output_bytes,
+                                    latency.output_events,
+                                    latency.max_output_lag_ms,
+                                ));
+                            }
                         }
                         ui.separator();
                         if click_button(ui, "−")

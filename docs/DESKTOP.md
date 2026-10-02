@@ -202,6 +202,20 @@ pane identity in which it originated. Layout changes, reconnects, tab changes, o
 cancellation invalidate stale actions. Starcom does not queue input while offline
 and never automatically retries a request whose delivery is uncertain.
 
+Ordinary text and key input uses a bounded pipeline on the control stream. Each
+transaction still carries the exact server-side pane and layout guard, but a
+later key does not wait for the acknowledgment of an earlier key before being
+written. Clipboard paste, resize and layout actions, pane moves, and session
+rename are ordering barriers: input already written is acknowledged before one
+of those operations starts. At most eight transactions are in flight, within
+the control protocol's pending-command and transfer budgets.
+
+The latency label continues to show the most recent control acknowledgment.
+Hover it after typing to see the last input's local queue time, control time,
+intervening output volume, and maximum tmux `%extended-output` lag. Input that
+crosses 100 ms in any latency component is logged without recording the input
+or remote output itself.
+
 `send-keys` can broadcast when a tmux window has `synchronize-panes` enabled.
 Starcom detects that state in the server-side action guard and blocks the action
 rather than changing the user's option or risking broadcast.

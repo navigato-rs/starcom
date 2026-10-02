@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Ordinary key and byte input now uses a bounded pipeline of guarded tmux
+  transactions instead of waiting for every earlier acknowledgment before
+  sending the next one. Paste, resize, layout changes, pane moves, and rename
+  remain ordering barriers, and uncertain delivery is still never retried.
+  Slow input records queue time, acknowledgment time, intervening output, and
+  tmux flow-control lag; the latest breakdown is available by hovering latency.
 - Pane chrome no longer displays or polls each pane's working directory. Session
   names are the workspace label; pane chrome is reserved for controls. Splits
   still start in the source pane's current directory through tmux itself.
