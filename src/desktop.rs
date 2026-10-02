@@ -117,6 +117,20 @@ pub(crate) struct MovedSession {
     pub source_ended: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct InputBacklog {
+    /// Actions accepted by the UI but not written to tmux yet.
+    pub queued: usize,
+    /// Actions written to tmux whose guarded transaction is not acknowledged.
+    pub in_flight: usize,
+}
+
+impl InputBacklog {
+    pub fn total(self) -> usize {
+        self.queued + self.in_flight
+    }
+}
+
 pub(crate) struct State {
     /// Bumped immediately before a worker asks the GUI to reconsider this
     /// client. The workspace uses it to discard duplicate and hidden-tab wakes.
@@ -158,6 +172,7 @@ pub(crate) struct State {
     session_closed: bool,
     actions: collections::VecDeque<Pending>,
     action_bytes: usize,
+    inflight_input_actions: usize,
     io_wake: Option<ssh::Wake>,
 }
 
@@ -188,6 +203,7 @@ impl Default for State {
             session_closed: false,
             actions: collections::VecDeque::new(),
             action_bytes: 0,
+            inflight_input_actions: 0,
             io_wake: None,
         }
     }
@@ -262,6 +278,23 @@ impl State {
     fn discard_actions(&mut self) {
         self.actions.clear();
         self.action_bytes = 0;
+        self.inflight_input_actions = 0;
+    }
+
+    pub(crate) fn input_backlog(&self) -> InputBacklog {
+        InputBacklog {
+            queued: self
+                .actions
+                .iter()
+                .filter(|pending| {
+                    matches!(
+                        pending.action,
+                        input::Action::Bytes(_) | input::Action::Key(..)
+                    )
+                })
+                .count(),
+            in_flight: self.inflight_input_actions,
+        }
     }
 
     pub(crate) fn enqueue(&mut self, target: Target, action: input::Action) -> anyhow::Result<()> {
@@ -1164,7 +1197,22 @@ fn watch(
             let Some((target, actions, queue)) = next else {
                 break;
             };
+            let action_count = actions.len();
             inspector.start_input(target, &actions, queue)?;
+            let mut state = shared
+                .0
+                .lock()
+                .unwrap_or_else(sync::PoisonError::into_inner);
+            if !state.accepts(epoch) {
+                return Ok(Outcome::Cancelled);
+            }
+            state.inflight_input_actions =
+                state
+                    .inflight_input_actions
+                    .checked_add(action_count)
+                    .ok_or_else(|| anyhow::anyhow!("input backlog overflow"))?;
+            drop(state);
+            wake();
         }
         if !inspector.input_idle() {
             let progress = inspector.poll_input()?;
@@ -1184,6 +1232,10 @@ fn watch(
             }
             for completion in progress.completions {
                 changed = true;
+                state.inflight_input_actions = state
+                    .inflight_input_actions
+                    .checked_sub(completion.actions)
+                    .ok_or_else(|| anyhow::anyhow!("input acknowledgment exceeded backlog"))?;
                 state.last_rtt = Some(completion.latency.control);
                 state.input_latency = Some(completion.latency);
                 if slow_input(completion.latency) {
@@ -1290,6 +1342,9 @@ fn watch(
                 state.last_rtt = inspector.last_rtt;
                 state.phase = Phase::Watching;
                 state.continuity = None;
+                // A successful replacement snapshot resolves transient layout
+                // and guarded-action errors from the stale view.
+                state.error = None;
                 drop(state);
                 last_alive = reconnect::AliveClock::now();
                 wake();
@@ -1734,6 +1789,42 @@ mod tests {
         assert!(matches!(state.actions[0].action, input::Action::Paste(_)));
         assert!(matches!(state.actions[1].action, input::Action::Bytes(_)));
         assert_eq!(state.action_bytes, "barrier".len() + "later".len());
+    }
+
+    #[test]
+    fn input_backlog_counts_queued_and_written_actions() {
+        let mut state = editable();
+        let target = state.target(tmuxctl::PaneId(0)).unwrap();
+        state
+            .enqueue(target, input::Action::Bytes(b"one".to_vec()))
+            .unwrap();
+        state
+            .enqueue(target, input::Action::Bytes(b"two".to_vec()))
+            .unwrap();
+        state
+            .enqueue(
+                target,
+                input::Action::Key(input::Key::Enter, input::Modifiers::default()),
+            )
+            .unwrap();
+        state
+            .enqueue(
+                target,
+                input::Action::Paste(input::Paste::new("not ordinary").unwrap()),
+            )
+            .unwrap();
+        state.inflight_input_actions = 3;
+
+        assert_eq!(
+            state.input_backlog(),
+            InputBacklog {
+                queued: 2,
+                in_flight: 3,
+            }
+        );
+        assert_eq!(state.input_backlog().total(), 5);
+        state.discard_actions();
+        assert_eq!(state.input_backlog(), InputBacklog::default());
     }
 
     #[test]

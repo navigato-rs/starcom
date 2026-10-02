@@ -1297,6 +1297,21 @@ impl DesktopUi {
                                     self.form.port
                                 ));
                         }
+                        let backlog = state.input_backlog();
+                        if backlog.total() != 0 {
+                            ui.separator();
+                            let (rect, response) = ui.allocate_exact_size(
+                                egui::vec2(44.0, 12.0),
+                                egui::Sense::hover(),
+                            );
+                            paint_input_backlog(ui, rect, backlog);
+                            response.on_hover_text(format!(
+                                "{} terminal input actions awaiting confirmation: {} queued locally, {} written to tmux",
+                                backlog.total(),
+                                backlog.queued,
+                                backlog.in_flight,
+                            ));
+                        }
                         if state.renaming {
                             // Also observe completion if the worker wake was
                             // coalesced with the frame that submitted it.
@@ -1976,6 +1991,34 @@ fn paint_activity_dots(ui: &egui::Ui, rect: egui::Rect, step: u64) {
         let dot = center + egui::vec2((index as f32 - 1.0) * spacing, 0.0);
         ui.painter()
             .circle_filled(dot, 1.7, color.gamma_multiply(strength));
+    }
+}
+
+/// A compact segmented queue: one vertical segment per unacknowledged action.
+/// Locally queued work is dim; work already written to tmux is bright.
+fn paint_input_backlog(ui: &egui::Ui, rect: egui::Rect, backlog: desktop::InputBacklog) {
+    let total = backlog.total();
+    if total == 0 {
+        return;
+    }
+    ui.painter()
+        .rect_filled(rect, 2.0, ui.visuals().faint_bg_color);
+    let gap = if total <= 16 { 1.0 } else { 0.0 };
+    let width = (rect.width() - gap * (total.saturating_sub(1) as f32)) / total as f32;
+    let bright = ui.visuals().selection.bg_fill;
+    let dim = bright.gamma_multiply(0.4);
+    for index in 0..total {
+        let left = rect.left() + index as f32 * (width + gap);
+        let segment = egui::Rect::from_min_max(
+            egui::pos2(left, rect.top() + 2.0),
+            egui::pos2((left + width).min(rect.right()), rect.bottom() - 2.0),
+        );
+        let color = if index < backlog.in_flight {
+            bright
+        } else {
+            dim
+        };
+        ui.painter().rect_filled(segment, 0.5, color);
     }
 }
 

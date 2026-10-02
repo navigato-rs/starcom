@@ -76,6 +76,7 @@ pub(crate) struct InputLatency {
 #[cfg(feature = "gui")]
 pub(crate) struct InputCompletion {
     pub applied: bool,
+    pub actions: usize,
     pub latency: InputLatency,
 }
 
@@ -91,6 +92,7 @@ pub(crate) struct InputProgress {
 struct PendingInput {
     ids: Vec<tmuxctl::CommandId>,
     replies: Vec<Vec<String>>,
+    actions: usize,
     sent_at: time::Instant,
     deadline: time::Instant,
     queue: time::Duration,
@@ -1000,6 +1002,7 @@ impl Inspector {
                 self.pending_input.push_back(PendingInput {
                     ids,
                     replies: Vec::with_capacity(reply_count),
+                    actions: actions.len(),
                     sent_at,
                     deadline,
                     queue,
@@ -1115,6 +1118,7 @@ impl Inspector {
                         self.last_rtt = Some(control);
                         progress.completions.push(InputCompletion {
                             applied: last[0] == "STARCOM-APPLIED",
+                            actions: pending.actions,
                             latency: InputLatency {
                                 queue: pending.queue,
                                 control,
