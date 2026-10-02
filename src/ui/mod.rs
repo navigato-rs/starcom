@@ -2593,6 +2593,25 @@ mod tests {
     }
 
     #[test]
+    fn selected_pane_controls_use_compact_top_right_chrome() {
+        let (ctx, ui, _state, pane, _target) = focus_demo_pane();
+        let pane_rect = ui.pane_ui[&pane].rect;
+        let chrome = ctx
+            .memory(|memory| {
+                memory.area_rect(terminal::focus_id(ui.generation, pane).with("chrome"))
+            })
+            .expect("selected pane paints chrome");
+        assert!(
+            chrome.width() < pane_rect.width(),
+            "control chrome should not reserve a full-width cwd bar: {chrome:?} in {pane_rect:?}"
+        );
+        assert!(
+            chrome.right() > pane_rect.right() - 20.0,
+            "control chrome should stay at the top right: {chrome:?} in {pane_rect:?}"
+        );
+    }
+
+    #[test]
     fn a_destroyed_session_keeps_the_frozen_tab() {
         let mut ui = DesktopUi::default();
         let mut state = desktop::State::interactive_demo().unwrap();
