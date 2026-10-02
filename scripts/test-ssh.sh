@@ -163,7 +163,7 @@ run_fixture() {
 }
 
 cargo_args=(--locked)
-integration_tests=25
+integration_tests=26
 
 # Build first, untimed. The per-run timeouts below bound how long a test may
 # take to RUN; letting them also cover compilation makes a cold tree look like

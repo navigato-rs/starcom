@@ -103,19 +103,20 @@ pub(crate) struct Workspace {
     submitted_rename: Option<(u64, String)>,
 }
 
-/// A restored tab is labelled by where it points, not by a live connection.
+/// The server lives in the status bar; tabs stay compact and name only the
+/// session the user switches between.
 fn label(tab: &store::Tab) -> String {
-    let destination = if tab.destination.trim().is_empty() {
-        tab.host.trim()
-    } else {
-        tab.destination.trim()
-    };
-    match (destination.is_empty(), tab.session.trim()) {
-        (true, "") => NEW_CONNECTION.to_owned(),
-        (true, session) => session.to_owned(),
-        (false, "") => destination.to_owned(),
-        (false, session) => format!("{destination} / {session}"),
+    match tab.session.trim() {
+        "" => NEW_CONNECTION.to_owned(),
+        session => session.to_owned(),
     }
+}
+
+fn same_endpoint(left: &store::Tab, right: &store::Tab) -> bool {
+    left.host.trim() == right.host.trim()
+        && left.user.trim() == right.user.trim()
+        && left.port == right.port
+        && left.socket.trim() == right.socket.trim()
 }
 
 fn drop_insert_at(
@@ -769,6 +770,35 @@ impl Workspace {
         self.persist();
     }
 
+    fn retire_closed_sessions(&mut self) {
+        let mut closed: Vec<_> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .filter_map(|(index, tab)| tab.client.take_session_closed().then_some(index))
+            .collect();
+        if closed.is_empty() {
+            return;
+        }
+        closed.reverse();
+        for index in closed {
+            let id = self.tabs[index].id;
+            if self.renaming.as_ref().is_some_and(|rename| rename.id == id) {
+                self.renaming = None;
+            }
+            if self
+                .submitted_rename
+                .as_ref()
+                .is_some_and(|(rename_id, _)| *rename_id == id)
+            {
+                self.submitted_rename = None;
+            }
+            self.tabs.remove(index);
+            self.finish_tab_removal(index);
+        }
+        self.persist();
+    }
+
     fn alloc_id(&mut self) -> u64 {
         let id = self.next;
         self.next = self.next.checked_add(1).expect("tab identity exhausted");
@@ -855,13 +885,89 @@ impl Workspace {
         self.persist();
     }
 
+    fn apply_moved_session(&mut self) -> anyhow::Result<()> {
+        let moved =
+            self.tabs.iter().enumerate().find_map(|(index, tab)| {
+                tab.client.take_moved_session().map(|moved| (index, moved))
+            });
+        let Some((source, moved)) = moved else {
+            return Ok(());
+        };
+        anyhow::ensure!(
+            moved.source_ended || self.tabs.len() < MAX_TABS,
+            "the pane moved, but the workspace already has {MAX_TABS} tabs; open its '{}' session manually",
+            moved.name
+        );
+
+        let mut saved = self.tabs[source].ui.saved();
+        saved.session.clone_from(&moved.name);
+        saved.window = None;
+        saved.pane = None;
+        let mut tab = spawn_tab(
+            self.alloc_id(),
+            sync::Arc::clone(&self.wake),
+            sync::Arc::clone(&self.config),
+            self.config_error.clone(),
+        )?;
+        tab.label = label(&saved);
+        tab.ui.restore(saved);
+        let connection = tab.ui.resume()?;
+        tab.client.connect(connection)?;
+
+        if moved.source_ended {
+            self.tabs[source] = tab;
+            self.active = source;
+        } else {
+            let insert_at = source + 1;
+            self.tabs.insert(insert_at, tab);
+            self.active = insert_at;
+        }
+        self.composer_open = false;
+        self.renaming = Some(SessionRename {
+            id: self.tabs[self.active].id,
+            draft: self.tabs[self.active].ui.session_name().to_owned(),
+            focus: true,
+        });
+        self.persist();
+        Ok(())
+    }
+
     pub fn show(&mut self, root: &mut egui::Ui) -> Action {
+        if let Err(error) = self.apply_moved_session() {
+            self.notice = Some(error.to_string());
+        }
+        self.retire_closed_sessions();
         self.retire_failed_empty_tabs();
         self.local_dirty = false;
         self.apply_renamed_session();
         let mut navigation = Action::None;
         let mut reorder: Option<(u64, usize)> = None;
         let mut rename_to: Option<(u64, String)> = None;
+        let composer_endpoint = self.composer.ui.saved();
+        let connected_servers = self
+            .tabs
+            .iter()
+            .filter(|tab| live_phase(tab.client.phase()))
+            .map(|tab| tab.ui.saved().destination)
+            .filter(|destination| !destination.is_empty())
+            .collect();
+        self.composer.ui.set_connected_servers(connected_servers);
+        let unavailable = self
+            .tabs
+            .iter()
+            .filter(|tab| {
+                matches!(
+                    tab.client.phase(),
+                    desktop::Phase::Connecting
+                        | desktop::Phase::Watching
+                        | desktop::Phase::Resynchronizing
+                        | desktop::Phase::Reconnecting
+                ) && same_endpoint(&composer_endpoint, &tab.ui.saved())
+            })
+            .map(|tab| tab.ui.session_name().to_owned())
+            .filter(|session| !session.is_empty())
+            .collect();
+        self.composer.ui.set_unavailable_sessions(unavailable);
         let new = egui::KeyboardShortcut::new(
             if cfg!(target_os = "macos") {
                 egui::Modifiers::MAC_CMD
@@ -880,7 +986,12 @@ impl Workspace {
         egui::Panel::top("connection-tabs")
             .frame(
                 egui::Frame::new()
-                    .inner_margin(egui::Margin::symmetric(6, 4))
+                    .inner_margin(egui::Margin {
+                        left: 6,
+                        right: 6,
+                        top: 4,
+                        bottom: 0,
+                    })
                     .fill(root.visuals().panel_fill),
             )
             .show_inside(root, |ui| {
@@ -922,7 +1033,7 @@ impl Workspace {
                     ui.with_layout(
                         egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
                         |ui| {
-                            ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+                            ui.spacing_mut().item_spacing = egui::vec2(2.0, 0.0);
                             ui.spacing_mut().button_padding = egui::vec2(10.0, 5.0);
                             paint_tab_fills(ui, idle_fill, idle_hover);
                             let idle_after = time::Duration::from_secs(u64::from(self.idle));
@@ -946,6 +1057,7 @@ impl Workspace {
                                 let id = self.tabs[index].id;
                                 let last_output = self.tabs[index].last_output;
                                 let label = self.tabs[index].label.clone();
+                                let server = self.tabs[index].ui.server_name().to_owned();
                                 let phase = self.tabs[index].client.phase();
                                 ui.push_id(id, |ui| {
                                     if self.renaming.as_ref().is_some_and(|rename| rename.id == id)
@@ -955,9 +1067,19 @@ impl Workspace {
                                             .desired_width(180.0)
                                             .font(egui::TextStyle::Button)
                                             .hint_text("session name");
-                                        let response = ui.add(edit);
+                                        let mut output = edit.show(ui);
+                                        let response = &output.response;
                                         if rename.focus {
                                             response.request_focus();
+                                            output.state.cursor.set_char_range(Some(
+                                                egui::text::CCursorRange::two(
+                                                    egui::text::CCursor::new(0),
+                                                    egui::text::CCursor::new(
+                                                        rename.draft.chars().count(),
+                                                    ),
+                                                ),
+                                            ));
+                                            output.state.store(ui.ctx(), response.id);
                                             rename.focus = false;
                                         }
                                         let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
@@ -1015,8 +1137,13 @@ impl Workspace {
                                     }
                                     let button = egui::Button::new(text)
                                         .selected(selected)
-                                        .min_size(egui::vec2(0.0, 28.0))
-                                        .corner_radius(5.0)
+                                        .min_size(egui::vec2(0.0, 32.0))
+                                        .corner_radius(egui::CornerRadius {
+                                            nw: 6,
+                                            ne: 6,
+                                            sw: 0,
+                                            se: 0,
+                                        })
                                         .sense(egui::Sense::CLICK | egui::Sense::DRAG)
                                         .stroke(egui::Stroke::new(
                                             2.0_f32,
@@ -1026,13 +1153,17 @@ impl Workspace {
                                                 egui::Color32::TRANSPARENT
                                             },
                                         ));
-                                    let response = ui.add(button).on_hover_text(if phase
-                                        == desktop::Phase::Watching
-                                    {
+                                    let hint = if phase == desktop::Phase::Watching {
                                         "Click to switch · double-click to rename · drag to reorder"
                                     } else {
                                         "Click to switch · drag to reorder"
-                                    });
+                                    };
+                                    let response =
+                                        ui.add(button).on_hover_text(if server.is_empty() {
+                                            hint.to_owned()
+                                        } else {
+                                            format!("{server}\n{hint}")
+                                        });
                                     if busy {
                                         let indicator = egui::Rect::from_center_size(
                                             egui::pos2(
@@ -1078,6 +1209,12 @@ impl Workspace {
                                             draft: self.tabs[index].ui.session_name().to_owned(),
                                             focus: true,
                                         });
+                                        // The editor replaces this chip on the
+                                        // next paint. The double-click frame
+                                        // itself did not contain a TextEdit,
+                                        // so egui has no widget-driven reason
+                                        // to schedule that paint for us.
+                                        ui.ctx().request_repaint();
                                     } else if response.clicked() || response.double_clicked() {
                                         navigation = Action::Select(id);
                                         self.renaming = None;
@@ -1095,8 +1232,13 @@ impl Workspace {
                                     self.tabs.len() < MAX_TABS || self.composer_open,
                                     egui::Button::new(egui::RichText::new("+").size(16.0).strong())
                                         .selected(self.composer_open)
-                                        .min_size(egui::vec2(28.0, 28.0))
-                                        .corner_radius(5.0)
+                                        .min_size(egui::vec2(30.0, 32.0))
+                                        .corner_radius(egui::CornerRadius {
+                                            nw: 6,
+                                            ne: 6,
+                                            sw: 0,
+                                            se: 0,
+                                        })
                                         .sense(egui::Sense::CLICK)
                                         .stroke(egui::Stroke::new(
                                             2.0_f32,
@@ -1173,8 +1315,19 @@ impl Workspace {
             (self.composer.id, action)
         } else {
             let tab = &mut self.tabs[self.active];
+            let renaming = self
+                .renaming
+                .as_ref()
+                .is_some_and(|rename| rename.id == tab.id);
             let action = root
-                .push_id(tab.id, |root| tab.ui.show(root, &mut tab.client.lock()))
+                .push_id(tab.id, |root| {
+                    if renaming {
+                        tab.ui
+                            .show_without_terminal_focus(root, &mut tab.client.lock())
+                    } else {
+                        tab.ui.show(root, &mut tab.client.lock())
+                    }
+                })
                 .inner;
             ack_painted(tab);
             (tab.id, action)
@@ -1228,6 +1381,7 @@ impl Workspace {
                     let mut follow_input = false;
                     let mut close_after_exit = None;
                     let mut return_to_composer = false;
+                    let can_add_session = self.tabs.len() < MAX_TABS;
                     {
                         if self.composer_open
                             && id == self.composer.id
@@ -1318,6 +1472,14 @@ impl Workspace {
                                         }
                                     }
                                 }
+                                anyhow::ensure!(
+                                    can_add_session
+                                        || !actions.iter().any(|(_, action)| matches!(
+                                            action,
+                                            crate::input::Action::MoveToNewSession
+                                        )),
+                                    "at most {MAX_TABS} session tabs may be open"
+                                );
                                 if actions.is_empty() {
                                     Ok(())
                                 } else {
@@ -1403,6 +1565,67 @@ mod tests {
     }
 
     #[test]
+    fn enter_in_the_real_tab_editor_submits_the_rename() {
+        let mut workspace = Workspace::new(sync::Arc::new(|| {}), desktop::Startup::Demo).unwrap();
+        let id = workspace.tabs[0].id;
+        let ctx = egui::Context::default();
+        crate::window::configure(&ctx);
+        let screen = || egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 760.0),
+            )),
+            ..Default::default()
+        };
+        // Let the terminal consume its one-time generation focus request before
+        // the tab editor asks for focus, matching a real already-open tab.
+        let _ = ctx.run_ui(screen(), |root| {
+            workspace.show(root);
+        });
+        workspace.renaming = Some(SessionRename {
+            id,
+            draft: "Demo".into(),
+            focus: true,
+        });
+        let _ = ctx.run_ui(screen(), |root| {
+            workspace.show(root);
+        });
+        let _ = ctx.run_ui(screen(), |root| {
+            workspace.show(root);
+        });
+        let input = egui::RawInput {
+            events: vec![egui::Event::Text("replacement".into())],
+            ..screen()
+        };
+        let _ = ctx.run_ui(input, |root| {
+            workspace.show(root);
+        });
+        let input = egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..screen()
+        };
+        let mut action = Action::None;
+        let _ = ctx.run_ui(input, |root| {
+            action = workspace.show(root);
+        });
+        assert!(
+            matches!(&action, Action::Tab(tab, inner) if *tab == id && matches!(**inner, ui::Action::RenameSession(ref name) if name == "replacement")),
+            "the first typing must replace the selected generated name; draft={:?}, submitted={:?}",
+            workspace
+                .renaming
+                .as_ref()
+                .map(|rename| rename.draft.as_str()),
+            workspace.submitted_rename,
+        );
+    }
+
+    #[test]
     fn a_submitted_rename_survives_a_second_show_pass() {
         let mut workspace = Workspace::new(sync::Arc::new(|| {}), desktop::Startup::Demo).unwrap();
         let id = workspace.tabs[0].id;
@@ -1432,6 +1655,17 @@ mod tests {
             matches!(action, Action::Tab(tab, ref inner) if tab == id && matches!(**inner, ui::Action::RenameSession(ref name) if name == "renamed")),
             "a later layout pass must not drop the rename for terminal Enter"
         );
+    }
+
+    #[test]
+    fn a_session_that_lost_its_final_window_closes_its_tab() {
+        let mut workspace = Workspace::new(sync::Arc::new(|| {}), desktop::Startup::Demo).unwrap();
+        workspace.tabs[0].client.mark_session_closed_for_test();
+
+        workspace.retire_closed_sessions();
+
+        assert!(workspace.tabs.is_empty());
+        assert!(workspace.composer_open);
     }
 
     #[test]
@@ -1575,14 +1809,14 @@ mod tests {
     }
 
     #[test]
-    fn a_tab_without_a_destination_is_labelled_by_host_and_session() {
+    fn tabs_are_labelled_by_session_only() {
         assert_eq!(
             label(&store::Tab {
                 host: "build.example.test".into(),
                 session: "ci".into(),
                 ..store::Tab::default()
             }),
-            "build.example.test / ci"
+            "ci"
         );
         assert_eq!(
             label(&store::Tab {
@@ -1591,8 +1825,26 @@ mod tests {
                 session: "work".into(),
                 ..store::Tab::default()
             }),
-            "dev / work"
+            "work"
         );
+        assert_eq!(label(&store::Tab::default()), NEW_CONNECTION);
+    }
+
+    #[test]
+    fn endpoint_identity_ignores_alias_but_not_transport_details() {
+        let left = store::Tab {
+            destination: "dev".into(),
+            host: "10.0.0.2".into(),
+            user: "alice".into(),
+            port: 22,
+            socket: "/tmp/tmux.sock".into(),
+            ..store::Tab::default()
+        };
+        let mut right = left.clone();
+        right.destination = "another-alias".into();
+        assert!(same_endpoint(&left, &right));
+        right.port = 2222;
+        assert!(!same_endpoint(&left, &right));
     }
 
     #[test]
@@ -1735,8 +1987,8 @@ mod tests {
         for tab in &workspace.tabs {
             assert!(!tab.ui.showing_form());
         }
-        assert_eq!(workspace.tabs[0].label, "dev / work");
-        assert_eq!(workspace.tabs[1].label, "build.example.test / ci");
+        assert_eq!(workspace.tabs[0].label, "work");
+        assert_eq!(workspace.tabs[1].label, "ci");
         assert!(!workspace.composer_open);
         workspace.persist();
         let reloaded = store::load(&file).unwrap().unwrap();
@@ -1839,7 +2091,7 @@ mod tests {
         assert_eq!(started.tabs.len(), 1);
         assert_eq!(started.tabs[0].ui.saved().window, Some(0));
         assert_eq!(started.tabs[0].ui.saved().pane, Some(1));
-        assert_eq!(started.tabs[0].label, "dev / work");
+        assert_eq!(started.tabs[0].label, "work");
         assert_eq!(resumed, Some(("dev.example.test".into(), "work".into())));
         assert!(!started.tabs[0].ui.showing_form());
         assert!(!started.composer_open);

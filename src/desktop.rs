@@ -108,6 +108,14 @@ pub enum Discovery {
     Failed(String),
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct MovedSession {
+    pub name: String,
+    /// Moving the session's only pane destroys the old tmux session and its
+    /// control attachment; the workspace should replace that tab, not add one.
+    pub source_ended: bool,
+}
+
 pub(crate) struct State {
     /// Bumped immediately before a worker asks the GUI to reconsider this
     /// client. The workspace uses it to discard duplicate and hidden-tab wakes.
@@ -133,12 +141,18 @@ pub(crate) struct State {
     pub discovery: Option<Discovery>,
     /// Last interactive-command round trip, from traffic we already send.
     pub last_rtt: Option<time::Duration>,
-    /// Pending `rename-session` (new name, previous name).
+    /// Pending in-band `rename-session` (new name, previous name).
     rename: Option<(core::SessionName, String)>,
+    /// The rename is queued or waiting for tmux's bounded reply.
+    pub renaming: bool,
     /// Name tmux accepted, for the tab label and saved workspace.
     renamed: Option<String>,
     /// Previous session name, restored if tmux rejected the rename.
     rename_revert: Option<String>,
+    /// Completed pane handoff waiting for the workspace to open its new tab.
+    moved_session: Option<MovedSession>,
+    /// The attached session lost its final window and no longer exists.
+    session_closed: bool,
     actions: collections::VecDeque<Pending>,
     action_bytes: usize,
     io_wake: Option<ssh::Wake>,
@@ -163,8 +177,11 @@ impl Default for State {
             discovery: None,
             last_rtt: None,
             rename: None,
+            renaming: false,
             renamed: None,
             rename_revert: None,
+            moved_session: None,
+            session_closed: false,
             actions: collections::VecDeque::new(),
             action_bytes: 0,
             io_wake: None,
@@ -184,8 +201,11 @@ impl State {
         self.continuity = None;
         self.failure = None;
         self.rename = None;
+        self.renaming = false;
         self.renamed = None;
         self.rename_revert = None;
+        self.moved_session = None;
+        self.session_closed = false;
         self.discard_actions();
         self.access = session::Access::ReadOnly;
         self.allow_resize = false;
@@ -433,8 +453,9 @@ impl Client {
         self.lock().enqueue(target, action)
     }
 
-    /// Ask tmux to rename the attached session. The worker reports success
-    /// through `take_renamed`; a duplicate name is an error, not a disconnect.
+    /// Queue one rename on the existing control attachment. The command is
+    /// never retried: an uncertain completion instead reconnects to the
+    /// optimistically saved new name.
     pub(crate) fn rename_session(
         &self,
         name: core::SessionName,
@@ -445,7 +466,9 @@ impl Client {
             state.input_ready(),
             "connect with an interactive session to rename it"
         );
+        anyhow::ensure!(!state.renaming, "a session rename is already running");
         state.rename = Some((name, previous));
+        state.renaming = true;
         state.renamed = None;
         state.rename_revert = None;
         if let Some(ref wake) = state.io_wake {
@@ -462,6 +485,19 @@ impl Client {
 
     pub(crate) fn take_rename_revert(&self) -> Option<String> {
         self.lock().rename_revert.take()
+    }
+
+    pub(crate) fn take_moved_session(&self) -> Option<MovedSession> {
+        self.lock().moved_session.take()
+    }
+
+    pub(crate) fn take_session_closed(&self) -> bool {
+        std::mem::take(&mut self.lock().session_closed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_session_closed_for_test(&self) {
+        self.lock().session_closed = true;
     }
 
     /// Admit a GUI frame atomically, so a full queue cannot accept half of a
@@ -579,6 +615,12 @@ enum Outcome {
     Cancelled,
     /// tmux ended the control session and said why.
     Ended(reconnect::Failure),
+    /// The attached session's final window closed. Its tab has no recoverable
+    /// remote object and should disappear rather than become a red tombstone.
+    SessionClosed,
+    /// A non-idempotent rename was delivered but its final reply was not
+    /// observed. Reconnect once to the already-saved new name; never resend it.
+    RenameReconnect,
 }
 
 fn worker_loop(shared: Shared, wake: Wake) {
@@ -653,13 +695,38 @@ fn worker_loop(shared: Shared, wake: Wake) {
             );
             let (failure, detail) = match result {
                 Ok(Outcome::Cancelled) => break,
+                Ok(Outcome::SessionClosed) => {
+                    report_session_closed(&shared, &wake, epoch);
+                    break;
+                }
+                Ok(Outcome::RenameReconnect) => match renew_epoch(&shared, &wake, epoch) {
+                    Some(renewed) => {
+                        epoch = renewed;
+                        continue;
+                    }
+                    None => break,
+                },
                 Ok(Outcome::Ended(failure)) => (failure, failure.summary().to_owned()),
-                Err(error) => (
-                    reconnect::classify(&error),
-                    // Do not emit credentials or remote output to logs. Error
-                    // display is plain GUI text, bounded independently of the wire.
-                    format!("{error:#}").chars().take(2048).collect(),
-                ),
+                Err(error) => {
+                    let failure = reconnect::classify(&error);
+                    let session_ended = {
+                        let state = shared
+                            .0
+                            .lock()
+                            .unwrap_or_else(sync::PoisonError::into_inner);
+                        state.accepts(epoch) && ended_last_pane(state.view.as_ref(), failure)
+                    };
+                    if session_ended {
+                        report_session_closed(&shared, &wake, epoch);
+                        break;
+                    }
+                    (
+                        failure,
+                        // Do not emit credentials or remote output to logs. Error
+                        // display is plain GUI text, bounded independently of the wire.
+                        format!("{error:#}").chars().take(2048).collect(),
+                    )
+                }
             };
             let retriable = failure.retriable() && connection.reconnect;
             let delay = retriable.then(|| backoff.next_delay());
@@ -692,6 +759,35 @@ fn worker_loop(shared: Shared, wake: Wake) {
             }
         }
     }
+}
+
+fn ended_last_pane(view: Option<&snapshot::View>, failure: reconnect::Failure) -> bool {
+    view.is_some_and(|view| {
+        view.window_closed()
+            // On the affected tmux path the final pane produces neither
+            // `%window-close` nor `%exit`; the local tmux front-end instead
+            // ends mid-control framing. Restrict that fallback to a coherent
+            // one-pane snapshot and a protocol teardown, so an ordinary SSH
+            // transport loss still reconnects and an explicit detach remains.
+            || (failure == reconnect::Failure::Protocol && view.panes().len() == 1)
+    })
+}
+
+fn report_session_closed(shared: &Shared, wake: &Wake, epoch: u64) {
+    let mut state = shared
+        .0
+        .lock()
+        .unwrap_or_else(sync::PoisonError::into_inner);
+    if state.accepts(epoch) {
+        state.phase = Phase::Disconnected;
+        state.failure = Some(reconnect::Failure::MissingSession);
+        state.error = None;
+        state.io_wake = None;
+        state.discard_actions();
+        state.session_closed = true;
+    }
+    drop(state);
+    wake();
 }
 
 /// Decorrelate one tab's retry schedule from another's. This is a scheduling
@@ -739,6 +835,10 @@ fn report_failure(
     });
     if scheduled.is_none() {
         state.retry = None;
+        if let Some((_, previous)) = state.rename.take() {
+            state.rename_revert = Some(previous);
+        }
+        state.renaming = false;
         state.phase = match failure {
             // An orderly detach is not an error to apologize for.
             reconnect::Failure::Detached => Phase::Disconnected,
@@ -907,6 +1007,79 @@ fn watch(
     let mut last_cwd = time::Instant::now();
     wake();
     loop {
+        // Rename before resync/input. It is session-scoped and does not depend
+        // on the current pane geometry.
+        let rename = {
+            let mut state = shared
+                .0
+                .lock()
+                .unwrap_or_else(sync::PoisonError::into_inner);
+            if !state.accepts(epoch) {
+                return Ok(Outcome::Cancelled);
+            }
+            state.rename.take()
+        };
+        if let Some((name, previous)) = rename {
+            // Once written, the command must never be replayed. Point any
+            // recovery at the optimistic name before attempting delivery.
+            connection.session = name.clone();
+            match inspector.rename_session(session_id, &name) {
+                Ok(notifications) => {
+                    let mut state = shared
+                        .0
+                        .lock()
+                        .unwrap_or_else(sync::PoisonError::into_inner);
+                    if state.accepts(epoch) {
+                        state.renaming = false;
+                        state.renamed = Some(name.as_str().to_owned());
+                        state.rename_revert = None;
+                        state.last_rtt = inspector.last_rtt;
+                        state.error = None;
+                        if let Some(ref mut view) = state.view {
+                            for event in notifications {
+                                view.apply(event);
+                            }
+                        }
+                    }
+                    // `wake` increments the revision by taking this same
+                    // mutex. Calling it with the guard alive self-deadlocks
+                    // the worker and then blocks the UI behind it.
+                    drop(state);
+                    wake();
+                }
+                Err(error) if reconnect::classify(&error) == reconnect::Failure::Transport => {
+                    let mut state = shared
+                        .0
+                        .lock()
+                        .unwrap_or_else(sync::PoisonError::into_inner);
+                    if state.accepts(epoch) {
+                        state.renaming = false;
+                        state.error = Some(
+                            "The rename was delivered but its completion was not observed; reconnecting to the new name."
+                                .to_owned(),
+                        );
+                    }
+                    drop(state);
+                    wake();
+                    return Ok(Outcome::RenameReconnect);
+                }
+                Err(error) => {
+                    connection.session = core::SessionName::new(previous.clone())?;
+                    let mut state = shared
+                        .0
+                        .lock()
+                        .unwrap_or_else(sync::PoisonError::into_inner);
+                    if state.accepts(epoch) {
+                        state.renaming = false;
+                        state.error = Some(format!("Could not rename session: {error}"));
+                        state.rename_revert = Some(previous);
+                    }
+                    drop(state);
+                    wake();
+                }
+            }
+            continue;
+        }
         let status = {
             let state = shared
                 .0
@@ -929,12 +1102,12 @@ fn watch(
                 if !state.accepts(epoch) {
                     return Ok(Outcome::Cancelled);
                 }
+                let view = state.view.as_ref().expect("view published");
+                if view.session_closed() {
+                    return Ok(Outcome::SessionClosed);
+                }
                 let failure = reconnect::classify_exit(
-                    state
-                        .view
-                        .as_ref()
-                        .and_then(snapshot::View::exit_reason)
-                        .and_then(snapshot::ExitReason::as_deref),
+                    view.exit_reason().and_then(snapshot::ExitReason::as_deref),
                 );
                 drop(state);
                 return Ok(Outcome::Ended(failure));
@@ -990,57 +1163,6 @@ fn watch(
                     )
                     .into());
                 }
-                let rename = {
-                    let mut state = shared
-                        .0
-                        .lock()
-                        .unwrap_or_else(sync::PoisonError::into_inner);
-                    if !state.accepts(epoch) {
-                        return Ok(Outcome::Cancelled);
-                    }
-                    state.rename.take()
-                };
-                if let Some((name, previous)) = rename {
-                    match inspector.rename_session(session_id, &name) {
-                        Ok(notifications) => {
-                            connection.session = name.clone();
-                            let mut state = shared
-                                .0
-                                .lock()
-                                .unwrap_or_else(sync::PoisonError::into_inner);
-                            if state.accepts(epoch) {
-                                state.renamed = Some(name.as_str().to_owned());
-                                state.rename_revert = None;
-                                state.last_rtt = inspector.last_rtt;
-                                state.error = None;
-                                if let Some(ref mut view) = state.view {
-                                    for event in notifications {
-                                        view.apply(event);
-                                    }
-                                }
-                            }
-                            last_alive = reconnect::AliveClock::now();
-                            wake();
-                        }
-                        Err(error)
-                            if reconnect::classify(&error) == reconnect::Failure::Transport =>
-                        {
-                            return Err(error);
-                        }
-                        Err(error) => {
-                            let mut state = shared
-                                .0
-                                .lock()
-                                .unwrap_or_else(sync::PoisonError::into_inner);
-                            if state.accepts(epoch) {
-                                state.error = Some(format!("Could not rename session: {error}"));
-                                state.rename_revert = Some(previous);
-                            }
-                            wake();
-                        }
-                    }
-                    continue;
-                }
                 let pending = {
                     let mut state = shared
                         .0
@@ -1092,6 +1214,9 @@ fn watch(
                             pending.target.pane,
                         )?;
                         let resizing = pending.action.changes_layout();
+                        let source_ended =
+                            matches!(pending.action, input::Action::MoveToNewSession)
+                                && state.view.as_ref().expect("view published").panes().len() == 1;
                         let ordinary = matches!(
                             pending.action,
                             input::Action::Bytes(_) | input::Action::Key(..)
@@ -1113,14 +1238,56 @@ fn watch(
                             state.action_bytes -= next.action.size();
                             actions.push(next.action);
                         }
-                        Some((target, actions, resizing))
+                        Some((target, actions, resizing, source_ended))
                     } else {
                         None
                     }
                 };
-                if let Some((target, actions, resizing)) = pending {
+                if let Some((target, actions, resizing, source_ended)) = pending {
                     // The pop above is the dispatch boundary. Cancellation may
                     // follow while I/O is in flight; these actions are NEVER requeued.
+                    if matches!(actions.as_slice(), [input::Action::MoveToNewSession]) {
+                        let moved = inspector.move_to_new_session(target, target.size)?;
+                        let mut state = shared
+                            .0
+                            .lock()
+                            .unwrap_or_else(sync::PoisonError::into_inner);
+                        if !state.accepts(epoch) {
+                            return Ok(Outcome::Cancelled);
+                        }
+                        for event in moved.notifications {
+                            state.view.as_mut().expect("view published").apply(event);
+                        }
+                        if !moved.applied {
+                            state.error = Some(
+                                "tmux blocked the pane move because its layout changed. Nothing was retried."
+                                    .to_owned(),
+                            );
+                            state.view.as_mut().expect("view published").invalidate();
+                            state.phase = Phase::Resynchronizing;
+                        } else {
+                            state.moved_session = Some(MovedSession {
+                                name: moved.session.as_str().to_owned(),
+                                source_ended,
+                            });
+                            state.discard_actions();
+                            if source_ended {
+                                state.view.as_mut().expect("view published").disconnect();
+                                state.phase = Phase::Disconnected;
+                                state.io_wake = None;
+                            } else {
+                                state.view.as_mut().expect("view published").invalidate();
+                                state.phase = Phase::Resynchronizing;
+                            }
+                        }
+                        state.last_rtt = inspector.last_rtt;
+                        drop(state);
+                        wake();
+                        if source_ended && moved.applied {
+                            return Ok(Outcome::Cancelled);
+                        }
+                        continue;
+                    }
                     let mut outcome = inspector.interact(target, &actions)?;
                     if resizing && outcome.applied {
                         outcome
@@ -1390,6 +1557,40 @@ mod tests {
                 .enqueue(target, input::Action::Bytes(b"stale".to_vec()))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn cancellation_clears_rename_progress() {
+        let client = Client::new(sync::Arc::new(|| {})).unwrap();
+        *client.lock() = editable();
+        client.lock().renaming = true;
+        assert!(client.lock().renaming);
+        client.disconnect();
+        assert!(!client.lock().renaming);
+    }
+
+    #[test]
+    fn protocol_teardown_closes_only_a_last_known_pane() {
+        let mut state = editable();
+        assert!(!ended_last_pane(
+            state.view.as_ref(),
+            reconnect::Failure::Protocol
+        ));
+        let keep = *state.view.as_ref().unwrap().panes().keys().next().unwrap();
+        state
+            .view
+            .as_mut()
+            .unwrap()
+            .panes_mut()
+            .retain(|pane, _| *pane == keep);
+        assert!(ended_last_pane(
+            state.view.as_ref(),
+            reconnect::Failure::Protocol
+        ));
+        assert!(!ended_last_pane(
+            state.view.as_ref(),
+            reconnect::Failure::Transport
+        ));
     }
 
     #[test]

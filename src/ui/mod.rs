@@ -340,6 +340,16 @@ pub struct DesktopUi {
     listed_destination: String,
     /// List as soon as a host is chosen or a custom destination is committed.
     auto_list: bool,
+    /// Put typing in the new-session field after a host is chosen. This stays
+    /// armed across egui layout passes until that field is actually painted.
+    focus_new_session: bool,
+    /// Sessions already open in this Starcom workspace on the same endpoint.
+    /// The remote attached count is checked separately, so ordinary tmux
+    /// clients are also shown as in use.
+    unavailable_sessions: collections::BTreeSet<String>,
+    /// SSH destinations with a live tab in this workspace. Literal Host
+    /// buttons use this to make already-open servers easy to spot.
+    connected_servers: collections::BTreeSet<String>,
     /// Last cell size sent to tmux, so we do not spam refresh-client -C.
     client_cells: Option<core::Size>,
     pending_client_cells: Option<(core::Size, time::Instant)>,
@@ -386,6 +396,9 @@ impl DesktopUi {
             agent_checked: time::Instant::now(),
             listed_destination: String::new(),
             auto_list: false,
+            focus_new_session: false,
+            unavailable_sessions: collections::BTreeSet::new(),
+            connected_servers: collections::BTreeSet::new(),
             client_cells: None,
             pending_client_cells: None,
             refresh_tick: 0,
@@ -446,6 +459,23 @@ impl DesktopUi {
         saved.window = self.window.map(|window| window.0);
         saved.pane = self.focused.or(self.selected).map(|pane| pane.0);
         saved
+    }
+
+    pub(crate) fn set_unavailable_sessions(&mut self, sessions: collections::BTreeSet<String>) {
+        self.unavailable_sessions = sessions;
+    }
+
+    pub(crate) fn set_connected_servers(&mut self, servers: collections::BTreeSet<String>) {
+        self.connected_servers = servers;
+    }
+
+    pub(crate) fn server_name(&self) -> &str {
+        let destination = self.form.destination();
+        if destination.is_empty() {
+            self.form.host.trim()
+        } else {
+            destination
+        }
     }
 
     pub fn open_terminal(&mut self) {
@@ -559,6 +589,26 @@ impl DesktopUi {
     }
 
     pub fn show(&mut self, root: &mut egui::Ui, state: &mut desktop::State) -> Action {
+        self.show_with_focus_restore(root, state, true)
+    }
+
+    /// Paint normally while another workspace widget owns keyboard focus.
+    /// A freshly reconstructed terminal otherwise requests focus after the tab
+    /// bar has focused its inline rename editor in the same frame.
+    pub(crate) fn show_without_terminal_focus(
+        &mut self,
+        root: &mut egui::Ui,
+        state: &mut desktop::State,
+    ) -> Action {
+        self.show_with_focus_restore(root, state, false)
+    }
+
+    fn show_with_focus_restore(
+        &mut self,
+        root: &mut egui::Ui,
+        state: &mut desktop::State,
+        restore_terminal_focus: bool,
+    ) -> Action {
         if self.profile_source != self.form.destination() {
             self.refresh_profile();
         }
@@ -584,7 +634,7 @@ impl DesktopUi {
         }
         match self.screen {
             Screen::Connection => self.show_connection(root, state),
-            Screen::Terminal => self.show_terminal(root, state),
+            Screen::Terminal => self.show_terminal(root, state, restore_terminal_focus),
         }
     }
 
@@ -621,7 +671,6 @@ impl DesktopUi {
                     ui.add_space(6.0);
                     let aliases: Vec<String> =
                         self.config.aliases().iter().take(32).cloned().collect();
-                    let mut focus_destination = false;
                     ui.horizontal_wrapped(|ui| {
                         ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
                         ui.spacing_mut().button_padding = egui::vec2(16.0, 10.0);
@@ -630,7 +679,10 @@ impl DesktopUi {
                         }
                         for alias in &aliases {
                             let selected = self.form.destination() == alias;
-                            let text = egui::RichText::new(alias).size(22.0).strong();
+                            let mut text = egui::RichText::new(alias).size(22.0).strong();
+                            if self.connected_servers.contains(alias) {
+                                text = text.color(egui::Color32::from_rgb(102, 210, 132));
+                            }
                             if ui
                                 .add(
                                     egui::Button::new(text)
@@ -647,7 +699,7 @@ impl DesktopUi {
                                 self.form.destination = alias.clone();
                                 self.refresh_profile();
                                 self.auto_list = true;
-                                focus_destination = true;
+                                self.focus_new_session = true;
                             }
                         }
                         let response = ui.add(
@@ -659,9 +711,6 @@ impl DesktopUi {
                                 .min_size(egui::vec2(240.0, 44.0))
                                 .hint_text("hostname, address, or alias"),
                         );
-                        if focus_destination {
-                            response.request_focus();
-                        }
                         if response.changed() {
                             self.refresh_profile();
                             self.auto_list = false;
@@ -671,6 +720,7 @@ impl DesktopUi {
                                 || !self.form.destination().is_empty())
                         {
                             self.auto_list = true;
+                            self.focus_new_session = true;
                         }
                     });
 
@@ -754,18 +804,25 @@ impl DesktopUi {
                                 }
                             }
                             Some(desktop::Discovery::Sessions(ref found)) if listing_here => {
+                                let in_use = |summary: &crate::sessions::Summary| {
+                                    summary.attached > 0
+                                        || self.unavailable_sessions.contains(&summary.name)
+                                };
                                 let pending = self.creating.as_ref().filter(|name| {
                                     !found.iter().any(|summary| summary.name == **name)
                                 });
                                 if found.is_empty() && pending.is_none() {
                                     ui.weak("The host is running tmux with no sessions.");
                                 } else {
-                                    if !found
-                                        .iter()
-                                        .any(|summary| summary.name == self.form.session)
+                                    if !found.iter().any(|summary| {
+                                        summary.name == self.form.session && !in_use(summary)
+                                    })
                                         && pending.is_none()
                                     {
-                                        chosen = Some(found[0].name.clone());
+                                        chosen = found
+                                            .iter()
+                                            .find(|summary| !in_use(summary))
+                                            .map(|summary| summary.name.clone());
                                     }
                                     if let Some(name) = pending {
                                         let selected = self.form.session == *name;
@@ -776,20 +833,37 @@ impl DesktopUi {
                                         );
                                     }
                                     for summary in found {
-                                        let selected = self.form.session == summary.name;
+                                        let unavailable = in_use(summary);
+                                        let selected =
+                                            !unavailable && self.form.session == summary.name;
                                         let mut text = summary.name.clone();
-                                        if summary.attached > 0 {
-                                            text.push_str(" · attached");
+                                        if unavailable {
+                                            text.push_str(" · in use");
                                         }
-                                        let response = ui.add(
-                                            egui::Button::new(text)
+                                        let text = if unavailable {
+                                            egui::RichText::new(text)
+                                                .color(egui::Color32::from_rgb(255, 128, 128))
+                                        } else {
+                                            egui::RichText::new(text)
+                                        };
+                                        let response = ui
+                                            .add_enabled(
+                                                !unavailable,
+                                                egui::Button::new(text)
                                                 .selected(selected)
                                                 .sense(egui::Sense::CLICK),
-                                        );
+                                            )
+                                            .on_disabled_hover_text(
+                                                "This session already has an attached client.",
+                                            );
                                         if response.clicked() {
                                             chosen = Some(summary.name.clone());
                                         }
-                                        if response.double_clicked() && idle && !busy {
+                                        if response.double_clicked()
+                                            && !unavailable
+                                            && idle
+                                            && !busy
+                                        {
                                             chosen = Some(summary.name.clone());
                                             self.form.session = summary.name.clone();
                                             match self.form.connection() {
@@ -810,12 +884,17 @@ impl DesktopUi {
                             }
                         }
                         if host_ready {
-                            ui.add(
+                            let create = ui.add(
                                 egui::TextEdit::singleline(&mut self.create_name)
+                                    .id(egui::Id::new("starcom-new-session"))
                                     .hint_text("new session")
                                     .desired_width(160.0)
                                     .min_size(egui::vec2(160.0, 28.0)),
                             );
+                            if self.focus_new_session {
+                                create.request_focus();
+                                self.focus_new_session = false;
+                            }
                             if ui
                                 .add_enabled(
                                     idle
@@ -846,8 +925,21 @@ impl DesktopUi {
                     ui.add_space(12.0);
                     ui.horizontal(|ui| {
                         let connecting = state.phase == desktop::Phase::Connecting;
-                        let can_connect =
-                            host_ready && !self.form.session.trim().is_empty() && idle && !connecting;
+                        let session_unavailable = self
+                            .unavailable_sessions
+                            .contains(self.form.session.trim())
+                            || matches!(
+                                state.discovery,
+                                Some(desktop::Discovery::Sessions(ref found)) if listing_here
+                                    && found.iter().any(|summary| {
+                                        summary.name == self.form.session && summary.attached > 0
+                                    })
+                            );
+                        let can_connect = host_ready
+                            && !self.form.session.trim().is_empty()
+                            && !session_unavailable
+                            && idle
+                            && !connecting;
                         let connect_label = if connecting {
                             "   Connecting…"
                         } else {
@@ -1067,7 +1159,12 @@ impl DesktopUi {
         }
     }
 
-    fn show_terminal(&mut self, root: &mut egui::Ui, state: &mut desktop::State) -> Action {
+    fn show_terminal(
+        &mut self,
+        root: &mut egui::Ui,
+        state: &mut desktop::State,
+        restore_terminal_focus: bool,
+    ) -> Action {
         if let Some(ref mut view) = state.view {
             view.flush_expired_sync();
         }
@@ -1078,14 +1175,17 @@ impl DesktopUi {
         if self.restore_focus && self.focused.is_none() {
             self.focused = self.selected;
         }
-        if (generation_changed || self.restore_focus)
+        if restore_terminal_focus
+            && (generation_changed || self.restore_focus)
             && let Some(pane) = self.focused
         {
             root.ctx().memory_mut(|memory| {
                 memory.request_focus(terminal::focus_id(self.generation, pane))
             });
         }
-        self.restore_focus = false;
+        if restore_terminal_focus {
+            self.restore_focus = false;
+        }
         if let Some(until) = self.notice_until
             && until <= time::Instant::now()
         {
@@ -1186,6 +1286,28 @@ impl DesktopUi {
                                 );
                                 paint_refresh_indicator(ui, rect, self.refresh_tick);
                             });
+                        let server = self.server_name();
+                        if !server.is_empty() {
+                            ui.separator();
+                            ui.label(egui::RichText::new(server).strong())
+                                .on_hover_text(format!(
+                                    "{}@{}:{}",
+                                    self.form.user.trim(),
+                                    self.form.host.trim(),
+                                    self.form.port
+                                ));
+                        }
+                        if state.renaming {
+                            // Also observe completion if the worker wake was
+                            // coalesced with the frame that submitted it.
+                            ui.ctx()
+                                .request_repaint_after(time::Duration::from_millis(100));
+                            ui.separator();
+                            ui.label(
+                                egui::RichText::new("Renaming…")
+                                    .color(ui.visuals().warn_fg_color),
+                            );
+                        }
                         if matches!(
                             state.phase,
                             desktop::Phase::Connecting
@@ -1432,6 +1554,7 @@ impl DesktopUi {
                         .filter(|pane| pane.state.window == id)
                         .count()
                         > 1;
+                    let can_move_to_session = view.panes().len() > 1;
                     node.draw(
                         ui,
                         rect,
@@ -1459,6 +1582,7 @@ impl DesktopUi {
                                     notice_until,
                                     controls,
                                     can_kill,
+                                    can_move_to_session,
                                     neighbors,
                                     zoomed,
                                     !matches!(
@@ -2267,6 +2391,23 @@ mod tests {
     }
 
     #[test]
+    fn choosing_a_host_focuses_the_new_session_field() {
+        let mut ui = DesktopUi::default();
+        ui.form.destination = "zork".to_owned();
+        ui.form.host = "10.0.0.2".to_owned();
+        ui.profile_source = "zork".to_owned();
+        ui.focus_new_session = true;
+        let mut state = desktop::State::default();
+        let ctx = egui::Context::default();
+        crate::window::configure(&ctx);
+        let _ = ctx.run_ui(screen_input(), |root| {
+            ui.show(root, &mut state);
+        });
+        assert!(ctx.memory(|memory| { memory.has_focus(egui::Id::new("starcom-new-session")) }));
+        assert!(!ui.focus_new_session);
+    }
+
+    #[test]
     fn a_session_list_selects_the_first_name() {
         let mut ui = DesktopUi::default();
         ui.form.destination = "zork".to_owned();
@@ -2304,11 +2445,40 @@ mod tests {
             crate::sessions::Summary {
                 name: "work".into(),
                 windows: 2,
-                attached: 1,
+                attached: 0,
             },
         ]));
         paint(&mut ui, &mut state);
         assert_eq!(ui.form.session, "work");
+    }
+
+    #[test]
+    fn an_attached_or_locally_open_session_is_unavailable() {
+        let mut ui = DesktopUi::default();
+        ui.form.destination = "zork".to_owned();
+        ui.form.session = "attached".to_owned();
+        ui.listed_destination = "zork".to_owned();
+        ui.unavailable_sessions.insert("local".to_owned());
+        let mut state = desktop::State::default();
+        state.discovery = Some(desktop::Discovery::Sessions(vec![
+            crate::sessions::Summary {
+                name: "attached".into(),
+                windows: 1,
+                attached: 1,
+            },
+            crate::sessions::Summary {
+                name: "local".into(),
+                windows: 1,
+                attached: 0,
+            },
+            crate::sessions::Summary {
+                name: "free".into(),
+                windows: 1,
+                attached: 0,
+            },
+        ]));
+        paint(&mut ui, &mut state);
+        assert_eq!(ui.form.session, "free");
     }
 
     #[test]
@@ -2704,6 +2874,30 @@ mod tests {
         );
         assert_eq!(ui.selected, Some(pane));
         assert_eq!(ui.saved().pane, Some(pane.0));
+    }
+
+    #[test]
+    fn reconstructed_terminal_does_not_steal_an_inline_editors_focus() {
+        let ctx = egui::Context::default();
+        crate::window::configure(&ctx);
+        let mut state = desktop::State::interactive_demo().unwrap();
+        let pane = tmuxctl::PaneId(0);
+        let mut ui = DesktopUi::default();
+        ui.open_terminal();
+        ui.focused = Some(pane);
+        ui.selected = Some(pane);
+        let mut draft = "pane-1".to_owned();
+        let mut editor = None;
+
+        let _ = ctx.run_ui(screen_input(), |root| {
+            let response = root.text_edit_singleline(&mut draft);
+            response.request_focus();
+            editor = Some(response.id);
+            ui.show_without_terminal_focus(root, &mut state);
+        });
+
+        assert!(ctx.memory(|memory| memory.has_focus(editor.unwrap())));
+        assert!(!ui.terminal_focused(&ctx));
     }
 
     #[test]

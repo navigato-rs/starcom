@@ -90,7 +90,7 @@ fn run(options: &ssh::Options, wire: &str) -> anyhow::Result<String> {
     while !channel.eof() {
         anyhow::ensure!(
             time::Instant::now() < deadline,
-            "listing sessions exceeded its deadline"
+            "remote tmux command exceeded its deadline"
         );
         let mut progressed = false;
         for target in [Stream::Stdout, Stream::Stderr] {

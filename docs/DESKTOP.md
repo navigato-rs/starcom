@@ -27,7 +27,10 @@ composer to a registered tab while the attachment starts. Drag a tab to reorder
 the strip. **About** on the right opens a modal with the icon, version, GitHub
 URL, total time Starcom has been open, and the workspace `fps` / `idle` settings.
 
-The tab shows connection progress and then the terminal workspace. If the first
+Tabs use browser-style top edges and show only the session name. The active
+server is shown in bold in the status bar beside the last control-command round
+trip time, instead of being repeated in every tab. The tab shows connection
+progress and then the terminal workspace. If the first
 attachment fails before producing a terminal view, its populated form and error
 move back to **+** for repair/retry; no empty registered tab remains. Background
 startup failures are removed as well. **Exit**, Ctrl-Shift-W/Cmd-W, and typing
@@ -41,11 +44,18 @@ window picker is not in this increment. Double-click a connected tab to rename
 that tmux session. Enter confirms, Escape or clicking away cancels. The new
 name is written to the saved workspace immediately, so a restart reconnects
 to it. A name already in use is reported without dropping the attachment, and
-the previous name is restored.
+the previous name is restored. The status bar shows **Renaming…** while the
+existing control attachment waits for tmux's reply, for at most five seconds.
+If tmux applies the rename but its completion reply is lost, Starcom discards
+that stream and reconnects once using the saved new name instead of retrying
+the non-idempotent command.
 
-Each tab currently opens its own SSH connection. Reusing a host connection across
-multiple session tabs is deferred until it can be done without coupling failures
-or authentication state between tabs.
+Each tab currently opens its own SSH connection and remote tmux control client.
+These normally share one existing tmux server; Starcom does not normally start a
+tmux server per tab. The target after v0.3 is one host-owned connection/control
+client with logical Starcom sessions represented by tmux windows. See
+[SESSION-MODEL.md](SESSION-MODEL.md); that ownership change is not implemented
+yet.
 
 ## SSH configuration
 
@@ -53,8 +63,12 @@ The form's main choice is the host. Literal `Host` aliases from `~/.ssh/config`
 are listed for one-click selection; the field after those buttons accepts a
 hostname, address, or alias that is not in that list. Selecting a known host
 resolves the supported
-profile and lists that host's tmux sessions, selecting the first so **Connect**
-is available immediately. Startup resume attaches directly to each saved
+profile and lists that host's tmux sessions, selecting the first available one so
+**Connect** is available immediately. An attached session is red and unavailable,
+which also prevents opening a duplicate local tab. Keyboard focus moves to the
+**new session** field after choosing a host, so choosing and typing can be one
+continuous action. A literal Host button is green while this workspace has a
+live connection to that destination. Startup resume attaches directly to each saved
 session without listing first, using the current SSH configuration.
 
 Currently supported:
@@ -123,9 +137,10 @@ The demo neither reads nor writes this file.
 
 Selecting a known host lists its sessions automatically. **Refresh** asks again.
 The query runs `tmux -N`, so it can never bring a tmux server into existence: a
-host with no tmux running says so. The last session this tab attached to is selected when it is still on the host;
-otherwise the first name in the list. Choosing another only fills the field, and
-double-clicking attaches.
+host with no tmux running says so. Attached sessions are shown in red and cannot
+be selected. The last session this tab attached to is selected when it is still
+available on the host; otherwise the first available name in the list. Choosing
+another only fills the field, and double-clicking attaches.
 
 Starcom also asks on its own when a connection fails because that session does
 not exist. You have already asked to connect and already authenticated, and the
@@ -271,6 +286,11 @@ updates on snapshot and after pane output (for example `cd`).
 
 The buttons:
 
+- move this pane to a new session on the same server. Starcom chooses the first
+  available `pane-N` name, moves the pane with a guarded tmux transaction, and
+  selects a new tab attached to it. The resulting tab immediately enters its
+  inline rename editor so a descriptive name can be typed without another
+  click. This button is hidden when the session has only one pane.
 - split right (`split-window -h`)
 - split below (`split-window -v`)
   Both start in the source pane's working directory (`#{pane_current_path}`).
