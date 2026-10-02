@@ -1305,7 +1305,7 @@ impl DesktopUi {
                             paint_input_backlog(ui, rect, backlog);
                             if backlog.total() != 0 {
                                 response.on_hover_text(format!(
-                                    "{} terminal input actions awaiting confirmation: {} queued locally, {} written to tmux",
+                                    "{} terminal input actions awaiting confirmation: {} queued locally, {} dispatched to the control stream",
                                     backlog.total(),
                                     backlog.queued,
                                     backlog.in_flight,
@@ -1333,8 +1333,24 @@ impl DesktopUi {
                                 .request_repaint_after(time::Duration::from_millis(50));
                         }
                         if !server.is_empty() {
-                            let response = paint_latency(ui, state.last_rtt);
-                            if state.last_rtt.is_some()
+                            let waiting = state.input_wait();
+                            let warning = latency_warning(state.last_rtt, waiting);
+                            if let (Some(waiting), None) = (waiting, warning) {
+                                let threshold = latency_warning_threshold(state.last_rtt);
+                                ui.ctx().request_repaint_after(
+                                    threshold.saturating_sub(waiting),
+                                );
+                            }
+                            let response = paint_latency(ui, state.last_rtt, warning.is_some());
+                            if let Some((waiting, threshold)) = warning {
+                                ui.ctx()
+                                    .request_repaint_after(time::Duration::from_millis(100));
+                                response.on_hover_text(format!(
+                                    "No tmux acknowledgment for {} ms; warning threshold {} ms",
+                                    waiting.as_millis(),
+                                    threshold.as_millis(),
+                                ));
+                            } else if state.last_rtt.is_some()
                                 && let Some(latency) = state.input_latency
                             {
                                 response.on_hover_text(format!(
@@ -2043,17 +2059,43 @@ fn latency_label(rtt: time::Duration) -> String {
 /// Reserve the exact rendered width of two monospace digits and right-align
 /// the current latency within it. Leading whitespace in a Label is not a
 /// reliable geometry reservation.
-fn paint_latency(ui: &mut egui::Ui, rtt: Option<time::Duration>) -> egui::Response {
+fn latency_warning_threshold(last_rtt: Option<time::Duration>) -> time::Duration {
+    const FLOOR: time::Duration = time::Duration::from_millis(50);
+    last_rtt
+        .map(|rtt| rtt.saturating_mul(5))
+        .unwrap_or(FLOOR)
+        .max(FLOOR)
+}
+
+fn latency_warning(
+    last_rtt: Option<time::Duration>,
+    waiting: Option<time::Duration>,
+) -> Option<(time::Duration, time::Duration)> {
+    let threshold = latency_warning_threshold(last_rtt);
+    waiting
+        .filter(|waiting| *waiting >= threshold)
+        .map(|waiting| (waiting, threshold))
+}
+
+fn paint_latency(ui: &mut egui::Ui, rtt: Option<time::Duration>, warning: bool) -> egui::Response {
     let mut font = egui::TextStyle::Small.resolve(ui.style());
     font.family = egui::FontFamily::Monospace;
-    let color = ui.visuals().text_color();
+    let color = if warning {
+        ui.visuals().error_fg_color
+    } else {
+        ui.visuals().text_color()
+    };
     let reserved = ui
         .painter()
         .layout_no_wrap("00 ms".to_owned(), font.clone(), color);
-    let galley = rtt.map(|value| {
-        ui.painter()
-            .layout_no_wrap(latency_label(value), font, color)
-    });
+    let galley = if warning {
+        Some(ui.painter().layout_no_wrap("WAIT".to_owned(), font, color))
+    } else {
+        rtt.map(|value| {
+            ui.painter()
+                .layout_no_wrap(latency_label(value), font, color)
+        })
+    };
     let width = galley.as_ref().map_or(reserved.size().x, |text| {
         text.size().x.max(reserved.size().x)
     });
@@ -2110,6 +2152,24 @@ mod tests {
         assert_eq!(latency_label(time::Duration::from_millis(9)), "9 ms");
         assert_eq!(latency_label(time::Duration::from_millis(10)), "10 ms");
         assert_eq!(latency_label(time::Duration::from_millis(125)), "125 ms");
+    }
+
+    #[test]
+    fn latency_warning_is_relative_with_a_fifty_millisecond_floor() {
+        let ms = time::Duration::from_millis;
+        assert_eq!(latency_warning_threshold(None), ms(50));
+        assert_eq!(latency_warning_threshold(Some(ms(4))), ms(50));
+        assert_eq!(latency_warning_threshold(Some(ms(20))), ms(100));
+        assert_eq!(latency_warning(Some(ms(10)), Some(ms(49))), None);
+        assert_eq!(
+            latency_warning(Some(ms(10)), Some(ms(50))),
+            Some((ms(50), ms(50)))
+        );
+        assert_eq!(latency_warning(Some(ms(20)), Some(ms(99))), None);
+        assert_eq!(
+            latency_warning(Some(ms(20)), Some(ms(100))),
+            Some((ms(100), ms(100)))
+        );
     }
 
     fn tilde_identity(file: &str) -> String {

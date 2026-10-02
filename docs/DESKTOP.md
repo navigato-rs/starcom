@@ -219,9 +219,15 @@ or remote output itself.
 While ordinary input is waiting, narrow full-height strokes appear between the
 server name and latency. Each three-point stroke is one coalesced terminal
 action: dim strokes are still in Starcom's local queue and bright strokes have
-been written to tmux but not acknowledged. Space for four strokes is always
-reserved so normal interaction does not shift the status bar; larger backlogs
-grow to a 40-point cap. Hover it for exact counts.
+been dispatched to the control stream but not acknowledged by tmux. Space for
+four strokes is always reserved so normal interaction does not shift the status
+bar; larger backlogs grow to a 40-point cap. Hover it for exact counts.
+
+The latency field changes to red **WAIT** when the oldest dispatched input has
+not received its tmux acknowledgment within the greater of five times the last
+observed round trip and 50 ms. Hover **WAIT** for its current age and threshold.
+This detects a stalled control request without adding a periodic network probe;
+an otherwise idle connection has no request whose latency can be measured.
 
 `send-keys` can broadcast when a tmux window has `synchronize-panes` enabled.
 Starcom detects that state in the server-side action guard and blocks the action

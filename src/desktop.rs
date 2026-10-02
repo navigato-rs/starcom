@@ -90,6 +90,11 @@ struct Pending {
     queued_at: time::Instant,
 }
 
+struct PendingConfirmation {
+    actions: usize,
+    started_at: time::Instant,
+}
+
 /// What the worker has been asked to do next. Discovery and creation are
 /// one-shot queries; they neither disturb nor become an attachment.
 pub(crate) enum Request {
@@ -121,7 +126,7 @@ pub(crate) struct MovedSession {
 pub(crate) struct InputBacklog {
     /// Actions accepted by the UI but not written to tmux yet.
     pub queued: usize,
-    /// Actions written to tmux whose guarded transaction is not acknowledged.
+    /// Actions dispatched to the control worker but not acknowledged by tmux.
     pub in_flight: usize,
 }
 
@@ -172,7 +177,7 @@ pub(crate) struct State {
     session_closed: bool,
     actions: collections::VecDeque<Pending>,
     action_bytes: usize,
-    inflight_input_actions: usize,
+    input_confirmations: collections::VecDeque<PendingConfirmation>,
     io_wake: Option<ssh::Wake>,
 }
 
@@ -203,7 +208,7 @@ impl Default for State {
             session_closed: false,
             actions: collections::VecDeque::new(),
             action_bytes: 0,
-            inflight_input_actions: 0,
+            input_confirmations: collections::VecDeque::new(),
             io_wake: None,
         }
     }
@@ -278,7 +283,7 @@ impl State {
     fn discard_actions(&mut self) {
         self.actions.clear();
         self.action_bytes = 0;
-        self.inflight_input_actions = 0;
+        self.input_confirmations.clear();
     }
 
     pub(crate) fn input_backlog(&self) -> InputBacklog {
@@ -293,8 +298,18 @@ impl State {
                     )
                 })
                 .count(),
-            in_flight: self.inflight_input_actions,
+            in_flight: self
+                .input_confirmations
+                .iter()
+                .map(|pending| pending.actions)
+                .sum(),
         }
+    }
+
+    pub(crate) fn input_wait(&self) -> Option<time::Duration> {
+        self.input_confirmations
+            .front()
+            .map(|pending| pending.started_at.elapsed())
     }
 
     pub(crate) fn enqueue(&mut self, target: Target, action: input::Action) -> anyhow::Result<()> {
@@ -1198,21 +1213,21 @@ fn watch(
                 break;
             };
             let action_count = actions.len();
-            inspector.start_input(target, &actions, queue)?;
-            let mut state = shared
-                .0
-                .lock()
-                .unwrap_or_else(sync::PoisonError::into_inner);
-            if !state.accepts(epoch) {
-                return Ok(Outcome::Cancelled);
+            {
+                let mut state = shared
+                    .0
+                    .lock()
+                    .unwrap_or_else(sync::PoisonError::into_inner);
+                if !state.accepts(epoch) {
+                    return Ok(Outcome::Cancelled);
+                }
+                state.input_confirmations.push_back(PendingConfirmation {
+                    actions: action_count,
+                    started_at: time::Instant::now(),
+                });
             }
-            state.inflight_input_actions =
-                state
-                    .inflight_input_actions
-                    .checked_add(action_count)
-                    .ok_or_else(|| anyhow::anyhow!("input backlog overflow"))?;
-            drop(state);
             wake();
+            inspector.start_input(target, &actions, queue)?;
         }
         if !inspector.input_idle() {
             let progress = inspector.poll_input()?;
@@ -1232,10 +1247,14 @@ fn watch(
             }
             for completion in progress.completions {
                 changed = true;
-                state.inflight_input_actions = state
-                    .inflight_input_actions
-                    .checked_sub(completion.actions)
-                    .ok_or_else(|| anyhow::anyhow!("input acknowledgment exceeded backlog"))?;
+                let pending = state
+                    .input_confirmations
+                    .pop_front()
+                    .ok_or_else(|| anyhow::anyhow!("input acknowledgment without dispatch"))?;
+                anyhow::ensure!(
+                    pending.actions == completion.actions,
+                    "input acknowledgment action count changed"
+                );
                 state.last_rtt = Some(completion.latency.control);
                 state.input_latency = Some(completion.latency);
                 if slow_input(completion.latency) {
@@ -1813,7 +1832,10 @@ mod tests {
                 input::Action::Paste(input::Paste::new("not ordinary").unwrap()),
             )
             .unwrap();
-        state.inflight_input_actions = 3;
+        state.input_confirmations.push_back(PendingConfirmation {
+            actions: 3,
+            started_at: time::Instant::now(),
+        });
 
         assert_eq!(
             state.input_backlog(),
@@ -1823,8 +1845,10 @@ mod tests {
             }
         );
         assert_eq!(state.input_backlog().total(), 5);
+        assert!(state.input_wait().is_some());
         state.discard_actions();
         assert_eq!(state.input_backlog(), InputBacklog::default());
+        assert!(state.input_wait().is_none());
     }
 
     #[test]
