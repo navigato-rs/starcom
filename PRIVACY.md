@@ -98,8 +98,9 @@ falls back to an author's public email. Changing the alias requires a rebuild.
 ## Symbol uploads
 
 Official release workflows preserve line-level debug information for each build
-variant and upload it when `SENTRY_AUTH_TOKEN`, `SENTRY_ORG` and `SENTRY_PROJECT` are
-configured. Org/project values may be GitHub secrets or variables. Only release
+variant and upload it when `SENTRY_AUTH_TOKEN` and `SENTRY_ORG` are configured.
+The Sentry project is the repository name, overridable with `SENTRY_PROJECT`.
+Org/project values may be GitHub secrets or variables. Only release
 symbols and the corresponding executable are uploaded, never a checkout-wide scan
 or source bundle. The auth token is CI-only and is not embedded into the app.
 `SENTRY_DSN` is used only by the explicit synthetic smoke workflow or a maintainer

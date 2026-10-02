@@ -94,6 +94,9 @@ tagging:
 3. Tag a commit whose CI is green. The release workflow builds artifacts; it
    does not re-run the test suite.
 
+Symbol upload uses `SENTRY_AUTH_TOKEN` and `SENTRY_ORG` from Actions. The Sentry
+project is the repository name, overridable with `SENTRY_PROJECT`.
+
 The workflow can also be run by hand from the Actions tab with the tag as an
 input, which creates the tag at the dispatched commit if it does not exist yet.
 That is how a release is re-run after a green fix without deleting and
