@@ -8,6 +8,10 @@
   remain ordering barriers, and uncertain delivery is still never retried.
   Slow input records queue time, acknowledgment time, intervening output, and
   tmux flow-control lag; the latest breakdown is available by hovering latency.
+- The status bar shows a compact segmented input backlog between the server and
+  latency: one segment per queued or written-but-unacknowledged ordinary input
+  action. Its hover text separates local queueing from tmux acknowledgments.
+  Successful layout resynchronization now clears the warning that prompted it.
 - Pane chrome no longer displays or polls each pane's working directory. Session
   names are the workspace label; pane chrome is reserved for controls. Splits
   still start in the source pane's current directory through tmux itself.
