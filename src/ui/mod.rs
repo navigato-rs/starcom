@@ -1301,7 +1301,7 @@ impl DesktopUi {
                         if backlog.total() != 0 {
                             ui.separator();
                             let (rect, response) = ui.allocate_exact_size(
-                                egui::vec2(44.0, 12.0),
+                                egui::vec2(input_backlog_width(backlog.total()), 12.0),
                                 egui::Sense::hover(),
                             );
                             paint_input_backlog(ui, rect, backlog);
@@ -1996,22 +1996,28 @@ fn paint_activity_dots(ui: &egui::Ui, rect: egui::Rect, step: u64) {
 
 /// A compact segmented queue: one vertical segment per unacknowledged action.
 /// Locally queued work is dim; work already written to tmux is bright.
+fn input_backlog_width(total: usize) -> f32 {
+    const STROKE: f32 = 1.5;
+    const GAP: f32 = 1.0;
+    const MAX: f32 = 24.0;
+    (total as f32 * STROKE + total.saturating_sub(1) as f32 * GAP).min(MAX)
+}
+
 fn paint_input_backlog(ui: &egui::Ui, rect: egui::Rect, backlog: desktop::InputBacklog) {
     let total = backlog.total();
     if total == 0 {
         return;
     }
-    ui.painter()
-        .rect_filled(rect, 2.0, ui.visuals().faint_bg_color);
-    let gap = if total <= 16 { 1.0 } else { 0.0 };
-    let width = (rect.width() - gap * (total.saturating_sub(1) as f32)) / total as f32;
+    let natural = total as f32 * 1.5 + total.saturating_sub(1) as f32;
+    let gap = if natural <= rect.width() { 1.0 } else { 0.0 };
+    let width = (rect.width() - gap * total.saturating_sub(1) as f32) / total as f32;
     let bright = ui.visuals().selection.bg_fill;
     let dim = bright.gamma_multiply(0.4);
     for index in 0..total {
         let left = rect.left() + index as f32 * (width + gap);
         let segment = egui::Rect::from_min_max(
-            egui::pos2(left, rect.top() + 2.0),
-            egui::pos2((left + width).min(rect.right()), rect.bottom() - 2.0),
+            egui::pos2(left, rect.top()),
+            egui::pos2((left + width).min(rect.right()), rect.bottom()),
         );
         let color = if index < backlog.in_flight {
             bright
@@ -2039,6 +2045,14 @@ mod tests {
     /// `~/.ssh/<file>` after `expand_path`, including Windows separators.
     fn test_config(text: &str) -> ssh_config::Config {
         ssh_config::Config::parse(text, path::Path::new("/home/test")).unwrap()
+    }
+
+    #[test]
+    fn input_backlog_is_pipe_width_and_stays_compact() {
+        assert_eq!(input_backlog_width(1), 1.5);
+        assert_eq!(input_backlog_width(4), 9.0);
+        assert_eq!(input_backlog_width(8), 19.0);
+        assert_eq!(input_backlog_width(64), 24.0);
     }
 
     fn tilde_identity(file: &str) -> String {

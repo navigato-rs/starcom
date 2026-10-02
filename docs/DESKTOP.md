@@ -216,11 +216,12 @@ intervening output volume, and maximum tmux `%extended-output` lag. Input that
 crosses 100 ms in any latency component is logged without recording the input
 or remote output itself.
 
-While ordinary input is waiting, a segmented bar appears between the server
-name and latency. Each segment is one coalesced terminal action: dim segments
-are still in Starcom's local queue and bright segments have been written to
-tmux but not acknowledged. Hover the bar for the exact counts. It disappears
-when all ordinary input has been acknowledged or safely discarded.
+While ordinary input is waiting, narrow full-height strokes appear between the
+server name and latency. Each stroke is one coalesced terminal action: dim
+strokes are still in Starcom's local queue and bright strokes have been written
+to tmux but not acknowledged. The indicator grows from a single 1.5-point
+stroke but is capped at 24 points; hover it for exact counts. It disappears when
+all ordinary input has been acknowledged or safely discarded.
 
 `send-keys` can broadcast when a tmux window has `synchronize-panes` enabled.
 Starcom detects that state in the server-side action guard and blocks the action
