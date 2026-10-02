@@ -1296,21 +1296,21 @@ impl DesktopUi {
                                     self.form.host.trim(),
                                     self.form.port
                                 ));
-                        }
-                        let backlog = state.input_backlog();
-                        if backlog.total() != 0 {
                             ui.separator();
+                            let backlog = state.input_backlog();
                             let (rect, response) = ui.allocate_exact_size(
                                 egui::vec2(input_backlog_width(backlog.total()), 12.0),
                                 egui::Sense::hover(),
                             );
                             paint_input_backlog(ui, rect, backlog);
-                            response.on_hover_text(format!(
-                                "{} terminal input actions awaiting confirmation: {} queued locally, {} written to tmux",
-                                backlog.total(),
-                                backlog.queued,
-                                backlog.in_flight,
-                            ));
+                            if backlog.total() != 0 {
+                                response.on_hover_text(format!(
+                                    "{} terminal input actions awaiting confirmation: {} queued locally, {} written to tmux",
+                                    backlog.total(),
+                                    backlog.queued,
+                                    backlog.in_flight,
+                                ));
+                            }
                         }
                         if state.renaming {
                             // Also observe completion if the worker wake was
@@ -1996,11 +1996,15 @@ fn paint_activity_dots(ui: &egui::Ui, rect: egui::Rect, step: u64) {
 
 /// A compact segmented queue: one vertical segment per unacknowledged action.
 /// Locally queued work is dim; work already written to tmux is bright.
+const INPUT_BACKLOG_STROKE: f32 = 3.0;
+const INPUT_BACKLOG_GAP: f32 = 1.0;
+const INPUT_BACKLOG_RESERVED: usize = 4;
+const INPUT_BACKLOG_MAX_WIDTH: f32 = 40.0;
+
 fn input_backlog_width(total: usize) -> f32 {
-    const STROKE: f32 = 1.5;
-    const GAP: f32 = 1.0;
-    const MAX: f32 = 24.0;
-    (total as f32 * STROKE + total.saturating_sub(1) as f32 * GAP).min(MAX)
+    let slots = total.max(INPUT_BACKLOG_RESERVED);
+    (slots as f32 * INPUT_BACKLOG_STROKE + slots.saturating_sub(1) as f32 * INPUT_BACKLOG_GAP)
+        .min(INPUT_BACKLOG_MAX_WIDTH)
 }
 
 fn paint_input_backlog(ui: &egui::Ui, rect: egui::Rect, backlog: desktop::InputBacklog) {
@@ -2008,9 +2012,13 @@ fn paint_input_backlog(ui: &egui::Ui, rect: egui::Rect, backlog: desktop::InputB
     if total == 0 {
         return;
     }
-    let natural = total as f32 * 1.5 + total.saturating_sub(1) as f32;
-    let gap = if natural <= rect.width() { 1.0 } else { 0.0 };
-    let width = (rect.width() - gap * total.saturating_sub(1) as f32) / total as f32;
+    let natural =
+        total as f32 * INPUT_BACKLOG_STROKE + total.saturating_sub(1) as f32 * INPUT_BACKLOG_GAP;
+    let (width, gap) = if natural <= rect.width() {
+        (INPUT_BACKLOG_STROKE, INPUT_BACKLOG_GAP)
+    } else {
+        (rect.width() / total as f32, 0.0)
+    };
     let bright = ui.visuals().selection.bg_fill;
     let dim = bright.gamma_multiply(0.4);
     for index in 0..total {
@@ -2049,10 +2057,12 @@ mod tests {
 
     #[test]
     fn input_backlog_is_pipe_width_and_stays_compact() {
-        assert_eq!(input_backlog_width(1), 1.5);
-        assert_eq!(input_backlog_width(4), 9.0);
-        assert_eq!(input_backlog_width(8), 19.0);
-        assert_eq!(input_backlog_width(64), 24.0);
+        assert_eq!(input_backlog_width(0), 15.0);
+        assert_eq!(input_backlog_width(1), 15.0);
+        assert_eq!(input_backlog_width(4), 15.0);
+        assert_eq!(input_backlog_width(5), 19.0);
+        assert_eq!(input_backlog_width(8), 31.0);
+        assert_eq!(input_backlog_width(64), 40.0);
     }
 
     fn tilde_identity(file: &str) -> String {

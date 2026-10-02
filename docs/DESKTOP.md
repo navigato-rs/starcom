@@ -217,11 +217,11 @@ crosses 100 ms in any latency component is logged without recording the input
 or remote output itself.
 
 While ordinary input is waiting, narrow full-height strokes appear between the
-server name and latency. Each stroke is one coalesced terminal action: dim
-strokes are still in Starcom's local queue and bright strokes have been written
-to tmux but not acknowledged. The indicator grows from a single 1.5-point
-stroke but is capped at 24 points; hover it for exact counts. It disappears when
-all ordinary input has been acknowledged or safely discarded.
+server name and latency. Each three-point stroke is one coalesced terminal
+action: dim strokes are still in Starcom's local queue and bright strokes have
+been written to tmux but not acknowledged. Space for four strokes is always
+reserved so normal interaction does not shift the status bar; larger backlogs
+grow to a 40-point cap. Hover it for exact counts.
 
 `send-keys` can broadcast when a tmux window has `synchronize-panes` enabled.
 Starcom detects that state in the server-side action guard and blocks the action
