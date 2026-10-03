@@ -24,26 +24,27 @@ A registered Starcom tab owns one SSH/tmux client, one terminal view, and its
 pending input tokens. Use **+** or Ctrl-Shift-T (Cmd-T on macOS) to open the only
 connection form, on the plus chip itself. Pressing **Connect** promotes that
 composer to a registered tab while the attachment starts. Drag a tab to reorder
-the strip. **About** on the right opens a modal with the icon, version, GitHub
+the strip. Overflow stays on one row, with counted arrows for hidden tabs instead
+of a scrollbar. Hovering a tab outlines visible sibling tabs from the same server.
+**About** on the right opens a modal with the icon, version, GitHub
 URL, total time Starcom has been open, and the workspace `fps` / `idle` settings.
 
 Tabs use browser-style top edges and show only the session name. The active
 server is shown in bold in the status bar beside the last control-command round
 trip time, instead of being repeated in every tab. The tab shows connection
-progress and then the terminal workspace. If the first
-attachment fails before producing a terminal view, its populated form and error
-move back to **+** for repair/retry; no empty registered tab remains. Background
-startup failures are removed as well. **Exit**, Ctrl-Shift-W/Cmd-W, and typing
-`exit` in the last shell close the registered tab and detach that Starcom client;
-the tmux server and remote jobs continue running. Tabs are green while connected,
+progress and then the terminal workspace. A failed attachment remains registered,
+turns red, and offers **Reconnect** beside **Exit**; selecting it never deletes it.
+**Exit** or Ctrl-Shift-W/Cmd-W closes the registered tab and detaches that
+Starcom client; the tmux server and remote jobs continue running. Tabs are green while connected,
 including while a pane layout is rebuilt, and yellow while connecting or
 reconnecting.
 
 A Starcom tab is one tmux session and shows one window of that session. A
 window picker is not in this increment. Double-click a connected tab to rename
 that tmux session. Enter confirms, Escape or clicking away cancels. The new
-name is written to the saved workspace immediately, so a restart reconnects
-to it. A name already in use is reported without dropping the attachment, and
+name is written to the saved workspace after tmux accepts it, so a restart
+reconnects to the real remote name. A name already in use is reported without
+dropping the attachment, and
 the previous name is restored. The status bar shows **Renaming…** while the
 existing control attachment waits for tmux's reply, for at most five seconds.
 If tmux applies the rename but its completion reply is lost, Starcom discards
@@ -59,17 +60,20 @@ yet.
 
 ## SSH configuration
 
-The form's main choice is the host. Literal `Host` aliases from `~/.ssh/config`
-are listed for one-click selection; the field after those buttons accepts a
-hostname, address, or alias that is not in that list. Selecting a known host
+The form's main choice is the host. Live destinations are listed first in green,
+including direct hosts not present in SSH config. Literal `Host` aliases from
+`~/.ssh/config` follow for one-click selection; the field after those buttons
+accepts a hostname, address, or alias that is not in that list. Selecting a known host
 resolves the supported
-profile and lists that host's tmux sessions, selecting the first available one so
+profile and lists that host's tmux sessions with each session's window count,
+selecting the first available one so
 **Connect** is available immediately. An attached session is red and unavailable,
 which also prevents opening a duplicate local tab. Keyboard focus moves to the
 **new session** field after choosing a host, so choosing and typing can be one
 continuous action. A literal Host button is green while this workspace has a
 live connection to that destination. Startup resume attaches directly to each saved
-session without listing first, using the current SSH configuration.
+session without listing first, using the current SSH configuration. Enter in the
+custom host field always starts a fresh session-list request.
 
 Currently supported:
 
@@ -356,12 +360,10 @@ block the resize transaction.
 
 **Exit** is the only way a session tab is removed: it drops the attachment and
 the chip; remote jobs keep running. To connect somewhere else, use **+**,
-which is the only connection form. If an initial attachment fails before a
-view exists, and that tab is the one you are looking at, its fields and error
-move onto **+**. Other failed chips stay in the strip until you select them.
+which is the only connection form. Failed chips stay in the strip when selected.
 If the remote session ends — last pane `exit`, an explicit detach, or a dead
 tmux server — the tab stays, the last view is frozen, and the chip turns red
-so you can still copy from it or press **Exit**.
+so you can still copy from it, press **Reconnect**, or press **Exit**.
 
 **Reconnect automatically after connection loss** is on by default in the
 connection form. Only transport loss is retried. That includes a TCP drop, a

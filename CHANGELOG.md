@@ -29,11 +29,9 @@
   and immediately opens its inline rename editor with the generated name
   selected. The editor keeps keyboard focus while the new terminal view is
   reconstructed. The action is hidden when the source session has one pane.
-- When the attached session loses its final window, its Starcom tab now closes
-  normally instead of remaining as a red disconnected tab. An ordinary detach
-  or unrelated server failure still preserves the frozen tab and its diagnostic.
-  Moving the final pane is still handled defensively if the layout changes
-  after the action was queued.
+- Failed and ended attachments now remain as red registered tabs until **Exit**;
+  selecting one never silently removes it. A **Reconnect** button beside Exit
+  retries its saved host and tmux session explicitly.
 - Opening the in-place tab rename editor now schedules its own repaint, instead
   of depending on an unrelated terminal or timer update. Rename stays on the
   existing control attachment and visibly reports progress for at most five
@@ -42,6 +40,18 @@
   new name; it never sends the rename twice. Publishing a successful rename now
   releases the model mutex before waking the UI, fixing the self-deadlock that
   previously froze the entire window after tmux had already changed the name.
+- A rename entered immediately after moving a pane now queues behind the new
+  attachment instead of saving a name tmux never received. Workspace persistence
+  changes only after tmux accepts the rename (or uncertain-delivery recovery
+  deliberately targets the new name), and completion is collected from hidden
+  tabs as well as the active one.
+- The host picker starts with every live destination, including direct hosts not
+  present in SSH config, and Enter in the custom field forces fresh discovery.
+  Session choices now include their tmux window count so the current one-tab-per-
+  session model is explicit.
+- The tab strip stays one row and replaces overflow with counted navigation
+  arrows. Hovering a tab draws dashed outlines around its visible same-server
+  siblings.
 - The post-v0.3 host-workspace design is documented: one SSH/control attachment
   per resolved server and one managed tmux window per user-visible session.
   This ownership migration is planned, not yet implemented.

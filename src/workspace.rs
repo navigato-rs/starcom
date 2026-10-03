@@ -254,6 +254,87 @@ fn paint_drop_marker(ui: &egui::Ui, rect: egui::Rect, after: bool) {
     );
 }
 
+fn compact_tab_title(label: &str) -> String {
+    const MAX_CHARS: usize = 24;
+    let mut chars = label.chars();
+    let mut title: String = chars.by_ref().take(MAX_CHARS).collect();
+    if chars.next().is_some() {
+        title.push('…');
+    }
+    title
+}
+
+fn tab_width(label: &str, renaming: bool, busy: bool) -> f32 {
+    if renaming {
+        return 180.0;
+    }
+    let text = compact_tab_title(label);
+    20.0 + text.chars().count() as f32 * 9.0 + if busy { 21.0 } else { 0.0 }
+}
+
+fn visible_tab_range(widths: &[f32], anchor: usize, budget: f32) -> std::ops::Range<usize> {
+    if widths.is_empty() {
+        return 0..0;
+    }
+    let anchor = anchor.min(widths.len() - 1);
+    let mut start = anchor;
+    let mut end = anchor + 1;
+    let mut used = widths[anchor];
+    loop {
+        let left = start.checked_sub(1);
+        let right = (end < widths.len()).then_some(end);
+        let next = match (left, right) {
+            (Some(left), Some(right)) => {
+                if anchor - left <= right - anchor {
+                    Some((left, true))
+                } else {
+                    Some((right, false))
+                }
+            }
+            (Some(left), None) => Some((left, true)),
+            (None, Some(right)) => Some((right, false)),
+            (None, None) => None,
+        };
+        let Some((index, is_left)) = next else {
+            break;
+        };
+        if used + widths[index] > budget && end > start {
+            break;
+        }
+        used += widths[index];
+        if is_left {
+            start = index;
+        } else {
+            end = index + 1;
+        }
+    }
+    start..end
+}
+
+fn paint_dashed_rect(ui: &egui::Ui, rect: egui::Rect, stroke: egui::Stroke) {
+    const DASH: f32 = 4.0;
+    const GAP: f32 = 3.0;
+    let paint = |from: egui::Pos2, to: egui::Pos2| {
+        let delta = to - from;
+        let length = delta.length();
+        if length == 0.0 {
+            return;
+        }
+        let direction = delta / length;
+        let mut offset = 0.0;
+        while offset < length {
+            let end = (offset + DASH).min(length);
+            ui.painter()
+                .line_segment([from + direction * offset, from + direction * end], stroke);
+            offset += DASH + GAP;
+        }
+    };
+    paint(rect.left_top(), rect.right_top());
+    paint(rect.right_top(), rect.right_bottom());
+    paint(rect.right_bottom(), rect.left_bottom());
+    paint(rect.left_bottom(), rect.left_top());
+}
+
 impl Workspace {
     pub fn new(wake: Wake, startup: desktop::Startup) -> anyhow::Result<Self> {
         Self::try_new(wake, startup, |_, _| dialog::BrokenStore::Exit)?
@@ -726,9 +807,8 @@ impl Workspace {
         self.finish_tab_removal(index);
     }
 
-    /// A connection which never produced a terminal remains useful for retry,
-    /// but a registered tab is not a second connection form. Move the whole
-    /// failed form/client back onto `+`, preserving its bounded diagnostic.
+    /// Undo a composer promotion when starting the request itself failed. Once
+    /// a worker accepted an attachment, its registered tab remains until Exit.
     fn return_tab_to_composer(&mut self, index: usize) {
         self.cancel_transient();
         let mut tab = self.tabs.remove(index);
@@ -741,62 +821,6 @@ impl Workspace {
         self.finish_tab_removal(index);
         self.composer = tab;
         self.composer_open = true;
-    }
-
-    /// A failed first attachment has no terminal to show. If it is the tab
-    /// you are looking at, move it onto `+` with its error. Other failed
-    /// chips stay put until selected — never close them from under you or
-    /// dump the diagnostic into the tab strip.
-    fn retire_failed_empty_tabs(&mut self) {
-        if self.composer_open {
-            return;
-        }
-        let Some(tab) = self.tabs.get(self.active) else {
-            return;
-        };
-        let failed = {
-            let state = tab.client.lock();
-            state.view.is_none()
-                && matches!(
-                    state.phase,
-                    desktop::Phase::Failed | desktop::Phase::Disconnected
-                )
-        };
-        if !failed {
-            return;
-        }
-        let index = self.active;
-        self.return_tab_to_composer(index);
-        self.persist();
-    }
-
-    fn retire_closed_sessions(&mut self) {
-        let mut closed: Vec<_> = self
-            .tabs
-            .iter()
-            .enumerate()
-            .filter_map(|(index, tab)| tab.client.take_session_closed().then_some(index))
-            .collect();
-        if closed.is_empty() {
-            return;
-        }
-        closed.reverse();
-        for index in closed {
-            let id = self.tabs[index].id;
-            if self.renaming.as_ref().is_some_and(|rename| rename.id == id) {
-                self.renaming = None;
-            }
-            if self
-                .submitted_rename
-                .as_ref()
-                .is_some_and(|(rename_id, _)| *rename_id == id)
-            {
-                self.submitted_rename = None;
-            }
-            self.tabs.remove(index);
-            self.finish_tab_removal(index);
-        }
-        self.persist();
     }
 
     fn alloc_id(&mut self) -> u64 {
@@ -867,22 +891,24 @@ impl Workspace {
     }
 
     fn apply_renamed_session(&mut self) {
-        let Some(tab) = self.tabs.get_mut(self.active) else {
-            return;
-        };
-        let name = tab
-            .client
-            .take_renamed()
-            .or_else(|| tab.client.take_rename_revert());
-        let Some(name) = name else {
-            return;
-        };
-        if name == tab.ui.session_name() {
-            return;
+        let mut changed = false;
+        for tab in &mut self.tabs {
+            let name = tab
+                .client
+                .take_renamed()
+                .or_else(|| tab.client.take_rename_revert());
+            let Some(name) = name else {
+                continue;
+            };
+            if name != tab.ui.session_name() {
+                tab.ui.set_session_name(name);
+                tab.label = label(&tab.ui.saved());
+                changed = true;
+            }
         }
-        tab.ui.set_session_name(name);
-        tab.label = label(&tab.ui.saved());
-        self.persist();
+        if changed {
+            self.persist();
+        }
     }
 
     fn apply_moved_session(&mut self) -> anyhow::Result<()> {
@@ -936,8 +962,6 @@ impl Workspace {
         if let Err(error) = self.apply_moved_session() {
             self.notice = Some(error.to_string());
         }
-        self.retire_closed_sessions();
-        self.retire_failed_empty_tabs();
         self.local_dirty = false;
         self.apply_renamed_session();
         let mut navigation = Action::None;
@@ -948,8 +972,8 @@ impl Workspace {
             .tabs
             .iter()
             .filter(|tab| live_phase(tab.client.phase()))
-            .map(|tab| tab.ui.saved().destination)
-            .filter(|destination| !destination.is_empty())
+            .map(|tab| tab.ui.server_name().trim().to_owned())
+            .filter(|server| !server.is_empty())
             .collect();
         self.composer.ui.set_connected_servers(connected_servers);
         let unavailable = self
@@ -1031,7 +1055,7 @@ impl Workspace {
                         self.about = true;
                     }
                     ui.with_layout(
-                        egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
+                        egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(false),
                         |ui| {
                             ui.spacing_mut().item_spacing = egui::vec2(2.0, 0.0);
                             ui.spacing_mut().button_padding = egui::vec2(10.0, 5.0);
@@ -1053,7 +1077,48 @@ impl Workspace {
                                     tab.last_output = now;
                                 }
                             }
-                            for index in 0..self.tabs.len() {
+                            let anchor = self
+                                .renaming
+                                .as_ref()
+                                .and_then(|rename| {
+                                    self.tabs.iter().position(|tab| tab.id == rename.id)
+                                })
+                                .unwrap_or(self.active);
+                            let widths: Vec<_> = self
+                                .tabs
+                                .iter()
+                                .map(|tab| {
+                                    tab_width(
+                                        &tab.label,
+                                        self.renaming
+                                            .as_ref()
+                                            .is_some_and(|rename| rename.id == tab.id),
+                                        busy_phase(tab.client.phase()),
+                                    ) + ui.spacing().item_spacing.x
+                                })
+                                .collect();
+                            let tab_budget = (ui.available_width() - 34.0).max(1.0);
+                            let overflow = widths.iter().sum::<f32>() > tab_budget;
+                            let range = if overflow {
+                                visible_tab_range(&widths, anchor, (tab_budget - 92.0).max(1.0))
+                            } else {
+                                0..self.tabs.len()
+                            };
+                            if range.start > 0 {
+                                let hidden = range.start;
+                                if ui
+                                    .add(
+                                        egui::Button::new(format!("◀ {hidden}"))
+                                            .min_size(egui::vec2(44.0, 32.0)),
+                                    )
+                                    .on_hover_text(format!("Show {hidden} hidden tabs"))
+                                    .clicked()
+                                {
+                                    navigation = Action::Select(self.tabs[range.start - 1].id);
+                                }
+                            }
+                            let mut tab_chrome = Vec::new();
+                            for index in range.clone() {
                                 let id = self.tabs[index].id;
                                 let last_output = self.tabs[index].last_output;
                                 let label = self.tabs[index].label.clone();
@@ -1106,7 +1171,7 @@ impl Workspace {
                                         return;
                                     }
                                     let busy = busy_phase(phase);
-                                    let mut title = label;
+                                    let mut title = compact_tab_title(&label);
                                     if busy {
                                         title = format!("   {title}");
                                         ui.ctx()
@@ -1164,6 +1229,12 @@ impl Workspace {
                                         } else {
                                             format!("{server}\n{hint}")
                                         });
+                                    tab_chrome.push((
+                                        id,
+                                        response.rect,
+                                        self.tabs[index].ui.saved(),
+                                        response.hovered(),
+                                    ));
                                     if busy {
                                         let indicator = egui::Rect::from_center_size(
                                             egui::pos2(
@@ -1220,6 +1291,28 @@ impl Workspace {
                                         self.renaming = None;
                                     }
                                 });
+                            }
+                            if let Some((hovered, _, endpoint, _)) =
+                                tab_chrome.iter().find(|(_, _, _, hovered)| *hovered)
+                            {
+                                let stroke = egui::Stroke::new(1.0, selection_stroke);
+                                for (id, rect, sibling, _) in &tab_chrome {
+                                    if id != hovered && same_endpoint(endpoint, sibling) {
+                                        paint_dashed_rect(ui, rect.shrink(1.0), stroke);
+                                    }
+                                }
+                            }
+                            let hidden_right = self.tabs.len().saturating_sub(range.end);
+                            if hidden_right > 0
+                                && ui
+                                    .add(
+                                        egui::Button::new(format!("{hidden_right} ▶"))
+                                            .min_size(egui::vec2(44.0, 32.0)),
+                                    )
+                                    .on_hover_text(format!("Show {hidden_right} hidden tabs"))
+                                    .clicked()
+                            {
+                                navigation = Action::Select(self.tabs[range.end].id);
                             }
                             paint_tab_fills(ui, idle_fill, idle_hover);
                             if self.composer_open {
@@ -1381,6 +1474,7 @@ impl Workspace {
                     let mut follow_input = false;
                     let mut close_after_exit = None;
                     let mut return_to_composer = false;
+                    let mut promoted_composer = false;
                     let can_add_session = self.tabs.len() < MAX_TABS;
                     {
                         if self.composer_open
@@ -1388,6 +1482,7 @@ impl Workspace {
                             && matches!(*action, ui::Action::Connect(_))
                         {
                             self.promote_composer()?;
+                            promoted_composer = true;
                         }
                         let tab = if self.composer_open && id == self.composer.id {
                             &mut self.composer
@@ -1410,7 +1505,7 @@ impl Workspace {
                                 // Remember where a successful connection pointed, so
                                 // the next start reopens the same form.
                                 save = started.is_ok();
-                                return_to_composer = started.is_err();
+                                return_to_composer = promoted_composer && started.is_err();
                                 started
                             }
                             ui::Action::ListSessions(connection) => {
@@ -1429,11 +1524,6 @@ impl Workspace {
                                 if parsed.as_str() == previous {
                                     Ok(())
                                 } else {
-                                    // Persist before tmux answers so a hang or
-                                    // crash still reconnects to the new name.
-                                    tab.ui.set_session_name(parsed.as_str().to_owned());
-                                    tab.label = label(&tab.ui.saved());
-                                    save = true;
                                     tab.client.rename_session(parsed, previous)
                                 }
                             }
@@ -1441,10 +1531,6 @@ impl Workspace {
                                 // Exit is the only way a session tab is removed.
                                 close_after_exit = Some(id);
                                 tab.client.disconnect();
-                                Ok(())
-                            }
-                            ui::Action::ReturnToComposer => {
-                                return_to_composer = true;
                                 Ok(())
                             }
                             // Resolve clipboard reads in place so the whole frame
@@ -1658,17 +1744,6 @@ mod tests {
     }
 
     #[test]
-    fn a_session_that_lost_its_final_window_closes_its_tab() {
-        let mut workspace = Workspace::new(sync::Arc::new(|| {}), desktop::Startup::Demo).unwrap();
-        workspace.tabs[0].client.mark_session_closed_for_test();
-
-        workspace.retire_closed_sessions();
-
-        assert!(workspace.tabs.is_empty());
-        assert!(workspace.composer_open);
-    }
-
-    #[test]
     fn a_quiet_connected_tab_turns_blue() {
         let idle = egui::Color32::from_rgb(40, 40, 40);
         let live = tab_color(desktop::Phase::Watching, idle, false);
@@ -1762,8 +1837,8 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_empty_tab_becomes_the_plus_composer() {
-        let mut workspace = Workspace::new(sync::Arc::new(|| {}), desktop::Startup::Demo).unwrap();
+    fn a_failed_empty_tab_stays_registered() {
+        let workspace = Workspace::new(sync::Arc::new(|| {}), desktop::Startup::Demo).unwrap();
         let failed_id = workspace.tabs[0].id;
         {
             let mut state = workspace.tabs[0].client.lock();
@@ -1772,16 +1847,27 @@ mod tests {
             state.error = Some("authentication failed".into());
         }
 
-        workspace.retire_failed_empty_tabs();
+        assert_eq!(workspace.tabs.len(), 1);
+        assert_eq!(workspace.tabs[0].id, failed_id);
+        assert!(!workspace.composer_open);
+    }
 
-        assert!(workspace.tabs.is_empty());
-        assert!(workspace.composer_open);
-        assert_eq!(workspace.composer.id, failed_id);
-        assert_eq!(
-            workspace.composer.client.error().as_deref(),
-            Some("authentication failed")
-        );
-        assert!(workspace.composer.ui.showing_form());
+    #[test]
+    fn tab_overflow_range_keeps_the_active_tab_visible() {
+        let widths = [60.0, 80.0, 70.0, 90.0, 50.0];
+        let range = visible_tab_range(&widths, 3, 175.0);
+        assert!(range.contains(&3));
+        assert!(range.start > 0);
+        assert!(range.end < widths.len());
+        assert!(widths[range.clone()].iter().sum::<f32>() <= 175.0);
+    }
+
+    #[test]
+    fn long_tab_names_are_compact_without_splitting_unicode() {
+        let label = "abcdefghijklmnopqrstuvw界yz";
+        let title = compact_tab_title(label);
+        assert!(title.ends_with('…'));
+        assert_eq!(title.chars().count(), 25);
     }
 
     #[test]
@@ -1797,8 +1883,6 @@ mod tests {
             state.phase = desktop::Phase::Failed;
             state.error = Some("The remote tmux server exited.".into());
         }
-
-        workspace.retire_failed_empty_tabs();
 
         assert!(
             workspace.tabs.iter().any(|tab| tab.id == background),
@@ -2340,6 +2424,37 @@ mod tests {
             )
             .unwrap();
         }
+    }
+
+    #[test]
+    fn overflowing_tabs_keep_the_top_panel_to_one_row() {
+        let ctx = egui::Context::default();
+        crate::window::configure(&ctx);
+        let mut workspace = Workspace::new(sync::Arc::new(|| {}), desktop::Startup::Demo).unwrap();
+        for _ in 1..MAX_TABS {
+            workspace.push_idle_tab().unwrap();
+        }
+        for pass in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(640.0, 480.0),
+                )),
+                time: Some(pass as f64 / 60.0),
+                ..Default::default()
+            };
+            let _ = ctx.run_ui(input, |root| {
+                workspace.show(root);
+            });
+        }
+        let tabs_h =
+            egui::containers::panel::PanelState::load(&ctx, egui::Id::new("connection-tabs"))
+                .map(|state| state.rect.height())
+                .unwrap_or(0.0);
+        assert!(
+            (1.0..48.0).contains(&tabs_h),
+            "tab overflow must stay on one row, height was {tabs_h}"
+        );
     }
 
     #[test]

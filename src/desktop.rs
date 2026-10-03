@@ -173,8 +173,6 @@ pub(crate) struct State {
     rename_revert: Option<String>,
     /// Completed pane handoff waiting for the workspace to open its new tab.
     moved_session: Option<MovedSession>,
-    /// The attached session lost its final window and no longer exists.
-    session_closed: bool,
     actions: collections::VecDeque<Pending>,
     action_bytes: usize,
     input_confirmations: collections::VecDeque<PendingConfirmation>,
@@ -205,7 +203,6 @@ impl Default for State {
             renamed: None,
             rename_revert: None,
             moved_session: None,
-            session_closed: false,
             actions: collections::VecDeque::new(),
             action_bytes: 0,
             input_confirmations: collections::VecDeque::new(),
@@ -231,7 +228,6 @@ impl State {
         self.renamed = None;
         self.rename_revert = None;
         self.moved_session = None;
-        self.session_closed = false;
         self.discard_actions();
         self.access = session::Access::ReadOnly;
         self.allow_resize = false;
@@ -424,6 +420,7 @@ impl Client {
         );
         let mut state = self.lock();
         state.cancel();
+        state.access = connection.access;
         state.phase = Phase::Connecting;
         state.pending = Some(Request::Attach(connection));
         drop(state);
@@ -521,8 +518,12 @@ impl Client {
     ) -> anyhow::Result<()> {
         let mut state = self.lock();
         anyhow::ensure!(
-            state.input_ready(),
+            state.input_ready() || state.phase == Phase::Connecting,
             "connect with an interactive session to rename it"
+        );
+        anyhow::ensure!(
+            state.access == session::Access::Interactive,
+            "read-only sessions cannot be renamed"
         );
         anyhow::ensure!(!state.renaming, "a session rename is already running");
         state.rename = Some((name, previous));
@@ -547,15 +548,6 @@ impl Client {
 
     pub(crate) fn take_moved_session(&self) -> Option<MovedSession> {
         self.lock().moved_session.take()
-    }
-
-    pub(crate) fn take_session_closed(&self) -> bool {
-        std::mem::take(&mut self.lock().session_closed)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn mark_session_closed_for_test(&self) {
-        self.lock().session_closed = true;
     }
 
     /// Admit a GUI frame atomically, so a full queue cannot accept half of a
@@ -673,8 +665,8 @@ enum Outcome {
     Cancelled,
     /// tmux ended the control session and said why.
     Ended(reconnect::Failure),
-    /// The attached session's final window closed. Its tab has no recoverable
-    /// remote object and should disappear rather than become a red tombstone.
+    /// The attached session's final window closed. Preserve the registered tab
+    /// as a red, explicitly reconnectable record until the user chooses Exit.
     SessionClosed,
     /// A non-idempotent rename was delivered but its final reply was not
     /// observed. Reconnect once to the already-saved new name; never resend it.
@@ -842,7 +834,6 @@ fn report_session_closed(shared: &Shared, wake: &Wake, epoch: u64) {
         state.error = None;
         state.io_wake = None;
         state.discard_actions();
-        state.session_closed = true;
     }
     drop(state);
     wake();
@@ -1167,6 +1158,10 @@ fn watch(
                         .unwrap_or_else(sync::PoisonError::into_inner);
                     if state.accepts(epoch) {
                         state.renaming = false;
+                        // Delivery is uncertain, so recovery must target the new
+                        // name and the workspace must persist that same target.
+                        // The command itself is never replayed.
+                        state.renamed = Some(name.as_str().to_owned());
                         state.error = Some(
                             "The rename was delivered but its completion was not observed; reconnecting to the new name."
                                 .to_owned(),
@@ -1724,6 +1719,25 @@ mod tests {
         assert!(client.lock().renaming);
         client.disconnect();
         assert!(!client.lock().renaming);
+    }
+
+    #[test]
+    fn rename_can_queue_behind_an_interactive_attachment() {
+        let client = Client::new(sync::Arc::new(|| {})).unwrap();
+        {
+            let mut state = client.lock();
+            state.phase = Phase::Connecting;
+            state.access = session::Access::Interactive;
+        }
+        client
+            .rename_session(
+                core::SessionName::new("renamed").unwrap(),
+                "pane-1".to_owned(),
+            )
+            .unwrap();
+        let state = client.lock();
+        assert!(state.renaming);
+        assert_eq!(state.rename.as_ref().unwrap().0.as_str(), "renamed");
     }
 
     #[test]

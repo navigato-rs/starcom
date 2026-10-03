@@ -284,10 +284,6 @@ pub enum Action {
     /// confirmed button press, never from a failed attach.
     CreateSession(desktop::Connection),
     Disconnect,
-    /// An attachment failed before it produced a terminal view. Registered
-    /// tabs must not become connection forms; the workspace moves this form
-    /// back onto the `+` composer so it can be repaired and retried.
-    ReturnToComposer,
     /// Rename the attached tmux session. The worker updates the tab label
     /// after tmux accepts the name.
     RenameSession(String),
@@ -612,18 +608,6 @@ impl DesktopUi {
         if self.profile_source != self.form.destination() {
             self.refresh_profile();
         }
-        // A registered tab that failed before publishing a view belongs back on
-        // the `+` composer. Do this before changing screens so it cannot survive
-        // as an empty/form-only tab.
-        if self.screen == Screen::Terminal
-            && state.view.is_none()
-            && matches!(
-                state.phase,
-                desktop::Phase::Failed | desktop::Phase::Disconnected
-            )
-        {
-            return Action::ReturnToComposer;
-        }
         // The workspace replaces a composer form once a view exists. Registered
         // tabs are put on the terminal screen as soon as Connect is scheduled.
         if state.view.is_some()
@@ -669,8 +653,16 @@ impl DesktopUi {
                         }
                     });
                     ui.add_space(6.0);
-                    let aliases: Vec<String> =
-                        self.config.aliases().iter().take(32).cloned().collect();
+                    let mut aliases: Vec<String> =
+                        self.connected_servers.iter().cloned().collect();
+                    aliases.extend(
+                        self.config
+                            .aliases()
+                            .iter()
+                            .filter(|alias| !self.connected_servers.contains(*alias))
+                            .take(32)
+                            .cloned(),
+                    );
                     ui.horizontal_wrapped(|ui| {
                         ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
                         ui.spacing_mut().button_padding = egui::vec2(16.0, 10.0);
@@ -715,10 +707,12 @@ impl DesktopUi {
                             self.refresh_profile();
                             self.auto_list = false;
                         }
-                        if response.lost_focus()
-                            && (ui.input(|input| input.key_pressed(egui::Key::Enter))
-                                || !self.form.destination().is_empty())
-                        {
+                        let enter = response.lost_focus()
+                            && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                        if enter {
+                            // Enter is an explicit refresh even when the user
+                            // recommits the same destination.
+                            self.listed_destination.clear();
                             self.auto_list = true;
                             self.focus_new_session = true;
                         }
@@ -759,7 +753,7 @@ impl DesktopUi {
 
                     ui.add_space(12.0);
                     ui.horizontal_wrapped(|ui| {
-                        ui.label(egui::RichText::new("Session").strong());
+                        ui.label(egui::RichText::new("tmux sessions").strong());
                         if ui
                             .add_enabled(
                                 host_ready && idle && !busy,
@@ -836,7 +830,12 @@ impl DesktopUi {
                                         let unavailable = in_use(summary);
                                         let selected =
                                             !unavailable && self.form.session == summary.name;
-                                        let mut text = summary.name.clone();
+                                        let window_label = if summary.windows == 1 {
+                                            "1 window".to_owned()
+                                        } else {
+                                            format!("{} windows", summary.windows)
+                                        };
+                                        let mut text = format!("{} · {window_label}", summary.name);
                                         if unavailable {
                                             text.push_str(" · in use");
                                         }
@@ -887,7 +886,7 @@ impl DesktopUi {
                             let create = ui.add(
                                 egui::TextEdit::singleline(&mut self.create_name)
                                     .id(egui::Id::new("starcom-new-session"))
-                                    .hint_text("new session")
+                                    .hint_text("new tmux session")
                                     .desired_width(160.0)
                                     .min_size(egui::vec2(160.0, 28.0)),
                             );
@@ -1244,6 +1243,27 @@ impl DesktopUi {
                 {
                     action = Action::Disconnect;
                 }
+                if matches!(
+                    state.phase,
+                    desktop::Phase::Failed | desktop::Phase::Disconnected
+                ) && ui
+                    .add(
+                        egui::Button::new(egui::RichText::new("Reconnect").size(14.0))
+                            .min_size(egui::vec2(0.0, 28.0))
+                            .corner_radius(5.0)
+                            .sense(egui::Sense::CLICK),
+                    )
+                    .on_hover_text("Try this saved host and tmux session again.")
+                    .clicked()
+                {
+                    match self.form.connection() {
+                        Ok(connection) => {
+                            self.notice = None;
+                            action = Action::Connect(connection);
+                        }
+                        Err(error) => self.notice = Some(error.to_string()),
+                    }
+                }
                 if let Some(pane) = self.focused.and_then(|id| {
                     state.view.as_ref().and_then(|view| view.panes().get(&id))
                 }) {
@@ -1483,7 +1503,8 @@ impl DesktopUi {
                                         .small(),
                                 )
                                 .truncate(),
-                            );
+                            )
+                            .on_hover_text(error);
                         }
                     },
                 );
@@ -2756,7 +2777,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_first_attach_returns_to_the_composer() {
+    fn a_failed_first_attach_stays_registered_for_reconnect() {
         let mut ui = DesktopUi::default();
         ui.open_terminal();
         let mut state = desktop::State::default();
@@ -2765,14 +2786,11 @@ mod tests {
             "Authentication failed. Starcom will not retry it. SSH Authentication: no SSH agent is available"
                 .into(),
         );
-        assert!(matches!(
-            paint(&mut ui, &mut state),
-            Action::ReturnToComposer
-        ));
+        assert!(!matches!(paint(&mut ui, &mut state), Action::Disconnect));
         assert_eq!(
             ui.screen,
             Screen::Terminal,
-            "the workspace owns moving a failed tab back to the composer"
+            "a registered attachment is removed only by Exit"
         );
     }
 
@@ -2805,7 +2823,7 @@ mod tests {
         state.failure = Some(reconnect::Failure::MissingSession);
         let action = paint(&mut ui, &mut state);
         assert!(
-            !matches!(action, Action::ReturnToComposer | Action::Disconnect),
+            !matches!(action, Action::Disconnect),
             "a gone session must not close or move the tab; Exit stays for the user"
         );
         assert_eq!(ui.screen, Screen::Terminal);
@@ -2819,7 +2837,7 @@ mod tests {
         state.error = Some(reconnect::Failure::ServerExit.summary().into());
         let action = paint(&mut ui, &mut state);
         assert!(
-            !matches!(action, Action::ReturnToComposer | Action::Disconnect),
+            !matches!(action, Action::Disconnect),
             "a dead tmux server must not delete the tab; the last view stays"
         );
         assert_eq!(ui.screen, Screen::Terminal);
