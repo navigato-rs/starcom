@@ -50,8 +50,8 @@ pub struct Tab {
     pub user: String,
     /// Last session this tab attached to, used as the startup resume target.
     pub session: String,
-    /// Compatibility attachment to an arbitrary v0.3 tmux session. New tabs
-    /// use a named window in Starcom's managed session instead.
+    /// Saved v0.3 record awaiting explicit migration in the connection form.
+    /// It is never restored as a runtime attachment.
     pub legacy: bool,
     /// Last tmux window and pane selected in this tab. These are hints only:
     /// reconnect validates them against the new snapshot before using them.
@@ -507,7 +507,7 @@ mod tests {
     }
 
     #[test]
-    fn v03_tabs_remain_explicit_legacy_session_attachments() {
+    fn v03_tabs_remain_explicit_migration_candidates() {
         let parsed =
             parse("version 2\n[tab]\nhost zork\nuser alice\nsession zork/0\naccess interactive\n")
                 .unwrap();

@@ -13,9 +13,10 @@ change, plus a restarted tmux server, are covered by fixture tests.
 
 M4 now persists non-secret tabs, groups managed tabs into one SSH/control
 workspace per resolved server, and maps each user-visible session to a uniquely
-named window in the managed `starcom` tmux session. V0.3 saves retain an explicit
-legacy-session attachment path. Discovery, create, rename, reconnect, and pane
-handoff use that ownership model. ProxyJump uses Sunset's shared std-only client.
+named window in the managed `starcom` tmux session. V0.3 saves are retained as
+explicit migration candidates instead of restoring independent attachments.
+Discovery, migration, create, rename, reconnect, and pane handoff use that
+ownership model. ProxyJump uses Sunset's shared std-only client.
 The remaining M4.1 work is broader isolated-fixture coverage for sizing and
 ordinary-client interaction. Certificate and MFA workflows remain open.
 
@@ -300,7 +301,8 @@ is carried as a pinned fork.
 - [x] Own one worker/view/reconnect epoch per resolved server workspace.
 - [x] Map logical tabs to uniquely named windows in the managed tmux session.
 - [x] Restore grouped server workspaces and provide an explicit v0.3 migration
-  path for arbitrary existing tmux sessions.
+  path that moves arbitrary sessions' windows into the managed session without
+  creating legacy runtime attachments.
 - [ ] Cover multi-window output, replacement, disconnect, sizing, and ordinary
   tmux fallback in the isolated SSH fixture.
 

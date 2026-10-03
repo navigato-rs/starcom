@@ -569,7 +569,9 @@ fn discovery_never_starts_a_server_and_creation_is_explicit() {
     use starcom::sessions;
 
     let socket = root().join("tmux.sock");
-    let listed = sessions::list(&options(), socket.to_str()).unwrap();
+    let listed = sessions::discover(&options(), socket.to_str())
+        .unwrap()
+        .managed;
     assert!(
         !listed.is_empty(),
         "the fixture managed session had no windows: {listed:?}"
@@ -583,8 +585,9 @@ fn discovery_never_starts_a_server_and_creation_is_explicit() {
     let absent = root().join("discovery-absent.sock");
     assert!(!absent.exists());
     assert!(
-        sessions::list(&options(), absent.to_str())
+        sessions::discover(&options(), absent.to_str())
             .unwrap()
+            .managed
             .is_empty()
     );
     assert!(
@@ -602,7 +605,9 @@ fn discovery_never_starts_a_server_and_creation_is_explicit() {
     )
     .unwrap();
     assert!(absent.exists(), "creation did not start the server");
-    let listed = sessions::list(&options(), absent.to_str()).unwrap();
+    let listed = sessions::discover(&options(), absent.to_str())
+        .unwrap()
+        .managed;
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].name, "starcom-created");
     assert_eq!(listed[0].panes, 1);
@@ -617,6 +622,76 @@ fn discovery_never_starts_a_server_and_creation_is_explicit() {
         .arg(&absent)
         .arg("kill-server")
         .status();
+}
+
+/// M4.1: an explicit migration preserves window identities and running panes,
+/// then removes the source session after its final link is gone.
+#[test]
+#[ignore = "requires the isolated SSH/tmux fixture"]
+fn migration_moves_every_window_into_the_managed_session() {
+    use starcom::sessions;
+
+    let source = format!("legacy-migrate-{}", process::id());
+    tmux(&[
+        "new-session",
+        "-d",
+        "-s",
+        &source,
+        "-n",
+        "first",
+        "sleep 60",
+    ]);
+    tmux(&[
+        "new-window",
+        "-d",
+        "-t",
+        &format!("={source}:"),
+        "-n",
+        "second",
+        "sleep 60",
+    ]);
+    let socket = root().join("tmux.sock");
+    let before = sessions::discover(&options(), socket.to_str()).unwrap();
+    let legacy = before
+        .other
+        .iter()
+        .find(|session| session.name == source)
+        .expect("new legacy session was not discovered")
+        .clone();
+    let ids: std::collections::BTreeSet<_> =
+        legacy.windows.iter().map(|window| window.id).collect();
+
+    let migrated = sessions::migrate(&options(), socket.to_str(), &legacy).unwrap();
+    assert_eq!(
+        migrated
+            .windows
+            .iter()
+            .map(|window| window.id)
+            .collect::<std::collections::BTreeSet<_>>(),
+        ids
+    );
+    assert_eq!(
+        migrated
+            .windows
+            .iter()
+            .map(|window| window.name.as_str())
+            .collect::<std::collections::BTreeSet<_>>(),
+        [format!("{source}/0"), format!("{source}/1")]
+            .iter()
+            .map(String::as_str)
+            .collect()
+    );
+    assert!(
+        !migrated
+            .listing
+            .other
+            .iter()
+            .any(|session| session.name == source),
+        "the source session survived its final unlink"
+    );
+    for id in ids {
+        tmux(&["kill-window", "-t", &id.to_string()]);
+    }
 }
 
 /// SFTP upload writes a file the shell can read. The fixture sshd must offer
@@ -790,7 +865,9 @@ fn jump_route_lists_and_attaches_to_the_existing_session() {
     let mut opts = options();
     opts.jumps.push(options());
     let socket = root().join("tmux.sock");
-    let names = starcom::sessions::list(&opts, socket.to_str()).unwrap();
+    let names = starcom::sessions::discover(&opts, socket.to_str())
+        .unwrap()
+        .managed;
     assert!(names.iter().any(|entry| entry.name == "starcom"));
     let session = core::SessionName::new("starcom").unwrap();
     let mut inspector = inspect::Inspector::attach(&opts, &session, socket.to_str()).unwrap();

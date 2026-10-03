@@ -5,7 +5,7 @@ use std::{fs, io, path, sync, time};
 
 use anyhow::Context;
 
-use crate::{core, desktop, dialog, reconnect, sessions, ssh_config, store, ui};
+use crate::{core, desktop, dialog, reconnect, ssh_config, store, ui};
 
 const MAX_TABS: usize = 16;
 const NEW_CONNECTION: &str = "New connection";
@@ -65,6 +65,9 @@ pub(crate) enum Action {
 
 pub(crate) struct Workspace {
     tabs: Vec<Tab>,
+    /// Saved v0.3 attachments waiting for an explicit composer migration.
+    /// They are persisted unchanged and never become runtime SSH clients.
+    migration_tabs: Vec<store::Tab>,
     active: usize,
     /// The "+" form. Not a registered tab until Connect succeeds.
     composer: Tab,
@@ -373,6 +376,7 @@ impl Workspace {
         let wake_composer = sync::Arc::clone(&wake);
         let mut workspace = Self {
             tabs: Vec::new(),
+            migration_tabs: Vec::new(),
             active: 0,
             composer: spawn_tab(
                 1,
@@ -469,6 +473,15 @@ impl Workspace {
         let mut active_failure = false;
         if self.restore_tabs {
             for (saved_index, tab) in saved.tabs.into_iter().enumerate() {
+                if tab.legacy {
+                    if saved_index == saved_active {
+                        self.composer.label = label(&tab);
+                        self.composer.ui.restore(tab.clone());
+                        active_failure = true;
+                    }
+                    self.migration_tabs.push(tab);
+                    continue;
+                }
                 let id = self.alloc_id();
                 let mut restored = spawn_tab(
                     id,
@@ -732,13 +745,20 @@ impl Workspace {
             return;
         };
         self.fold_open_time();
-        let saved = store::Workspace {
-            tabs: self
-                .tabs
+        let mut tabs: Vec<_> = self
+            .tabs
+            .iter()
+            .take(store::MAX_TABS)
+            .map(|tab| tab.ui.saved())
+            .collect();
+        tabs.extend(
+            self.migration_tabs
                 .iter()
-                .take(store::MAX_TABS)
-                .map(|tab| tab.ui.saved())
-                .collect(),
+                .take(store::MAX_TABS.saturating_sub(tabs.len()))
+                .cloned(),
+        );
+        let saved = store::Workspace {
+            tabs,
             active: self.active,
             restore_tabs: self.restore_tabs,
             fps: store::clamp_fps(self.fps),
@@ -941,20 +961,11 @@ impl Workspace {
         let mut changed = false;
         for (client, window, name) in events {
             if let Some(tab) = self.tabs.iter_mut().find(|tab| {
-                sync::Arc::ptr_eq(&tab.client, &client)
-                    && match window {
-                        Some(window) => tab.ui.current_window() == Some(window),
-                        None => tab.ui.legacy_session(),
-                    }
+                sync::Arc::ptr_eq(&tab.client, &client) && tab.ui.current_window() == Some(window)
             }) && name != tab.ui.session_name()
             {
                 tab.ui.set_session_name(name);
                 tab.label = label(&tab.ui.saved());
-                if tab.ui.legacy_session()
-                    && let Ok(connection) = tab.ui.connection()
-                {
-                    tab.server = Some(connection.server_key());
-                }
                 changed = true;
             }
         }
@@ -966,9 +977,6 @@ impl Workspace {
     fn apply_remote_window_names(&mut self) {
         let mut changed = false;
         for tab in &mut self.tabs {
-            if tab.ui.legacy_session() {
-                continue;
-            }
             let Some(window) = tab.ui.current_window() else {
                 continue;
             };
@@ -1044,9 +1052,28 @@ impl Workspace {
         Ok(())
     }
 
+    fn forget_migration(&mut self, source: &str) {
+        let destination = self.composer.ui.form.destination().to_owned();
+        let composer_saved = self.composer.ui.saved();
+        self.migration_tabs.retain(|saved| {
+            let saved_destination = if saved.destination.trim().is_empty() {
+                saved.host.trim()
+            } else {
+                saved.destination.trim()
+            };
+            !((saved_destination == destination || same_endpoint(saved, &composer_saved))
+                && saved.session == source)
+        });
+    }
+
     pub fn show(&mut self, root: &mut egui::Ui) -> Action {
         if let Err(error) = self.apply_moved_session() {
             self.notice = Some(error.to_string());
+        }
+        if let Some(migration) = self.composer.client.take_migrated() {
+            self.forget_migration(&migration.source);
+            self.composer.ui.migration_completed(&migration);
+            self.persist();
         }
         self.local_dirty = false;
         self.apply_renamed_session();
@@ -1068,36 +1095,24 @@ impl Workspace {
             .filter(|server| !server.is_empty())
             .collect();
         self.composer.ui.set_connected_servers(connected_servers);
-        if let Some(ref server) = composer_server
-            && let Some(tab) = self
-                .tabs
-                .iter()
-                .find(|tab| tab.server.as_ref() == Some(server) && live_phase(tab.client.phase()))
-        {
-            let found = {
-                let state = tab.client.lock();
-                state.view.as_ref().map(|view| {
-                    view.windows()
-                        .iter()
-                        .map(|(id, name)| sessions::Summary {
-                            id: *id,
-                            name: name.clone(),
-                            panes: view
-                                .panes()
-                                .values()
-                                .filter(|pane| pane.state.window == *id)
-                                .count(),
-                        })
-                        .collect()
-                })
-            };
-            if let Some(found) = found {
-                self.composer.ui.accept_live_discovery();
-                self.composer
-                    .client
-                    .set_discovery(desktop::Discovery::Sessions(found));
-            }
-        }
+        let composer_saved = self.composer.ui.saved();
+        let migration_candidates = self
+            .migration_tabs
+            .iter()
+            .filter(|saved| {
+                let destination = if saved.destination.trim().is_empty() {
+                    saved.host.trim()
+                } else {
+                    saved.destination.trim()
+                };
+                destination == self.composer.ui.form.destination()
+                    || same_endpoint(saved, &composer_saved)
+            })
+            .map(|saved| saved.session.clone())
+            .collect();
+        self.composer
+            .ui
+            .set_migration_candidates(migration_candidates);
         let unavailable = self
             .tabs
             .iter()
@@ -1598,6 +1613,7 @@ impl Workspace {
                     let mut save = false;
                     let mut follow_input = false;
                     let mut close_after_exit = None;
+                    let mut forget_migration = None;
                     let mut return_to_composer = false;
                     let mut promoted_composer = false;
                     let can_add_session = self.tabs.len() < MAX_TABS;
@@ -1607,14 +1623,10 @@ impl Workspace {
                     let composer_create = self.composer_open
                         && id == self.composer.id
                         && matches!(action.as_ref(), ui::Action::CreateSession(_));
-                    let composer_list = self.composer_open
-                        && id == self.composer.id
-                        && matches!(action.as_ref(), ui::Action::ListSessions(_));
-                    let reusable = if composer_connect || composer_create || composer_list {
+                    let reusable = if composer_connect || composer_create {
                         match action.as_ref() {
                             ui::Action::Connect(connection)
-                            | ui::Action::CreateSession(connection)
-                            | ui::Action::ListSessions(connection) => {
+                            | ui::Action::CreateSession(connection) => {
                                 let key = connection.server_key();
                                 self.tabs
                                     .iter()
@@ -1671,31 +1683,14 @@ impl Workspace {
                                 started
                             }
                             ui::Action::ListSessions(connection) => {
-                                let found = reusable.as_ref().and_then(|client| {
-                                    let state = client.lock();
-                                    state.view.as_ref().map(|view| {
-                                        view.windows()
-                                            .iter()
-                                            .map(|(id, name)| sessions::Summary {
-                                                id: *id,
-                                                name: name.clone(),
-                                                panes: view
-                                                    .panes()
-                                                    .values()
-                                                    .filter(|pane| pane.state.window == *id)
-                                                    .count(),
-                                            })
-                                            .collect()
-                                    })
-                                });
-                                if let Some(found) = found {
-                                    tab.ui.accept_live_discovery();
-                                    tab.client
-                                        .set_discovery(desktop::Discovery::Sessions(found));
-                                    Ok(())
-                                } else {
-                                    tab.client.list_sessions(connection)
-                                }
+                                tab.client.list_sessions(connection)
+                            }
+                            ui::Action::MigrateSession(connection, source) => {
+                                tab.client.migrate_session(connection, source)
+                            }
+                            ui::Action::ForgetMigration(source) => {
+                                forget_migration = Some(source);
+                                Ok(())
                             }
                             ui::Action::CreateSession(connection) => {
                                 if let Some(client) = reusable {
@@ -1734,14 +1729,10 @@ impl Workspace {
                                 if parsed.as_str() == previous {
                                     Ok(())
                                 } else {
-                                    if tab.ui.legacy_session() {
-                                        tab.client.rename_session(parsed, previous)
-                                    } else {
-                                        let window = tab.ui.current_window().ok_or_else(|| {
-                                            anyhow::anyhow!("logical session window is unavailable")
-                                        })?;
-                                        tab.client.rename_window(window, parsed, previous)
-                                    }
+                                    let window = tab.ui.current_window().ok_or_else(|| {
+                                        anyhow::anyhow!("logical session window is unavailable")
+                                    })?;
+                                    tab.client.rename_window(window, parsed, previous)
                                 }
                             }
                             ui::Action::Disconnect => {
@@ -1803,6 +1794,10 @@ impl Workspace {
                         self.arm_echo();
                     }
                     if save {
+                        self.persist();
+                    }
+                    if let Some(source) = forget_migration {
+                        self.forget_migration(&source);
                         self.persist();
                     }
                     if return_to_composer
@@ -2403,6 +2398,75 @@ mod tests {
     }
 
     #[test]
+    fn legacy_saves_wait_in_the_composer_without_starting_a_client() {
+        let directory = std::env::temp_dir().join(format!(
+            "starcom-workspace-legacy-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(directory.clone());
+        let file = directory.join("workspace.conf");
+        store::save(
+            &file,
+            &store::Workspace {
+                tabs: vec![store::Tab {
+                    host: "zork.example.test".into(),
+                    user: "alice".into(),
+                    session: "zork/0".into(),
+                    legacy: true,
+                    known_hosts: "/tmp/known_hosts".into(),
+                    history: store::DEFAULT_HISTORY,
+                    interactive: true,
+                    reconnect: true,
+                    ..store::Tab::default()
+                }],
+                ..store::Workspace::default()
+            },
+        )
+        .unwrap();
+
+        let mut workspace = idle_workspace(Some(file.clone()));
+        let mut resumed = 0;
+        workspace
+            .restore_with(
+                |_, _| dialog::BrokenStore::Exit,
+                |_, _| {
+                    resumed += 1;
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(resumed, 0, "a legacy attachment started a runtime client");
+        assert!(workspace.tabs.is_empty());
+        assert_eq!(workspace.migration_tabs.len(), 1);
+        assert!(workspace.composer_open);
+        assert_eq!(
+            workspace.composer.ui.form.destination(),
+            "zork.example.test"
+        );
+        assert_eq!(workspace.composer.ui.session_name(), "zork/0");
+
+        workspace.persist();
+        let saved = store::load(&file).unwrap().unwrap();
+        assert_eq!(saved.tabs.len(), 1);
+        assert!(saved.tabs[0].legacy);
+        assert_eq!(saved.tabs[0].session, "zork/0");
+
+        workspace.forget_migration("zork/0");
+        workspace.persist();
+        assert!(store::load(&file).unwrap().unwrap().tabs.is_empty());
+    }
+
+    #[test]
     fn an_incomplete_active_saved_tab_moves_to_the_composer() {
         let directory = std::env::temp_dir().join(format!(
             "starcom-workspace-incomplete-{}-{:?}",
@@ -2503,6 +2567,7 @@ mod tests {
         let wake: Wake = sync::Arc::new(|| {});
         Workspace {
             tabs: Vec::new(),
+            migration_tabs: Vec::new(),
             active: 0,
             composer: spawn_tab(
                 1,

@@ -103,12 +103,15 @@ workspace red and unavailable, preventing duplicate logical tabs. An ordinary
 tmux client may still attach to the managed session as a fallback; its presence
 does not make every window unavailable.
 
-Existing arbitrary tmux sessions do not silently disappear during migration.
-Workspace format v3 marks new tabs as managed windows; v1/v2 entries are loaded
-as explicit legacy-session attachments to their original tmux session. They keep
-the old one-attachment behavior until the user closes them. A future import/link
-operation may move them into the managed session, but it needs fixture coverage
-for naming, last-link deletion, and shared-layout effects first.
+Existing arbitrary tmux sessions do not silently disappear. Workspace format v3
+marks new tabs as managed windows; v1/v2 entries are retained as composer
+migration candidates and never restored as independent runtime attachments.
+Discovery lists every non-managed session. **Migrate** assigns deterministic
+unique names, links its windows into the managed session, verifies the stable
+window IDs, and only then unlinks the source. This makes an interrupted link
+stage retryable without risking the panes. The final unlink closes the now-empty
+source session. Grouped sessions are refused, and session-level options or
+environment are explicitly outside the window migration.
 
 ## Correctness implications
 

@@ -359,30 +359,6 @@ impl Inspector {
         }
     }
 
-    #[cfg(feature = "gui")]
-    pub(crate) fn rename_session(
-        &mut self,
-        session: tmuxctl::SessionId,
-        name: &core::SessionName,
-    ) -> anyhow::Result<Vec<tmuxctl::Notification>> {
-        let command = command::Command::rename_session(session, name);
-        match self.exchange_with_timeout(command.as_str(), 1, time::Duration::from_secs(5)) {
-            Ok(batch) => Ok(batch
-                .notifications
-                .into_iter()
-                .map(|(_, event)| event)
-                .collect()),
-            Err(error) if error.to_string().contains("tmux rejected request") => Err(error),
-            Err(_) => {
-                self.abort();
-                Err(ssh::Error::transport(
-                    "tmux rename completion was not observed; the command was not retried",
-                )
-                .into())
-            }
-        }
-    }
-
     /// Create a uniquely named window on the existing control stream. Tmux
     /// itself permits duplicate names, so recheck after creation and remove
     /// only the window created by this command if an external client raced us.

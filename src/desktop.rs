@@ -16,8 +16,6 @@ pub struct Connection {
     pub session: core::SessionName,
     /// User-visible logical session, implemented as one uniquely named window.
     pub window: core::SessionName,
-    /// False only for explicit compatibility attachments restored from v0.3.
-    pub managed: bool,
     pub socket: Option<String>,
     pub history: usize,
     pub access: session::Access,
@@ -40,7 +38,6 @@ pub(crate) struct ServerKey {
     jumps: Vec<ServerKey>,
     socket: Option<String>,
     control_session: String,
-    managed: bool,
 }
 
 impl Connection {
@@ -63,12 +60,10 @@ impl Connection {
                     .collect(),
                 socket,
                 control_session: String::new(),
-                managed: false,
             }
         }
         let mut key = endpoint(&self.options, self.socket.clone());
         key.control_session = self.session.as_str().to_owned();
-        key.managed = self.managed;
         key
     }
 }
@@ -152,6 +147,7 @@ struct PendingConfirmation {
 pub(crate) enum Request {
     Attach(Connection),
     ListSessions(Connection),
+    MigrateSession(Connection, sessions::OtherSession),
     /// Explicitly start a session, which starts a server if none is running.
     /// Only a button produces this; no failure path ever does.
     CreateSession(Connection, core::Size),
@@ -161,7 +157,7 @@ pub(crate) enum Request {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Discovery {
     Running,
-    Sessions(Vec<sessions::Summary>),
+    Sessions(sessions::Listing),
     Created(String),
     Failed(String),
 }
@@ -217,15 +213,18 @@ pub(crate) struct State {
     /// Breakdown for the last acknowledged ordinary-input transaction.
     pub input_latency: Option<inspect::InputLatency>,
     /// Pending in-band `rename-window` (window, new name, previous name).
-    rename: Option<(Option<tmuxctl::WindowId>, core::SessionName, String)>,
+    rename: Option<(tmuxctl::WindowId, core::SessionName, String)>,
     /// Explicit in-band creation of another logical session/window.
     create_window: Option<core::SessionName>,
     /// The rename is queued or waiting for tmux's bounded reply.
     pub renaming: bool,
     /// Name tmux accepted, for the tab label and saved workspace.
-    renamed: Option<(Option<tmuxctl::WindowId>, String)>,
+    renamed: Option<(tmuxctl::WindowId, String)>,
     /// Previous session name, restored if tmux rejected the rename.
-    rename_revert: Option<(Option<tmuxctl::WindowId>, String)>,
+    rename_revert: Option<(tmuxctl::WindowId, String)>,
+    /// Completed explicit migration waiting for the workspace to reconcile
+    /// any saved v0.3 record and update the composer.
+    migrated: Option<sessions::Migration>,
     /// Completed pane handoff waiting for the workspace to open its new tab.
     moved_session: Option<MovedSession>,
     actions: collections::VecDeque<Pending>,
@@ -259,6 +258,7 @@ impl Default for State {
             renaming: false,
             renamed: None,
             rename_revert: None,
+            migrated: None,
             moved_session: None,
             actions: collections::VecDeque::new(),
             action_bytes: 0,
@@ -285,6 +285,7 @@ impl State {
         self.renaming = false;
         self.renamed = None;
         self.rename_revert = None;
+        self.migrated = None;
         self.moved_session = None;
         self.discard_actions();
         self.access = session::Access::ReadOnly;
@@ -556,20 +557,21 @@ impl Client {
     /// Ask which managed windows exist. This opens one short-lived connection
     /// when the server workspace is not already attached and cannot start tmux.
     pub fn list_sessions(&self, connection: Connection) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            connection.managed,
-            "legacy sessions do not have managed windows"
-        );
         self.query(Request::ListSessions(connection))
+    }
+
+    /// Explicitly migrate every window from one non-managed tmux session.
+    pub fn migrate_session(
+        &self,
+        connection: Connection,
+        source: sessions::OtherSession,
+    ) -> anyhow::Result<()> {
+        self.query(Request::MigrateSession(connection, source))
     }
 
     /// Explicitly bootstrap a managed session/window. This may start tmux,
     /// which is why only a deliberate action reaches it.
     pub fn create_session(&self, connection: Connection, size: core::Size) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            connection.managed,
-            "cannot create a managed window on a legacy tab"
-        );
         self.query(Request::CreateSession(connection, size))
     }
 
@@ -577,6 +579,7 @@ impl Client {
         let connection = match request {
             Request::Attach(ref connection)
             | Request::ListSessions(ref connection)
+            | Request::MigrateSession(ref connection, _)
             | Request::CreateSession(ref connection, _) => connection,
         };
         connection.options.validate()?;
@@ -606,16 +609,6 @@ impl Client {
 
     pub fn clear_discovery(&self) {
         self.lock().discovery = None;
-    }
-
-    pub(crate) fn set_discovery(&self, discovery: Discovery) {
-        let mut state = self.lock();
-        if state.discovery.as_ref() == Some(&discovery) {
-            return;
-        }
-        state.discovery = Some(discovery);
-        drop(state);
-        (self.wake)();
     }
 
     pub fn disconnect(&self) {
@@ -681,31 +674,7 @@ impl Client {
             "a logical session named '{}' already exists",
             name.as_str()
         );
-        state.rename = Some((Some(window), name, previous));
-        state.renaming = true;
-        state.renamed = None;
-        state.rename_revert = None;
-        if let Some(ref wake) = state.io_wake {
-            wake.notify();
-        }
-        drop(state);
-        self.shared.1.notify_one();
-        Ok(())
-    }
-
-    pub(crate) fn rename_session(
-        &self,
-        name: core::SessionName,
-        previous: String,
-    ) -> anyhow::Result<()> {
-        let mut state = self.lock();
-        anyhow::ensure!(state.input_ready(), "connect before renaming this session");
-        anyhow::ensure!(
-            state.access == session::Access::Interactive,
-            "read-only sessions cannot be renamed"
-        );
-        anyhow::ensure!(!state.renaming, "a session rename is already running");
-        state.rename = Some((None, name, previous));
+        state.rename = Some((window, name, previous));
         state.renaming = true;
         state.renamed = None;
         state.rename_revert = None;
@@ -751,12 +720,16 @@ impl Client {
         Ok(())
     }
 
-    pub(crate) fn take_renamed(&self) -> Option<(Option<tmuxctl::WindowId>, String)> {
+    pub(crate) fn take_renamed(&self) -> Option<(tmuxctl::WindowId, String)> {
         self.lock().renamed.take()
     }
 
-    pub(crate) fn take_rename_revert(&self) -> Option<(Option<tmuxctl::WindowId>, String)> {
+    pub(crate) fn take_rename_revert(&self) -> Option<(tmuxctl::WindowId, String)> {
         self.lock().rename_revert.take()
+    }
+
+    pub(crate) fn take_migrated(&self) -> Option<sessions::Migration> {
+        self.lock().migrated.take()
     }
 
     pub(crate) fn take_moved_session(&self) -> Option<MovedSession> {
@@ -912,8 +885,22 @@ fn worker_loop(shared: Shared, wake: Wake) {
             other => {
                 let outcome = match other {
                     Request::ListSessions(ref connection) => {
-                        sessions::list(&connection.options, connection.socket.as_deref())
+                        sessions::discover(&connection.options, connection.socket.as_deref())
                             .map(Discovery::Sessions)
+                    }
+                    Request::MigrateSession(ref connection, ref source) => {
+                        sessions::migrate(&connection.options, connection.socket.as_deref(), source)
+                            .map(|migration| {
+                                let listing = migration.listing.clone();
+                                let mut state = shared
+                                    .0
+                                    .lock()
+                                    .unwrap_or_else(sync::PoisonError::into_inner);
+                                if state.accepts(epoch) {
+                                    state.migrated = Some(migration);
+                                }
+                                Discovery::Sessions(listing)
+                            })
                     }
                     Request::CreateSession(ref connection, size) => sessions::create(
                         &connection.options,
@@ -1136,7 +1123,7 @@ fn list_after_missing_session(shared: &Shared, wake: &Wake, epoch: u64, connecti
         state.discovery = Some(Discovery::Running);
     }
     wake();
-    let found = sessions::list(&connection.options, connection.socket.as_deref());
+    let found = sessions::discover(&connection.options, connection.socket.as_deref());
     let mut state = shared
         .0
         .lock()
@@ -1408,20 +1395,9 @@ fn watch(
         if let Some((window, name, previous)) = rename {
             // Once written, the command must never be replayed. Point any
             // recovery at the optimistic name before attempting delivery.
-            if window.is_some() {
-                connection.window = name.clone();
-            } else {
-                connection.session = name.clone();
-                connection.window = name.clone();
-            }
-            let result = match window {
-                Some(window) => inspector.rename_window(
-                    window,
-                    &name,
-                    &core::SessionName::new(previous.clone())?,
-                ),
-                None => inspector.rename_session(session_id, &name),
-            };
+            connection.window = name.clone();
+            let result =
+                inspector.rename_window(window, &name, &core::SessionName::new(previous.clone())?);
             match result {
                 Ok(notifications) => {
                     let mut state = shared
@@ -1431,12 +1407,7 @@ fn watch(
                     if state.accepts(epoch) {
                         state.renaming = false;
                         if let Some(ref mut configured) = state.connection {
-                            if window.is_some() {
-                                configured.window = name.clone();
-                            } else {
-                                configured.session = name.clone();
-                                configured.window = name.clone();
-                            }
+                            configured.window = name.clone();
                         }
                         state.renamed = Some((window, name.as_str().to_owned()));
                         state.rename_revert = None;
@@ -1462,12 +1433,7 @@ fn watch(
                     if state.accepts(epoch) {
                         state.renaming = false;
                         if let Some(ref mut configured) = state.connection {
-                            if window.is_some() {
-                                configured.window = name.clone();
-                            } else {
-                                configured.session = name.clone();
-                                configured.window = name.clone();
-                            }
+                            configured.window = name.clone();
                         }
                         // Delivery is uncertain, so recovery must target the new
                         // name and the workspace must persist that same target.
@@ -1484,12 +1450,7 @@ fn watch(
                 }
                 Err(error) => {
                     let raced = error.to_string().contains("another tmux client");
-                    if window.is_some() {
-                        connection.window = core::SessionName::new(previous.clone())?;
-                    } else {
-                        connection.session = core::SessionName::new(previous.clone())?;
-                        connection.window = core::SessionName::new(previous.clone())?;
-                    }
+                    connection.window = core::SessionName::new(previous.clone())?;
                     let mut state = shared
                         .0
                         .lock()
@@ -1502,12 +1463,7 @@ fn watch(
                             state.phase = Phase::Resynchronizing;
                         }
                         if let Some(ref mut configured) = state.connection {
-                            if window.is_some() {
-                                configured.window = core::SessionName::new(previous.clone())?;
-                            } else {
-                                configured.session = core::SessionName::new(previous.clone())?;
-                                configured.window = core::SessionName::new(previous.clone())?;
-                            }
+                            configured.window = core::SessionName::new(previous.clone())?;
                         }
                         state.rename_revert = Some((window, previous));
                     }
@@ -2209,7 +2165,7 @@ mod tests {
             .enqueue(target, input::Action::Bytes(b"held".to_vec()))
             .unwrap();
         state.rename = Some((
-            Some(tmuxctl::WindowId(0)),
+            tmuxctl::WindowId(0),
             core::SessionName::new("renamed").unwrap(),
             "old".to_owned(),
         ));
