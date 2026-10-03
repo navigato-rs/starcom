@@ -1404,7 +1404,7 @@ impl Workspace {
                             if let Some((hovered, _, endpoint, _)) =
                                 tab_chrome.iter().find(|(_, _, _, hovered)| *hovered)
                             {
-                                let stroke = egui::Stroke::new(1.0, selection_stroke);
+                                let stroke = egui::Stroke::new(1.0_f32, selection_stroke);
                                 for (id, rect, sibling, _) in &tab_chrome {
                                     if id != hovered && same_endpoint(endpoint, sibling) {
                                         paint_dashed_rect(ui, rect.shrink(1.0), stroke);
