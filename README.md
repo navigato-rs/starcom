@@ -81,9 +81,9 @@ share one SSH connection, one tmux control client, one reconstructed view, and
 one reconnect schedule.
 
 Tabs are saved and resumed automatically by reconnecting once per server and
-reopening their named windows; this can be disabled in **About**. Startup uses the same SSH
-authentication and host-key checks as **Connect**, while the saved file holds
-destinations, never credentials.
+reopening their named windows; this can be disabled in **About/Config**. Startup
+uses the same SSH authentication and host-key checks as **Connect**, while the
+saved file holds destinations, never credentials.
 **Create** is the one action that may start a tmux server. Later creates use
 `new-window` on the existing control stream. The same host view lists other tmux
 sessions in the same one-row-per-session list. Selecting one replaces
@@ -97,9 +97,9 @@ immediately, and a late answer cannot replace the new host's result.
 
 The desktop currently supports local scrollback, selection and copying, pane
 split/move/zoom/close controls, moving a pane into an automatically named new
-logical session/window on the same server, session rename, per-window tmux user
-options, and opt-in shared tmux pane resizing. Wheel events go to the application
-when it asked for mouse reports or
+logical session/window on the same server, session rename, per-window key/value
+notes backed by tmux user options, and opt-in shared tmux pane resizing. Wheel
+events go to the application when it asked for mouse reports or
 uses the alternate screen; unmodified clicks go only when requested, while
 drags stay local selection. Focus a connected pane, then drop up to eight files
 onto the window to upload them over SFTP into `/tmp`. Large drops ask before
