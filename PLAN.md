@@ -13,8 +13,8 @@ change, plus a restarted tmux server, are covered by fixture tests.
 
 M4 now persists non-secret tabs, groups managed tabs into one SSH/control
 workspace per resolved server, and maps each user-visible session to a uniquely
-named window in the managed `starcom` tmux session. V0.3 saves are retained as
-explicit migration candidates instead of restoring independent attachments.
+named window in the managed `starcom` tmux session. Obsolete v0.3 saves are not
+restored; live non-managed sessions all use the same explicit migration path.
 Discovery, migration, create, rename, reconnect, and pane handoff use that
 ownership model. ProxyJump uses Sunset's shared std-only client.
 The remaining M4.1 work is broader isolated-fixture coverage for sizing and
@@ -302,11 +302,17 @@ is carried as a pinned fork.
 - [x] Capture and validate tmux window names and identities.
 - [x] Own one worker/view/reconnect epoch per resolved server workspace.
 - [x] Map logical tabs to uniquely named windows in the managed tmux session.
-- [x] Restore grouped server workspaces and provide an explicit v0.3 migration
-  path that moves arbitrary sessions' windows into the managed session without
+- [x] Restore grouped server workspaces and provide one explicit migration path
+  that moves any non-managed session's windows into the managed session without
   creating legacy runtime attachments.
 - [x] Expose bounded window-scoped tmux user options with periodic, last-write-wins
   refresh; keep notes and richer metadata presentation as later UI work.
+- [x] Unify managed and non-managed discovery into a selectable vertical list;
+  supersede stale host lookups, revalidate destructive termination, and attach
+  to the first window after migration.
+- [ ] Add seven-day inactive-session suggestions after choosing whether Starcom
+  may maintain a durable state file on each server; stock tmux has no persistent
+  session journal to query after its server exits.
 - [ ] Cover multi-window output, replacement, disconnect, sizing, and ordinary
   tmux fallback in the isolated SSH fixture.
 

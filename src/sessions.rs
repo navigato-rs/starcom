@@ -245,6 +245,33 @@ pub fn migrate(
     })
 }
 
+/// Terminate one deliberately selected non-managed session. Re-discover the
+/// source immediately before killing it so a recycled tmux ID or renamed
+/// session cannot turn a stale UI click into a different destructive action.
+pub fn terminate(
+    options: &ssh::Options,
+    socket: Option<&str>,
+    selected: &OtherSession,
+) -> anyhow::Result<Listing> {
+    let before = discover(options, socket)?;
+    let source = before
+        .other
+        .iter()
+        .find(|session| session.id == selected.id && session.name == selected.name)
+        .context("the selected tmux session changed; refresh and try again")?;
+    let command = format!(
+        "kill-session -t {}",
+        command::shell_quote(&source.id.to_string())?
+    );
+    run(options, &command_list(socket, &[command])?)?;
+    let after = discover(options, socket)?;
+    anyhow::ensure!(
+        !after.other.iter().any(|session| session.id == source.id),
+        "the selected tmux session still exists"
+    );
+    Ok(after)
+}
+
 fn migration_names(
     source: &OtherSession,
     managed: &[Summary],

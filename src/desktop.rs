@@ -5,6 +5,8 @@
 
 use std::{collections, env, path, sync, thread, time};
 
+use anyhow::Context;
+
 use crate::{
     core, input, inspect, reconnect, session, sessions, snapshot, ssh, terminal, ui, window,
 };
@@ -164,12 +166,12 @@ impl OptionEdit {
     }
 }
 
-/// What the worker has been asked to do next. Discovery and creation are
-/// one-shot queries; they neither disturb nor become an attachment.
-pub(crate) enum Request {
-    Attach(Connection),
+/// A short-lived request. Each request has its own worker so selecting another
+/// host starts immediately; the old epoch can never publish a late answer.
+enum Query {
     ListSessions(Connection),
     MigrateSession(Connection, sessions::OtherSession),
+    TerminateSession(Connection, sessions::OtherSession),
     /// Explicitly start a session, which starts a server if none is running.
     /// Only a button produces this; no failure path ever does.
     CreateSession(Connection, core::Size),
@@ -210,7 +212,7 @@ pub(crate) struct State {
     /// client. The workspace uses it to discard duplicate and hidden-tab wakes.
     revision: u64,
     epoch: u64,
-    pending: Option<Request>,
+    pending: Option<Connection>,
     stopping: bool,
     pub generation: u64,
     /// Effective host-workspace policy for the current/pending attachment.
@@ -230,6 +232,9 @@ pub(crate) struct State {
     pub failure: Option<reconnect::Failure>,
     /// The last session-discovery result, shown on the connection form.
     pub discovery: Option<Discovery>,
+    /// Migration, termination, and creation are not cancellable host lookups;
+    /// the form keeps their destination fixed until they finish.
+    pub changing_sessions: bool,
     /// Last interactive-command round trip, from traffic we already send.
     pub last_rtt: Option<time::Duration>,
     /// Breakdown for the last acknowledged ordinary-input transaction.
@@ -276,6 +281,7 @@ impl Default for State {
             continuity: None,
             failure: None,
             discovery: None,
+            changing_sessions: false,
             last_rtt: None,
             input_latency: None,
             window_options: collections::BTreeMap::new(),
@@ -316,6 +322,7 @@ impl State {
         self.rename_revert = None;
         self.migrated = None;
         self.moved_session = None;
+        self.changing_sessions = false;
         self.discard_actions();
         self.access = session::Access::ReadOnly;
         self.allow_resize = false;
@@ -512,7 +519,7 @@ impl Client {
         state.access = connection.access;
         state.connection = Some(connection.clone());
         state.phase = Phase::Connecting;
-        state.pending = Some(Request::Attach(connection));
+        state.pending = Some(connection);
         drop(state);
         self.shared.1.notify_one();
         (self.wake)();
@@ -541,7 +548,7 @@ impl Client {
         state.access = requested.access;
         state.connection = Some(requested.clone());
         state.phase = Phase::Connecting;
-        state.pending = Some(Request::Attach(requested));
+        state.pending = Some(requested);
         drop(state);
         self.shared.1.notify_one();
         (self.wake)();
@@ -577,7 +584,7 @@ impl Client {
         state.access = merged.access;
         state.connection = Some(merged.clone());
         state.phase = Phase::Connecting;
-        state.pending = Some(Request::Attach(merged));
+        state.pending = Some(merged);
         drop(state);
         self.shared.1.notify_one();
         (self.wake)();
@@ -587,7 +594,7 @@ impl Client {
     /// Ask which managed windows exist. This opens one short-lived connection
     /// when the server workspace is not already attached and cannot start tmux.
     pub fn list_sessions(&self, connection: Connection) -> anyhow::Result<()> {
-        self.query(Request::ListSessions(connection))
+        self.query(Query::ListSessions(connection))
     }
 
     /// Explicitly migrate every window from one non-managed tmux session.
@@ -596,21 +603,31 @@ impl Client {
         connection: Connection,
         source: sessions::OtherSession,
     ) -> anyhow::Result<()> {
-        self.query(Request::MigrateSession(connection, source))
+        self.query(Query::MigrateSession(connection, source))
+    }
+
+    /// Explicitly terminate one selected non-managed tmux session.
+    pub fn terminate_session(
+        &self,
+        connection: Connection,
+        source: sessions::OtherSession,
+    ) -> anyhow::Result<()> {
+        self.query(Query::TerminateSession(connection, source))
     }
 
     /// Explicitly bootstrap a managed session/window. This may start tmux,
     /// which is why only a deliberate action reaches it.
     pub fn create_session(&self, connection: Connection, size: core::Size) -> anyhow::Result<()> {
-        self.query(Request::CreateSession(connection, size))
+        self.query(Query::CreateSession(connection, size))
     }
 
-    fn query(&self, request: Request) -> anyhow::Result<()> {
+    fn query(&self, request: Query) -> anyhow::Result<()> {
+        let changing_sessions = !matches!(&request, Query::ListSessions(_));
         let connection = match request {
-            Request::Attach(ref connection)
-            | Request::ListSessions(ref connection)
-            | Request::MigrateSession(ref connection, _)
-            | Request::CreateSession(ref connection, _) => connection,
+            Query::ListSessions(ref connection)
+            | Query::MigrateSession(ref connection, _)
+            | Query::TerminateSession(ref connection, _)
+            | Query::CreateSession(ref connection, _) => connection,
         };
         connection.options.validate()?;
         let mut state = self.lock();
@@ -622,14 +639,32 @@ impl Client {
             "disconnect before asking the host about its sessions"
         );
         anyhow::ensure!(
-            state.pending.is_none(),
-            "a request to this host is already running"
+            !state.changing_sessions,
+            "wait for the current session change to finish"
         );
+        state.epoch = state
+            .epoch
+            .checked_add(1)
+            .context("connection epoch exhausted")?;
+        let epoch = state.epoch;
         state.discovery = Some(Discovery::Running);
-        state.pending = Some(request);
+        state.changing_sessions = changing_sessions;
+        state.migrated = None;
         drop(state);
-        self.shared.1.notify_one();
         (self.wake)();
+        let shared = sync::Arc::clone(&self.shared);
+        let wake = sync::Arc::clone(&self.wake);
+        if let Err(error) = thread::Builder::new()
+            .name("starcom-query".to_owned())
+            .spawn(move || run_query(shared, wake, epoch, request))
+        {
+            let mut state = self.lock();
+            if state.accepts(epoch) {
+                state.discovery = None;
+                state.changing_sessions = false;
+            }
+            return Err(error).context("start session query");
+        }
         Ok(())
     }
 
@@ -637,8 +672,22 @@ impl Client {
         self.lock().discovery.clone()
     }
 
-    pub fn clear_discovery(&self) {
-        self.lock().discovery = None;
+    /// Invalidate a short-lived query. The old worker may still be unwinding a
+    /// blocking resolver or connect call, but it cannot publish and does not
+    /// delay the replacement request.
+    pub fn cancel_discovery(&self) {
+        let mut state = self.lock();
+        if state.changing_sessions {
+            return;
+        }
+        state.epoch = state
+            .epoch
+            .checked_add(1)
+            .expect("connection epoch exhausted");
+        state.discovery = None;
+        state.migrated = None;
+        drop(state);
+        (self.wake)();
     }
 
     pub fn disconnect(&self) {
@@ -944,7 +993,9 @@ impl Drop for Client {
         self.shared.1.notify_one();
         // Normal channel polling stops within its bounded wait. DNS and local
         // file/agent setup may block outside network operation deadlines; do not freeze window
-        // closure waiting for those. There is only one worker, not one per retry.
+        // closure waiting for those. Only the long-lived attachment worker is
+        // retained here; superseded query workers own no Client reference and
+        // cannot publish after the epoch changes.
         if let Some(worker) = self.worker.take()
             && worker.is_finished()
         {
@@ -969,7 +1020,7 @@ enum Outcome {
 
 fn worker_loop(shared: Shared, wake: Wake) {
     loop {
-        let (mut epoch, request) = {
+        let (mut epoch, mut connection) = {
             let state = shared
                 .0
                 .lock()
@@ -985,58 +1036,6 @@ fn worker_loop(shared: Shared, wake: Wake) {
                 state.epoch,
                 state.pending.take().expect("request checked above"),
             )
-        };
-        let mut connection = match request {
-            Request::Attach(connection) => connection,
-            // One-shot queries: run, publish the answer, wait for the next
-            // request. Neither one becomes or disturbs an attachment.
-            other => {
-                let outcome = match other {
-                    Request::ListSessions(ref connection) => {
-                        sessions::discover(&connection.options, connection.socket.as_deref())
-                            .map(Discovery::Sessions)
-                    }
-                    Request::MigrateSession(ref connection, ref source) => {
-                        sessions::migrate(&connection.options, connection.socket.as_deref(), source)
-                            .map(|migration| {
-                                let listing = migration.listing.clone();
-                                let mut state = shared
-                                    .0
-                                    .lock()
-                                    .unwrap_or_else(sync::PoisonError::into_inner);
-                                if state.accepts(epoch) {
-                                    state.migrated = Some(migration);
-                                }
-                                Discovery::Sessions(listing)
-                            })
-                    }
-                    Request::CreateSession(ref connection, size) => sessions::create(
-                        &connection.options,
-                        connection.socket.as_deref(),
-                        &connection.window,
-                        size,
-                    )
-                    .map(|()| Discovery::Created(connection.window.as_str().to_owned())),
-                    Request::Attach(_) => unreachable!("attach handled above"),
-                };
-                let mut state = shared
-                    .0
-                    .lock()
-                    .unwrap_or_else(sync::PoisonError::into_inner);
-                if state.accepts(epoch) {
-                    state.discovery = Some(match outcome {
-                        Ok(discovery) => discovery,
-                        // Bounded plain text for a GUI label; the remote half is
-                        // already escaped where it was read.
-                        Err(error) => {
-                            Discovery::Failed(format!("{error:#}").chars().take(1024).collect())
-                        }
-                    });
-                }
-                drop(state);
-                wake();
-                continue;
-            }
         };
         // One backoff schedule per user-requested connection, so a session that
         // flaps repeatedly keeps backing off instead of hammering every 500 ms.
@@ -1117,6 +1116,56 @@ fn worker_loop(shared: Shared, wake: Wake) {
             }
         }
     }
+}
+
+fn run_query(shared: Shared, wake: Wake, epoch: u64, query: Query) {
+    let outcome = match query {
+        Query::ListSessions(ref connection) => {
+            sessions::discover(&connection.options, connection.socket.as_deref())
+                .map(Discovery::Sessions)
+        }
+        Query::MigrateSession(ref connection, ref source) => {
+            sessions::migrate(&connection.options, connection.socket.as_deref(), source).map(
+                |migration| {
+                    let listing = migration.listing.clone();
+                    let mut state = shared
+                        .0
+                        .lock()
+                        .unwrap_or_else(sync::PoisonError::into_inner);
+                    if state.accepts(epoch) {
+                        state.migrated = Some(migration);
+                    }
+                    Discovery::Sessions(listing)
+                },
+            )
+        }
+        Query::TerminateSession(ref connection, ref source) => {
+            sessions::terminate(&connection.options, connection.socket.as_deref(), source)
+                .map(Discovery::Sessions)
+        }
+        Query::CreateSession(ref connection, size) => sessions::create(
+            &connection.options,
+            connection.socket.as_deref(),
+            &connection.window,
+            size,
+        )
+        .map(|()| Discovery::Created(connection.window.as_str().to_owned())),
+    };
+    let mut state = shared
+        .0
+        .lock()
+        .unwrap_or_else(sync::PoisonError::into_inner);
+    if state.accepts(epoch) {
+        state.changing_sessions = false;
+        state.discovery = Some(match outcome {
+            Ok(discovery) => discovery,
+            // Bounded plain text for a GUI label; the remote half is already
+            // escaped where it was read.
+            Err(error) => Discovery::Failed(format!("{error:#}").chars().take(1024).collect()),
+        });
+    }
+    drop(state);
+    wake();
 }
 
 fn ended_last_pane(view: Option<&snapshot::View>, failure: reconnect::Failure) -> bool {

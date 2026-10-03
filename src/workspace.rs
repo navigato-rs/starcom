@@ -65,9 +65,6 @@ pub(crate) enum Action {
 
 pub(crate) struct Workspace {
     tabs: Vec<Tab>,
-    /// Saved v0.3 attachments waiting for an explicit composer migration.
-    /// They are persisted unchanged and never become runtime SSH clients.
-    migration_tabs: Vec<store::Tab>,
     active: usize,
     /// The "+" form. Not a registered tab until Connect succeeds.
     composer: Tab,
@@ -376,7 +373,6 @@ impl Workspace {
         let wake_composer = sync::Arc::clone(&wake);
         let mut workspace = Self {
             tabs: Vec::new(),
-            migration_tabs: Vec::new(),
             active: 0,
             composer: spawn_tab(
                 1,
@@ -474,12 +470,10 @@ impl Workspace {
         if self.restore_tabs {
             for (saved_index, tab) in saved.tabs.into_iter().enumerate() {
                 if tab.legacy {
-                    if saved_index == saved_active {
-                        self.composer.label = label(&tab);
-                        self.composer.ui.restore(tab.clone());
-                        active_failure = true;
-                    }
-                    self.migration_tabs.push(tab);
+                    // V0.3 saved one record per remote tmux session. Runtime
+                    // discovery now treats every non-managed session equally,
+                    // so these stale local compatibility records carry no
+                    // selection or lifecycle authority.
                     continue;
                 }
                 let id = self.alloc_id();
@@ -745,18 +739,12 @@ impl Workspace {
             return;
         };
         self.fold_open_time();
-        let mut tabs: Vec<_> = self
+        let tabs: Vec<_> = self
             .tabs
             .iter()
             .take(store::MAX_TABS)
             .map(|tab| tab.ui.saved())
             .collect();
-        tabs.extend(
-            self.migration_tabs
-                .iter()
-                .take(store::MAX_TABS.saturating_sub(tabs.len()))
-                .cloned(),
-        );
         let saved = store::Workspace {
             tabs,
             active: self.active,
@@ -1052,28 +1040,12 @@ impl Workspace {
         Ok(())
     }
 
-    fn forget_migration(&mut self, source: &str) {
-        let destination = self.composer.ui.form.destination().to_owned();
-        let composer_saved = self.composer.ui.saved();
-        self.migration_tabs.retain(|saved| {
-            let saved_destination = if saved.destination.trim().is_empty() {
-                saved.host.trim()
-            } else {
-                saved.destination.trim()
-            };
-            !((saved_destination == destination || same_endpoint(saved, &composer_saved))
-                && saved.session == source)
-        });
-    }
-
     pub fn show(&mut self, root: &mut egui::Ui) -> Action {
         if let Err(error) = self.apply_moved_session() {
             self.notice = Some(error.to_string());
         }
         if let Some(migration) = self.composer.client.take_migrated() {
-            self.forget_migration(&migration.source);
             self.composer.ui.migration_completed(&migration);
-            self.persist();
         }
         self.local_dirty = false;
         self.apply_renamed_session();
@@ -1095,24 +1067,6 @@ impl Workspace {
             .filter(|server| !server.is_empty())
             .collect();
         self.composer.ui.set_connected_servers(connected_servers);
-        let composer_saved = self.composer.ui.saved();
-        let migration_candidates = self
-            .migration_tabs
-            .iter()
-            .filter(|saved| {
-                let destination = if saved.destination.trim().is_empty() {
-                    saved.host.trim()
-                } else {
-                    saved.destination.trim()
-                };
-                destination == self.composer.ui.form.destination()
-                    || same_endpoint(saved, &composer_saved)
-            })
-            .map(|saved| saved.session.clone())
-            .collect();
-        self.composer
-            .ui
-            .set_migration_candidates(migration_candidates);
         let unavailable = self
             .tabs
             .iter()
@@ -1628,7 +1582,6 @@ impl Workspace {
                     let mut save = false;
                     let mut follow_input = false;
                     let mut close_after_exit = None;
-                    let mut forget_migration = None;
                     let mut return_to_composer = false;
                     let mut promoted_composer = false;
                     let can_add_session = self.tabs.len() < MAX_TABS;
@@ -1703,8 +1656,11 @@ impl Workspace {
                             ui::Action::MigrateSession(connection, source) => {
                                 tab.client.migrate_session(connection, source)
                             }
-                            ui::Action::ForgetMigration(source) => {
-                                forget_migration = Some(source);
+                            ui::Action::TerminateSession(connection, source) => {
+                                tab.client.terminate_session(connection, source)
+                            }
+                            ui::Action::CancelDiscovery => {
+                                tab.client.cancel_discovery();
                                 Ok(())
                             }
                             ui::Action::CreateSession(connection) => {
@@ -1817,10 +1773,6 @@ impl Workspace {
                         self.arm_echo();
                     }
                     if save {
-                        self.persist();
-                    }
-                    if let Some(source) = forget_migration {
-                        self.forget_migration(&source);
                         self.persist();
                     }
                     if return_to_composer
@@ -2421,7 +2373,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_saves_wait_in_the_composer_without_starting_a_client() {
+    fn legacy_saves_do_not_preselect_or_start_a_client() {
         let directory = std::env::temp_dir().join(format!(
             "starcom-workspace-legacy-{}-{:?}",
             std::process::id(),
@@ -2470,23 +2422,13 @@ mod tests {
             .unwrap();
         assert_eq!(resumed, 0, "a legacy attachment started a runtime client");
         assert!(workspace.tabs.is_empty());
-        assert_eq!(workspace.migration_tabs.len(), 1);
         assert!(workspace.composer_open);
-        assert_eq!(
-            workspace.composer.ui.form.destination(),
-            "zork.example.test"
-        );
-        assert_eq!(workspace.composer.ui.session_name(), "zork/0");
+        assert!(workspace.composer.ui.form.destination().is_empty());
+        assert!(workspace.composer.ui.session_name().is_empty());
 
         workspace.persist();
         let saved = store::load(&file).unwrap().unwrap();
-        assert_eq!(saved.tabs.len(), 1);
-        assert!(saved.tabs[0].legacy);
-        assert_eq!(saved.tabs[0].session, "zork/0");
-
-        workspace.forget_migration("zork/0");
-        workspace.persist();
-        assert!(store::load(&file).unwrap().unwrap().tabs.is_empty());
+        assert!(saved.tabs.is_empty());
     }
 
     #[test]
@@ -2590,7 +2532,6 @@ mod tests {
         let wake: Wake = sync::Arc::new(|| {});
         Workspace {
             tabs: Vec::new(),
-            migration_tabs: Vec::new(),
             active: 0,
             composer: spawn_tab(
                 1,

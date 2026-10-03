@@ -104,10 +104,10 @@ tmux client may still attach to the managed session as a fallback; its presence
 does not make every window unavailable.
 
 Existing arbitrary tmux sessions do not silently disappear. Workspace format v3
-marks new tabs as managed windows; v1/v2 entries are retained as composer
-migration candidates and never restored as independent runtime attachments.
-Discovery lists every non-managed session. **Migrate** assigns deterministic
-unique names, links its windows into the managed session, verifies the stable
+marks new tabs as managed windows; obsolete v1/v2 records are ignored rather
+than restored as independent runtime attachments or used to preselect a host.
+Discovery lists every live non-managed session uniformly. **Migrate** assigns
+deterministic unique names, links its windows into the managed session, verifies the stable
 window IDs, and only then unlinks the source. This makes an interrupted link
 stage retryable without risking the panes. The final unlink closes the now-empty
 source session. Grouped sessions are refused, and session-level options or
@@ -141,7 +141,7 @@ environment are explicitly outside the window migration.
 3. Change discovery/create/rename from tmux sessions to windows under the managed
    session, keeping creation explicit and exact-targeted.
 4. Group saved tabs by resolved server key during restore and reconnect once per
-   group. Migrate or explicitly reject ambiguous v0.3 entries.
+   group. Migrate or explicitly reject ambiguous non-managed sessions.
 5. Add isolated SSH/tmux fixtures for duplicate names, window replacement,
    last-tab detach, multi-window output, transport loss, sizing, and fallback.
 6. Only then consider reusable Sunset connections for transient SFTP or other
