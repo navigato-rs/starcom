@@ -48,7 +48,7 @@ Priorities, in order:
 ```text
 Starcom client (Linux / macOS / Windows)
   winit event loop + Blade renderer
-    egui connection tabs, forms, window tabs, dividers and dialogs
+    egui server/session sidebar, forms, dividers and dialogs
       one Alacritty terminal model per tmux pane
         snapshot/live coordinator and guarded input queue
           bounded tmux control-mode adapter (tmuxctl)
@@ -166,14 +166,19 @@ terminal checkpoint.
 
 ### Desktop
 
-- Independent session tabs; `+` owns the only connection form, and a tab is
-  registered on Connect. Failed first attachments return to `+`.
+- A narrow vertical sidebar groups logical sessions beneath full-width server
+  headers; `+` owns the only connection form, and a tab is registered on
+  Connect. Failed first attachments return to `+`.
+- Normal terminal views have no permanent top or bottom bar. Window notes and
+  refresh state live in the sidebar; recovery/exit float above the terminal;
+  messages allocate a temporary local row without changing tmux geometry.
 - Host-first connection: known `Host` aliases, automatic session listing, first
   session selected, Connect without a separate list step.
 - One Starcom tab is one uniquely named window in the managed `starcom` tmux
   session. Tabs on the same resolved server share one control attachment.
-- Selected windows expose bounded tmux user-option key/value rows. The client
-  refreshes them periodically and deliberately uses last-write-wins semantics.
+- Selected windows expose bounded key/value notes backed by tmux user options.
+  The client refreshes them periodically and deliberately uses last-write-wins
+  semantics.
 - Interactive clients report `refresh-client -C` from GUI font metrics so
   tmux cell counts match the painted pane; divider drags send `resize-pane`.
 - Local scrollback, selection, word/line selection, copying, and font sizing.
@@ -190,7 +195,7 @@ terminal checkpoint.
   or its scrollback is not continuous with what was on screen.
 - Saved connection tabs reattach to their previous host/session automatically by
   default, using normal host-key and authentication policy, with an opt-out
-  setting in About.
+  setting in About/Config.
 - Explicit session listing (`tmux -N`, which cannot start a server) and confirmed
   session creation, which is the one path allowed to start one.
 - Ordered shutdown and a native Linux/X11 close-path test.
@@ -296,9 +301,10 @@ is carried as a pinned fork.
 
 ### M4.1 — Host workspaces and logical sessions
 
-- [x] Make top-level tabs session-name-only, move the bold server label beside
-  latency, use browser-tab geometry, focus the new-session field after choosing
-  a host, and prevent opening a session that already has an attached client.
+- [x] Group logical sessions in a narrow vertical server sidebar, show latency
+  and pending input in each server header, focus the new-session field after
+  choosing a host, and prevent opening a session that already has an attached
+  client.
 - [x] Specify the host/window ownership model, identity boundaries, lifecycle,
   migration needs, and safety tests.
 - [x] Capture and validate tmux window names and identities.
@@ -307,8 +313,9 @@ is carried as a pinned fork.
 - [x] Restore grouped server workspaces and provide one explicit migration path
   that moves any non-managed session's windows into the managed session without
   creating legacy runtime attachments.
-- [x] Expose bounded window-scoped tmux user options with periodic, last-write-wins
-  refresh; keep notes and richer metadata presentation as later UI work.
+- [x] Expose bounded window-scoped key/value notes, backed by tmux user options,
+  with periodic last-write-wins refresh; keep richer metadata presentation as
+  later UI work.
 - [x] Unify managed and non-managed discovery into a selectable vertical list;
   supersede stale host lookups, revalidate destructive termination, and attach
   to the first window after migration.

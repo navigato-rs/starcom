@@ -395,6 +395,7 @@ pub struct DesktopUi {
     /// Local chrome height reserved below the terminal. Added back when
     /// deriving tmux's client size so toggling metadata does not resize panes.
     option_panel_height: f32,
+    status_panel_height: f32,
     options_window: Option<tmuxctl::WindowId>,
     option_rows: Vec<OptionDraft>,
     /// Last pane the user selected, independent of transient keyboard focus.
@@ -450,6 +451,8 @@ pub struct DesktopUi {
     /// The status marker advances once per visible terminal refresh, not with
     /// wall time. An idle tab therefore cannot animate itself.
     refresh_tick: u64,
+    refresh_animation_tick: u64,
+    refresh_started: Option<time::Instant>,
     last_refresh: Option<(u64, u64)>,
 }
 
@@ -477,6 +480,7 @@ impl DesktopUi {
             window: None,
             options_open: false,
             option_panel_height: 0.0,
+            status_panel_height: 0.0,
             options_window: None,
             option_rows: vec![OptionDraft::empty()],
             selected: None,
@@ -502,6 +506,8 @@ impl DesktopUi {
             client_cells: None,
             pending_client_cells: None,
             refresh_tick: 0,
+            refresh_animation_tick: 0,
+            refresh_started: None,
             last_refresh: None,
         }
     }
@@ -618,6 +624,72 @@ impl DesktopUi {
     pub(crate) fn reset_client_size(&mut self) {
         self.client_cells = None;
         self.pending_client_cells = None;
+    }
+
+    pub(crate) fn set_font_size(&mut self, size: u16) {
+        let size = f32::from(size);
+        if self.font_size != size {
+            self.font_size = size;
+            self.reset_client_size();
+        }
+    }
+
+    pub(crate) fn show_sidebar_controls(&mut self, ui: &mut egui::Ui, state: &desktop::State) {
+        self.sync_option_rows(state);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            let now = time::Instant::now();
+            let animation_age = self
+                .refresh_started
+                .map(|started| now.saturating_duration_since(started));
+            let animating = animation_age.is_some_and(|age| age < REFRESH_ANIMATION_DURATION);
+            if animating {
+                ui.ctx()
+                    .request_repaint_after(time::Duration::from_millis(33));
+            }
+            let (refresh_rect, refresh) =
+                ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::hover());
+            ui.painter()
+                .rect_filled(refresh_rect, 4.0, ui.visuals().code_bg_color);
+            paint_refresh_indicator(
+                ui,
+                refresh_rect.shrink(5.0),
+                self.refresh_tick,
+                self.refresh_animation_tick,
+                animation_age.filter(|_| animating),
+            );
+            refresh.on_hover_text("Terminal refresh activity");
+
+            let option_count = self
+                .option_rows
+                .iter()
+                .filter(|row| !row.name.is_empty())
+                .count();
+            let options_loaded = self
+                .window
+                .is_some_and(|window| state.window_options.contains_key(&window));
+            let options = ui.add_enabled(
+                options_loaded,
+                egui::Button::new(if options_loaded {
+                    if option_count == 0 {
+                        "Notes".to_owned()
+                    } else {
+                        format!("Notes({option_count})")
+                    }
+                } else {
+                    "Notes".to_owned()
+                })
+                .selected(self.options_open)
+                .min_size(egui::vec2(ui.available_width(), 28.0)),
+            );
+            if options
+                .on_disabled_hover_text("Notes are not available yet")
+                .on_hover_text("Show notes attached to this session")
+                .clicked()
+            {
+                self.options_open = !self.options_open;
+            }
+        });
     }
 
     pub fn cancel_transient(&mut self) {
@@ -1447,14 +1519,25 @@ impl DesktopUi {
         self.generation = state.generation;
     }
 
-    fn note_refresh(&mut self, state: &desktop::State, scrolled: bool) {
+    fn note_refresh(&mut self, state: &desktop::State, scrolled: bool) -> bool {
         let refresh = state
             .view
             .as_ref()
             .map(|view| (state.generation, self.display_seq(view)));
         if refresh != self.last_refresh || scrolled {
             self.refresh_tick = self.refresh_tick.wrapping_add(1);
+            let now = time::Instant::now();
+            let animation_finished = self.refresh_started.is_none_or(|started| {
+                now.saturating_duration_since(started) >= REFRESH_ANIMATION_DURATION
+            });
+            if animation_finished {
+                self.refresh_animation_tick = self.refresh_tick;
+                self.refresh_started = Some(now);
+            }
             self.last_refresh = refresh;
+            true
+        } else {
+            false
         }
     }
 
@@ -1492,8 +1575,14 @@ impl DesktopUi {
             .iter()
             .filter(|row| !row.name.is_empty())
             .count();
-        let desired_height = 8.0 + self.option_rows.len() as f32 * 30.0;
-        let height = desired_height.min((root.available_height() - 120.0).max(38.0));
+        const FRAME_MARGIN: f32 = 8.0;
+        const ROW_GAP: f32 = 2.0;
+        let rows = self.option_rows.len();
+        let row_height = root.spacing().interact_size.y;
+        let desired_height =
+            FRAME_MARGIN + rows as f32 * row_height + rows.saturating_sub(1) as f32 * ROW_GAP;
+        let minimum_height = FRAME_MARGIN + row_height;
+        let height = desired_height.min((root.available_height() - 120.0).max(minimum_height));
         self.option_panel_height = height;
         let editable = self.form.interactive && state.input_ready() && self.window.is_some();
         let mut submit = None;
@@ -1510,6 +1599,7 @@ impl DesktopUi {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = ROW_GAP;
                         for index in 0..self.option_rows.len() {
                             ui.push_id(index, |ui| {
                                 let row = &mut self.option_rows[index];
@@ -1555,7 +1645,7 @@ impl DesktopUi {
                                             editable && !row.is_empty(),
                                             egui::Button::new("×").sense(egui::Sense::CLICK),
                                         )
-                                        .on_hover_text("Delete this option")
+                                        .on_hover_text("Delete this note")
                                         .clicked()
                                     {
                                         delete = Some(index);
@@ -1604,7 +1694,7 @@ impl DesktopUi {
                 && !row.name.is_empty()
                 && core::UserOptionName::new(row.name.clone()).ok().as_ref() == Some(&name)
         }) {
-            self.notice = Some(format!("Option '{}' already exists.", name.as_str()));
+            self.notice = Some(format!("Note '{}' already exists.", name.as_str()));
             ensure_new_option_row(&mut self.option_rows);
             return Action::None;
         }
@@ -1632,7 +1722,11 @@ impl DesktopUi {
             view.flush_expired_sync();
         }
         let scrolled = root.input(|input| input.smooth_scroll_delta != egui::Vec2::ZERO);
-        self.note_refresh(state, scrolled);
+        if self.note_refresh(state, scrolled) {
+            // The sidebar was already painted this frame. Wake it once so its
+            // activity marker can enter the timed repaint loop on the next frame.
+            root.ctx().request_repaint();
+        }
         let generation_changed = self.generation != state.generation;
         self.rebuild_layout(state);
         // The shared control stream is interactive when any logical tab on
@@ -1699,252 +1793,41 @@ impl DesktopUi {
         }
         self.sync_option_rows(state);
 
-        // egui remembers last frame's panel rect with no max. A single wrap
-        // to a tall status bar then never shrinks, which is the "status ate
-        // the window" failure after a long session.
-        egui::Panel::bottom("status")
-            .resizable(false)
-            .exact_size(36.0_f32)
-            .show_inside(root, |ui| {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .add(
-                        egui::Button::new(egui::RichText::new("Exit").size(14.0))
-                            .min_size(egui::vec2(0.0, 28.0))
-                            .corner_radius(5.0)
-                            .sense(egui::Sense::CLICK),
-                    )
-                    .on_hover_text(
-                        "Close this tab and drop its attachment. Remote jobs keep running.",
-                    )
-                    .clicked()
-                {
-                    action = Action::Disconnect;
-                }
-                let logical_missing = self.window.is_none()
-                    && matches!(
-                        state.phase,
-                        desktop::Phase::Watching | desktop::Phase::Resynchronizing
-                    );
-                let recreate = can_recreate_missing_session(state, logical_missing);
-                if (matches!(
-                    state.phase,
-                    desktop::Phase::Failed | desktop::Phase::Disconnected
-                ) || logical_missing)
-                    && ui
-                    .add_enabled(
-                        !state.changing_sessions,
-                        egui::Button::new(
-                            egui::RichText::new(if recreate {
-                                if state.changing_sessions {
-                                    "Recreating…"
-                                } else {
-                                    "Recreate"
-                                }
-                            } else {
-                                "Reconnect"
-                            })
-                            .size(14.0),
-                        )
-                            .min_size(egui::vec2(0.0, 28.0))
-                            .corner_radius(5.0)
-                            .sense(egui::Sense::CLICK),
-                    )
-                    .on_hover_text(if recreate {
-                        "Create a new empty window with this session name on the same server."
-                    } else {
-                        "Attempt to reconnect to this server."
-                    })
-                    .clicked()
-                {
-                    match self.form.connection() {
-                        Ok(connection) => {
-                            self.notice = None;
-                            if recreate {
-                                self.creating = Some(self.session_name().to_owned());
-                                action = Action::CreateSession(connection);
-                            } else {
-                                action = Action::Connect(connection);
-                            }
-                        }
-                        Err(error) => self.notice = Some(error.to_string()),
-                    }
-                }
-                if let Some(pane) = self.focused.and_then(|id| {
-                    state.view.as_ref().and_then(|view| view.panes().get(&id))
-                }) {
-                    let size = pane.terminal.size();
-                    ui.small(format!("{}×{}", size.columns(), size.rows()));
-                    // Status is right-to-left; add M, K, A so they read A K M.
-                    mode_letter(
-                        ui,
-                        'M',
-                        pane.terminal.reports_mouse(),
-                        "App enabled mouse reporting: wheel and clicks go to it.",
-                        "App did not enable mouse: wheel is local history, drags select.",
-                    );
-                    mode_letter(
-                        ui,
-                        'K',
-                        input_ready,
-                        "Keys go to this pane.",
-                        "This pane is not taking keys (disconnected or not live).",
-                    );
-                    mode_letter(
-                        ui,
-                        'A',
-                        pane.terminal.is_alternate_screen(),
-                        "Alternate screen: the app owns a fullscreen canvas.",
-                        "Primary screen: output accumulates in terminal history.",
-                    );
-                }
-                ui.with_layout(
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| {
-                        egui::Frame::NONE
-                            .fill(ui.visuals().code_bg_color)
-                            .corner_radius(4.0)
-                            .inner_margin(egui::Margin::symmetric(6, 2))
-                            .show(ui, |ui| {
-                                let (rect, _) = ui.allocate_exact_size(
-                                    egui::vec2(14.0, 14.0),
-                                    egui::Sense::hover(),
-                                );
-                                paint_refresh_indicator(ui, rect, self.refresh_tick);
-                            });
-                        let server = self.server_name();
-                        if !server.is_empty() {
-                            ui.separator();
-                            ui.label(egui::RichText::new(server).strong())
-                                .on_hover_text(format!(
-                                    "{}@{}:{}",
-                                    self.form.user.trim(),
-                                    self.form.host.trim(),
-                                    self.form.port
-                                ));
-                            ui.separator();
-                            let backlog = state.input_backlog();
-                            let (rect, response) = ui.allocate_exact_size(
-                                egui::vec2(input_backlog_width(backlog.total()), 12.0),
-                                egui::Sense::hover(),
-                            );
-                            paint_input_backlog(ui, rect, backlog);
-                            if backlog.total() != 0 {
-                                response.on_hover_text(format!(
-                                    "{} terminal input actions awaiting confirmation: {} queued locally, {} dispatched to the control stream",
-                                    backlog.total(),
-                                    backlog.queued,
-                                    backlog.in_flight,
-                                ));
-                            }
-                        }
-                        if state.renaming {
-                            // Also observe completion if the worker wake was
-                            // coalesced with the frame that submitted it.
-                            ui.ctx()
-                                .request_repaint_after(time::Duration::from_millis(100));
-                            ui.separator();
-                            ui.label(
-                                egui::RichText::new("Renaming…")
-                                    .color(ui.visuals().warn_fg_color),
-                            );
-                        }
-                        if matches!(
-                            state.phase,
-                            desktop::Phase::Connecting
-                                | desktop::Phase::Reconnecting
-                                | desktop::Phase::Resynchronizing
-                        ) {
-                            ui.ctx()
-                                .request_repaint_after(time::Duration::from_millis(50));
-                        }
-                        if !server.is_empty() {
-                            let waiting = state.input_wait();
-                            let warning = latency_warning(state.last_rtt, waiting);
-                            if let (Some(waiting), None) = (waiting, warning) {
-                                let threshold = latency_warning_threshold(state.last_rtt);
-                                ui.ctx().request_repaint_after(
-                                    threshold.saturating_sub(waiting),
-                                );
-                            }
-                            let response = paint_latency(ui, state.last_rtt, warning.is_some());
-                            if let Some((waiting, threshold)) = warning {
-                                ui.ctx()
-                                    .request_repaint_after(time::Duration::from_millis(100));
-                                response.on_hover_text(format!(
-                                    "No tmux acknowledgment for {} ms; warning threshold {} ms",
-                                    waiting.as_millis(),
-                                    threshold.as_millis(),
-                                ));
-                            } else if state.last_rtt.is_some()
-                                && let Some(latency) = state.input_latency
-                            {
-                                response.on_hover_text(format!(
-                                    "Last input: {} ms queued, {} ms awaiting tmux; {} bytes in {} output events; maximum tmux output lag {} ms",
-                                    latency.queue.as_millis(),
-                                    latency.control.as_millis(),
-                                    latency.output_bytes,
-                                    latency.output_events,
-                                    latency.max_output_lag_ms,
-                                ));
-                            }
-                        }
-                        ui.separator();
-                        if click_button(ui, "−")
-                            .on_hover_text("Smaller terminal text")
-                            .clicked()
-                        {
-                            self.font_size = (self.font_size - 1.0).max(10.0);
-                            self.reset_client_size();
-                        }
-                        ui.small(format!("{} pt", self.font_size as u32));
-                        if click_button(ui, "+")
-                            .on_hover_text("Larger terminal text")
-                            .clicked()
-                        {
-                            self.font_size = (self.font_size + 1.0).min(28.0);
-                            self.reset_client_size();
-                        }
-                        if click_button(ui, "Copy")
-                            .on_hover_text("Copy the whole pane")
-                            .clicked()
-                        {
-                            self.copy_pane(ui.ctx(), state, true);
-                        }
-                        if ui
-                            .add_enabled(
-                                input_ready,
-                                egui::Button::new("Paste").sense(egui::Sense::CLICK),
-                            )
-                            .clicked()
-                            && let Some(target) = self.focused.and_then(|pane| state.target(pane))
-                        {
-                            steps.push(Step::RequestPaste(target));
-                        }
-                        let option_count = self
-                            .option_rows
-                            .iter()
-                            .filter(|row| !row.name.is_empty())
-                            .count();
-                        let options_loaded = self.window.is_some_and(|window| {
-                            state.window_options.contains_key(&window)
-                        });
-                        let options = ui.add_enabled(
-                            options_loaded,
-                            egui::Button::new(if options_loaded {
-                                format!("Options[{option_count}]")
-                            } else {
-                                "Options[…]".to_owned()
-                            })
-                            .selected(self.options_open),
-                        );
-                        if options
-                            .on_hover_text("Show window-scoped tmux user options")
-                            .clicked()
-                        {
-                            self.options_open = !self.options_open;
-                        }
-                        ui.separator();
+        let logical_missing = self.window.is_none()
+            && matches!(
+                state.phase,
+                desktop::Phase::Watching | desktop::Phase::Resynchronizing
+            );
+        let recreate = can_recreate_missing_session(state, logical_missing);
+
+        if state.renaming {
+            root.ctx()
+                .request_repaint_after(time::Duration::from_millis(100));
+        }
+        if matches!(
+            state.phase,
+            desktop::Phase::Connecting
+                | desktop::Phase::Reconnecting
+                | desktop::Phase::Resynchronizing
+        ) {
+            root.ctx()
+                .request_repaint_after(time::Duration::from_millis(50));
+        }
+        let show_status = state.renaming
+            || self.upload_progress.is_some()
+            || self.drop_prompt.is_some()
+            || self.notice.is_some()
+            || state.retry.is_some()
+            || state.continuity.is_some()
+            || state.error.is_some();
+        self.status_panel_height = if show_status { 36.0 } else { 0.0 };
+        if show_status {
+            egui::Panel::bottom("status-message")
+                .resizable(false)
+                .exact_size(self.status_panel_height)
+                .show_inside(root, |ui| {
+                    ui.horizontal(|ui| {
+                        let mut has_content = false;
                         if let Some((ref name, done, total)) = self.upload_progress {
                             let frac = if total == 0 {
                                 1.0
@@ -1966,6 +1849,7 @@ impl DesktopUi {
                                 self.notice = Some("Upload cancelled.".to_owned());
                                 self.notice_until = None;
                             }
+                            has_content = true;
                         } else if let Some(prompt) = self.drop_prompt.as_ref() {
                             ui.small(&prompt.label);
                             if click_button(ui, "Yes").clicked() {
@@ -1975,30 +1859,29 @@ impl DesktopUi {
                             } else if click_button(ui, "No").clicked() {
                                 self.drop_prompt = None;
                             }
-                        } else if self.notice.as_deref() == Some("Copied!") {
+                            has_content = true;
+                        } else if let Some(ref notice) = self.notice {
+                            ui.add(egui::Label::new(notice).truncate())
+                                .on_hover_text(notice);
+                            has_content = true;
+                        }
+                        if state.renaming {
+                            if has_content {
+                                ui.separator();
+                            }
                             ui.label(
-                                egui::RichText::new("Copied!")
-                                    .color(egui::Color32::WHITE)
-                                    .strong(),
+                                egui::RichText::new("Renaming…")
+                                    .color(ui.visuals().warn_fg_color),
                             );
-                        } else {
-                            ui.small(if let Some(ref notice) = self.notice {
-                                notice.as_str()
-                            } else if state.phase == desktop::Phase::Demo {
-                                "Local demo — no SSH connection"
-                            } else if input_ready {
-                                "Click a pane to type · Drag to select · Drop files to upload"
-                            } else {
-                                "Wheel to scroll · Drag to select"
-                            });
+                            has_content = true;
                         }
                         if let Some(retry) = state.retry {
-                            // The countdown is the only thing on screen that changes on
-                            // its own, so ask for exactly the frames it needs.
                             ui.ctx().request_repaint_after(
                                 retry.remaining().min(time::Duration::from_millis(250)),
                             );
-                            ui.separator();
+                            if has_content {
+                                ui.separator();
+                            }
                             ui.add(
                                 egui::Label::new(
                                     egui::RichText::new(format!(
@@ -2011,9 +1894,12 @@ impl DesktopUi {
                                 )
                                 .truncate(),
                             );
+                            has_content = true;
                         }
                         if let Some(ref continuity) = state.continuity {
-                            ui.separator();
+                            if has_content {
+                                ui.separator();
+                            }
                             ui.add(
                                 egui::Label::new(
                                     egui::RichText::new(continuity.as_str())
@@ -2022,9 +1908,14 @@ impl DesktopUi {
                                 )
                                 .truncate(),
                             );
+                            has_content = true;
                         }
-                        if let Some(ref error) = state.error {
-                            ui.separator();
+                        if let Some(ref error) = state.error
+                            && self.notice.as_deref() != Some(error.as_str())
+                        {
+                            if has_content {
+                                ui.separator();
+                            }
                             ui.add(
                                 egui::Label::new(
                                     egui::RichText::new(error.as_str())
@@ -2035,15 +1926,87 @@ impl DesktopUi {
                             )
                             .on_hover_text(error);
                         }
-                    },
-                );
-            });
-        });
+                    });
+                });
+        }
 
         let option_action = self.show_option_panel(root, state);
         if matches!(action, Action::None) && !matches!(option_action, Action::None) {
             action = option_action;
         }
+
+        let bottom_offset = 8.0 + self.option_panel_height + self.status_panel_height;
+        egui::Area::new(root.id().with("session-actions"))
+            .order(egui::Order::Foreground)
+            .anchor(
+                egui::Align2::RIGHT_BOTTOM,
+                egui::vec2(-8.0, -bottom_offset),
+            )
+            .show(root.ctx(), |ui| {
+                egui::Frame::new()
+                    .fill(ui.visuals().panel_fill)
+                    .corner_radius(5.0)
+                    .inner_margin(egui::Margin::same(3))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            if (matches!(
+                                state.phase,
+                                desktop::Phase::Failed | desktop::Phase::Disconnected
+                            ) || logical_missing)
+                                && ui
+                                    .add_enabled(
+                                        !state.changing_sessions,
+                                        egui::Button::new(if recreate {
+                                            if state.changing_sessions {
+                                                "Recreating…"
+                                            } else {
+                                                "Recreate"
+                                            }
+                                        } else {
+                                            "Reconnect"
+                                        })
+                                        .min_size(egui::vec2(0.0, 28.0)),
+                                    )
+                                    .on_hover_text(if recreate {
+                                        "Create a new empty window with this session name on the same server."
+                                    } else {
+                                        "Attempt to reconnect to this server."
+                                    })
+                                    .clicked()
+                            {
+                                match self.form.connection() {
+                                    Ok(connection) => {
+                                        self.notice = None;
+                                        if recreate {
+                                            self.creating = Some(self.session_name().to_owned());
+                                            action = Action::CreateSession(connection);
+                                        } else {
+                                            action = Action::Connect(connection);
+                                        }
+                                    }
+                                    Err(error) => self.notice = Some(error.to_string()),
+                                }
+                            }
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new("Exit")
+                                            .color(egui::Color32::WHITE)
+                                            .strong(),
+                                    )
+                                    .fill(egui::Color32::from_rgb(150, 38, 38))
+                                    .min_size(egui::vec2(0.0, 28.0)),
+                                )
+                                .on_hover_text(
+                                    "Close this session locally. Remote jobs keep running.",
+                                )
+                                .clicked()
+                            {
+                                action = Action::Disconnect;
+                            }
+                        });
+                    });
+            });
 
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
@@ -2086,9 +2049,12 @@ impl DesktopUi {
                 if input_ready {
                     // The option editor is local chrome, not a request to
                     // shrink the remote tmux client and rebuild every pane.
-                    if let Ok(size) =
-                        terminal_client_size(rect, self.option_panel_height, cell_width, row_height)
-                        && self.client_cells != Some(size)
+                    if let Ok(size) = terminal_client_size(
+                        rect,
+                        self.option_panel_height + self.status_panel_height,
+                        cell_width,
+                        row_height,
+                    ) && self.client_cells != Some(size)
                     {
                         let stable = match self.pending_client_cells {
                             Some((pending, at)) if pending == size => {
@@ -2237,7 +2203,7 @@ impl DesktopUi {
                                 actions.into_iter().map(|action| Step::Send(target, action)),
                             );
                         }
-                        Ok(Some(input::Event::Copy)) => self.copy_pane(root.ctx(), state, false),
+                        Ok(Some(input::Event::Copy)) => self.copy_pane(root.ctx(), state),
                         Ok(Some(input::Event::Paste(paste))) => {
                             steps.push(Step::Send(target, terminal_input::Action::Paste(paste)));
                         }
@@ -2457,9 +2423,9 @@ impl DesktopUi {
         None
     }
 
-    /// `whole` is the status-bar Copy button: always the visible pane.
-    /// Keyboard copy still prefers a live selection.
-    fn copy_pane(&mut self, ctx: &egui::Context, state: &mut desktop::State, whole: bool) {
+    /// Keyboard copy prefers a live selection and otherwise copies the visible
+    /// pane.
+    fn copy_pane(&mut self, ctx: &egui::Context, state: &mut desktop::State) {
         let Some(id) = self.focused else {
             self.notice = Some("Click a pane first.".to_owned());
             self.notice_until = None;
@@ -2474,12 +2440,10 @@ impl DesktopUi {
             self.notice_until = None;
             return;
         };
-        let text = if !whole {
-            pane.terminal.selected_text()
-        } else {
-            None
-        }
-        .unwrap_or_else(|| pane.terminal.screen_lines().join("\n"));
+        let text = pane
+            .terminal
+            .selected_text()
+            .unwrap_or_else(|| pane.terminal.screen_lines().join("\n"));
         terminal::copy(
             ctx,
             text,
@@ -2538,23 +2502,6 @@ fn paste_remote_paths(paths: &[String]) -> anyhow::Result<String> {
     quoted.map(|paths| paths.join(" "))
 }
 
-/// Green = the focused pane's app enabled this mode; red = it did not.
-fn mode_letter(ui: &mut egui::Ui, letter: char, on: bool, on_tip: &str, off_tip: &str) {
-    let color = if on {
-        egui::Color32::from_rgb(72, 196, 112)
-    } else {
-        egui::Color32::from_rgb(220, 88, 88)
-    };
-    ui.label(
-        egui::RichText::new(letter.to_string())
-            .monospace()
-            .strong()
-            .size(14.0)
-            .color(color),
-    )
-    .on_hover_text(if on { on_tip } else { off_tip });
-}
-
 /// Click-only: arrows, Tab, and Escape must stay with the focused pane.
 fn click_button(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) -> egui::Response {
     ui.add(egui::Button::new(text).sense(egui::Sense::CLICK))
@@ -2567,10 +2514,47 @@ pub(crate) fn paint_activity_indicator(ui: &egui::Ui, rect: egui::Rect, time: f6
     paint_activity_dots(ui, rect, step);
 }
 
-/// A refresh mark driven by visible changes rather than a timer. Its bright
-/// dot advances with content/scroll activity and stays still when idle.
-fn paint_refresh_indicator(ui: &egui::Ui, rect: egui::Rect, tick: u64) {
-    paint_activity_dots(ui, rect, tick);
+/// A refresh mark driven by visible changes rather than a permanent timer.
+/// Fresh activity sends a bright comet around the ring, then leaves it parked.
+const REFRESH_ANIMATION_DURATION: time::Duration = time::Duration::from_secs(1);
+
+fn paint_refresh_indicator(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    tick: u64,
+    animation_tick: u64,
+    animation_age: Option<time::Duration>,
+) {
+    const DOTS: usize = 8;
+    let phase = animation_age
+        .map(|age| {
+            animation_tick as f32
+                + age.as_secs_f32() / REFRESH_ANIMATION_DURATION.as_secs_f32() * DOTS as f32
+        })
+        .unwrap_or(tick as f32);
+    let head = phase.floor() as usize % DOTS;
+    let center = rect.center();
+    let radius = rect.width().min(rect.height()) * 0.36;
+    let color = ui.visuals().strong_text_color();
+    for index in 0..DOTS {
+        let trail = (head + DOTS - index) % DOTS;
+        let strength = match trail {
+            0 => 1.0,
+            1 => 0.68,
+            2 => 0.42,
+            _ => 0.16,
+        };
+        let angle =
+            index as f32 / DOTS as f32 * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
+        let position = center + egui::vec2(angle.cos(), angle.sin()) * radius;
+        ui.painter()
+            .circle_filled(position, 1.55, color.gamma_multiply(strength));
+    }
+    let pulse = animation_age
+        .map(|age| 0.35 + 0.35 * (age.as_secs_f32() * 18.0).sin().abs())
+        .unwrap_or(0.24);
+    ui.painter()
+        .circle_filled(center, 1.2, color.gamma_multiply(pulse));
 }
 
 fn paint_activity_dots(ui: &egui::Ui, rect: egui::Rect, step: u64) {
@@ -2653,6 +2637,55 @@ fn latency_warning(
     waiting
         .filter(|waiting| *waiting >= threshold)
         .map(|waiting| (waiting, threshold))
+}
+
+/// Paint the compact server-wide feedback shown beside a sidebar server name.
+/// Input backlog and latency belong to the shared control stream, not to an
+/// individual logical window.
+pub(crate) fn paint_server_status(ui: &mut egui::Ui, state: &desktop::State) {
+    let waiting = state.input_wait();
+    let warning = latency_warning(state.last_rtt, waiting);
+    if let (Some(waiting), None) = (waiting, warning) {
+        let threshold = latency_warning_threshold(state.last_rtt);
+        ui.ctx()
+            .request_repaint_after(threshold.saturating_sub(waiting));
+    }
+    let response = paint_latency(ui, state.last_rtt, warning.is_some());
+    if let Some((waiting, threshold)) = warning {
+        ui.ctx()
+            .request_repaint_after(time::Duration::from_millis(100));
+        response.on_hover_text(format!(
+            "No tmux acknowledgment for {} ms; warning threshold {} ms",
+            waiting.as_millis(),
+            threshold.as_millis(),
+        ));
+    } else if state.last_rtt.is_some()
+        && let Some(latency) = state.input_latency
+    {
+        response.on_hover_text(format!(
+            "Last input: {} ms queued, {} ms awaiting tmux; {} bytes in {} output events; maximum tmux output lag {} ms",
+            latency.queue.as_millis(),
+            latency.control.as_millis(),
+            latency.output_bytes,
+            latency.output_events,
+            latency.max_output_lag_ms,
+        ));
+    }
+
+    let backlog = state.input_backlog();
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(input_backlog_width(backlog.total()), 12.0),
+        egui::Sense::hover(),
+    );
+    paint_input_backlog(ui, rect, backlog);
+    if backlog.total() != 0 {
+        response.on_hover_text(format!(
+            "{} terminal input actions awaiting confirmation: {} queued locally, {} dispatched to the control stream",
+            backlog.total(),
+            backlog.queued,
+            backlog.in_flight,
+        ));
+    }
 }
 
 fn can_recreate_missing_session(state: &desktop::State, logical_missing: bool) -> bool {
@@ -2940,10 +2973,11 @@ mod tests {
     fn refresh_marker_tracks_visible_changes_and_scrolling_not_time() {
         let mut ui = DesktopUi::default();
         let mut state = desktop::State::interactive_demo().unwrap();
-        ui.note_refresh(&state, false);
+        assert!(ui.note_refresh(&state, false));
         let initial = ui.refresh_tick;
+        let animation_started = ui.refresh_started;
 
-        ui.note_refresh(&state, false);
+        assert!(!ui.note_refresh(&state, false));
         assert_eq!(ui.refresh_tick, initial, "an idle frame is not activity");
 
         let pane = state
@@ -2959,11 +2993,13 @@ mod tests {
                 pane,
                 bytes: b"changed".to_vec(),
             });
-        ui.note_refresh(&state, false);
+        assert!(ui.note_refresh(&state, false));
         assert_eq!(ui.refresh_tick, initial + 1);
+        assert_eq!(ui.refresh_started, animation_started);
 
-        ui.note_refresh(&state, true);
+        assert!(ui.note_refresh(&state, true));
         assert_eq!(ui.refresh_tick, initial + 2);
+        assert_eq!(ui.refresh_started, animation_started);
     }
 
     #[test]
@@ -3772,17 +3808,45 @@ mod tests {
     }
 
     #[test]
-    fn local_option_chrome_does_not_change_the_reported_tmux_size() {
+    fn local_bottom_chrome_does_not_change_the_reported_tmux_size() {
         let full = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
         let option_height = 68.0;
+        let status_height = 36.0;
+        let local_height = option_height + status_height;
         let reduced = egui::Rect::from_min_size(
             egui::Pos2::ZERO,
-            egui::vec2(full.width(), full.height() - option_height),
+            egui::vec2(full.width(), full.height() - local_height),
         );
         assert_eq!(
             terminal_client_size(full, 0.0, 8.0, 16.0).unwrap(),
-            terminal_client_size(reduced, option_height, 8.0, 16.0).unwrap(),
+            terminal_client_size(reduced, local_height, 8.0, 16.0).unwrap(),
         );
+    }
+
+    #[test]
+    fn status_row_exists_only_while_there_is_a_message() {
+        let ctx = egui::Context::default();
+        crate::window::configure(&ctx);
+        let mut state = desktop::State::interactive_demo().unwrap();
+        let mut ui = DesktopUi::default();
+        ui.open_terminal();
+        let _ = ctx.run_ui(screen_input(), |root| {
+            ui.show(root, &mut state);
+        });
+        assert!(
+            egui::containers::panel::PanelState::load(&ctx, egui::Id::new("status-message"))
+                .is_none()
+        );
+
+        ui.notice = Some("Something happened".to_owned());
+        let _ = ctx.run_ui(screen_input(), |root| {
+            ui.show(root, &mut state);
+        });
+        let height =
+            egui::containers::panel::PanelState::load(&ctx, egui::Id::new("status-message"))
+                .map(|panel| panel.rect.height())
+                .unwrap_or_default();
+        assert!((30.0..42.0).contains(&height));
     }
 
     #[test]
