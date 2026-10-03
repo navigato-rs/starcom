@@ -85,9 +85,13 @@ authentication and host-key checks as **Connect**, while the saved file holds
 destinations, never credentials.
 **Create** is the one action that may start a tmux server. Later creates use
 `new-window` on the existing control stream. The same host view lists other tmux
-sessions with an explicit **Migrate** action that moves their windows into the
-managed session. Saved v0.3 tabs are retained as migration candidates; they no
-longer create independent runtime attachments and are never silently deleted.
+sessions in the same one-row-per-session list. Selecting one replaces
+**Connect** with explicit **Migrate** and **Terminate** actions; migration moves
+its windows into the managed session and connects to the first one. All
+non-managed tmux sessions use this same path, regardless of which tool created
+them. Obsolete v0.3 saved-tab records no longer create independent runtime
+attachments or preselect a host. Switching hosts supersedes an in-flight lookup
+immediately, and a late answer cannot replace the new host's result.
 
 The desktop currently supports local scrollback, selection and copying, pane
 split/move/zoom/close controls, moving a pane into an automatically named new

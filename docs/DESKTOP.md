@@ -69,10 +69,10 @@ value, and the next refresh adopts the server's current value. Unsupported or
 ambiguous pre-existing option names and multiline values are left untouched and
 are not shown as editable rows.
 
-Workspace v3 records whether a tab is a managed window. Tabs loaded from v0.3
-workspace files remain saved migration candidates and are shown in the
-connection form for their host. They do not start independent SSH/tmux clients.
-Only the explicit **Migrate** action changes the remote session. See
+Workspace v3 records whether a tab is a managed window. Obsolete v0.3 session
+records do not start clients or preselect a host. Live non-managed tmux sessions
+are discovered uniformly, whether Starcom or another tool created them. Only an
+explicit **Migrate** or **Terminate** action changes one. See
 [SESSION-MODEL.md](SESSION-MODEL.md).
 
 ## SSH configuration
@@ -157,7 +157,9 @@ The demo neither reads nor writes this file.
 
 ## Finding and creating sessions
 
-Selecting a known host lists its managed windows automatically. **Refresh** asks again.
+Selecting a known host lists its managed windows and other tmux sessions
+automatically. **Refresh** asks again. Superseded host lookups cannot publish a
+late result or delay the replacement lookup.
 The query runs `tmux -N`, so it can never bring a tmux server into existence: a
 host with no tmux running says so. Locally open windows are shown in red and cannot
 be selected. The last session this tab attached to is selected when it is still
@@ -175,18 +177,17 @@ and opens its tab. The first creation may start tmux and the managed `starcom`
 session; later creations issue `new-window` through the live control client. No
 failure path creates either one implicitly.
 
-Below the managed windows, **Other tmux sessions** lists sessions whose name is
-not `starcom`. **Migrate** assigns deterministic non-conflicting logical names,
-links and verifies all of the source windows in the managed session, and then
-unlinks them from the source. Removing the final link closes the old tmux
-session without killing its panes or programs. Grouped sessions are shown but
-cannot be migrated, and attached ordinary tmux clients are called out because
-they will lose that source session. Per-session tmux options and environment are
-not transferred; they are not window state.
-
-Saved v0.3 candidates are never removed merely because their remote session is
-missing. Their **Exit** button forgets only the saved Starcom tab and does not
-run a tmux command.
+Managed windows and non-managed tmux sessions appear in one vertical list. A
+managed selection offers **Connect**. A non-managed selection offers
+**Migrate** and **Terminate**; one-window sources omit the redundant window
+count. **Migrate** assigns deterministic non-conflicting logical names, links
+and verifies every source window in the managed session, unlinks them from the
+source, and connects to the first migrated window. Removing the final link
+closes the old tmux session without killing its panes or programs. Grouped
+sessions are shown but cannot be migrated. **Terminate** revalidates the selected
+session identity before killing it. Attached ordinary tmux clients are called
+out because either action may disrupt them. Per-session tmux options and
+environment are not transferred; they are not window state.
 
 Listing and migration use bounded short-lived connections even when the managed
 workspace is already attached, because discovery also needs the server's other

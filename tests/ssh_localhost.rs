@@ -694,6 +694,29 @@ fn migration_moves_every_window_into_the_managed_session() {
     }
 }
 
+/// A destructive legacy-session action revalidates the selected identity and
+/// removes only that isolated source session.
+#[test]
+#[ignore = "requires the isolated SSH/tmux fixture"]
+fn termination_removes_the_selected_non_managed_session() {
+    use starcom::sessions;
+
+    let source = format!("legacy-terminate-{}", process::id());
+    tmux(&["new-session", "-d", "-s", &source, "-n", "only", "sleep 60"]);
+    let socket = root().join("tmux.sock");
+    let before = sessions::discover(&options(), socket.to_str()).unwrap();
+    let selected = before
+        .other
+        .iter()
+        .find(|session| session.name == source)
+        .expect("new legacy session was not discovered")
+        .clone();
+
+    let after = sessions::terminate(&options(), socket.to_str(), &selected).unwrap();
+    assert!(!after.other.iter().any(|session| session.name == source));
+    tmux(&["has-session", "-t", "=starcom"]);
+}
+
 /// SFTP upload writes a file the shell can read. The fixture sshd must offer
 /// the sftp subsystem; scripts/test-ssh.sh adds it when sftp-server exists.
 #[test]

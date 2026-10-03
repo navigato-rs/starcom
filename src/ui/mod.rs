@@ -293,8 +293,10 @@ pub enum Action {
     CreateSession(desktop::Connection),
     /// Move every window from a user-selected non-managed tmux session.
     MigrateSession(desktop::Connection, sessions::OtherSession),
-    /// Remove one saved v0.3 candidate without touching remote tmux state.
-    ForgetMigration(String),
+    /// Terminate one user-selected non-managed tmux session.
+    TerminateSession(desktop::Connection, sessions::OtherSession),
+    /// Invalidate a session query when its host is no longer selected.
+    CancelDiscovery,
     Disconnect,
     /// Rename this logical session's tmux window.
     RenameSession(String),
@@ -400,6 +402,11 @@ pub struct DesktopUi {
     /// Session we just asked to create; shown in the list and attached as soon
     /// as the host confirms it.
     creating: Option<String>,
+    /// A non-managed tmux session selected for migration or termination.
+    selected_other: Option<tmuxctl::SessionId>,
+    /// Migration selects its first managed window and connects on the next
+    /// form frame through the ordinary attachment path.
+    connect_after_migration: bool,
     /// In-flight SFTP upload from a file drop. The control worker is not
     /// involved; progress and completion are polled on the next frames.
     upload: Option<Upload>,
@@ -427,9 +434,6 @@ pub struct DesktopUi {
     /// SSH destinations with a live tab in this workspace. Literal Host
     /// buttons use this to make already-open servers easy to spot.
     connected_servers: collections::BTreeSet<String>,
-    /// Non-managed session names represented by saved v0.3 records for the
-    /// currently selected destination.
-    migration_candidates: collections::BTreeSet<String>,
     /// Last cell size sent to tmux, so we do not spam refresh-client -C.
     client_cells: Option<core::Size>,
     pending_client_cells: Option<(core::Size, time::Instant)>,
@@ -472,6 +476,8 @@ impl DesktopUi {
             restore_focus: false,
             create_name: String::new(),
             creating: None,
+            selected_other: None,
+            connect_after_migration: false,
             upload: None,
             upload_progress: None,
             drop_prompt: None,
@@ -482,7 +488,6 @@ impl DesktopUi {
             focus_new_session: false,
             unavailable_sessions: collections::BTreeSet::new(),
             connected_servers: collections::BTreeSet::new(),
-            migration_candidates: collections::BTreeSet::new(),
             client_cells: None,
             pending_client_cells: None,
             refresh_tick: 0,
@@ -557,13 +562,11 @@ impl DesktopUi {
         self.connected_servers = servers;
     }
 
-    pub(crate) fn set_migration_candidates(&mut self, candidates: collections::BTreeSet<String>) {
-        self.migration_candidates = candidates;
-    }
-
     pub(crate) fn migration_completed(&mut self, migration: &sessions::Migration) {
         if let Some(window) = migration.windows.first() {
             self.form.session.clone_from(&window.name);
+            self.selected_other = None;
+            self.connect_after_migration = true;
         }
         let count = migration.windows.len();
         let noun = if count == 1 { "window" } else { "windows" };
@@ -762,6 +765,7 @@ impl DesktopUi {
     fn show_connection(&mut self, root: &mut egui::Ui, state: &desktop::State) -> Action {
         let mut action = Action::None;
         let mut chosen = None;
+        let mut cancel_listing = false;
         egui::CentralPanel::default().show_inside(root, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.vertical_centered(|ui| {
@@ -782,6 +786,7 @@ impl DesktopUi {
                     let busy = matches!(state.discovery, Some(desktop::Discovery::Running));
                     let host_ready = self.form.host_ready();
                     let listing_here = self.listed_destination == self.form.destination();
+                    let busy_here = busy && listing_here;
 
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new("Host").size(18.0).strong());
@@ -813,7 +818,8 @@ impl DesktopUi {
                                 text = text.color(egui::Color32::from_rgb(102, 210, 132));
                             }
                             if ui
-                                .add(
+                                .add_enabled(
+                                    !state.changing_sessions,
                                     egui::Button::new(text)
                                         .selected(selected)
                                         .min_size(egui::vec2(0.0, 44.0))
@@ -822,16 +828,24 @@ impl DesktopUi {
                                 )
                                 .clicked()
                             {
+                                let changed_host = self.form.destination() != alias;
                                 if selected {
                                     self.listed_destination.clear();
                                 }
                                 self.form.destination = alias.clone();
+                                if changed_host {
+                                    self.form.session.clear();
+                                    self.selected_other = None;
+                                    self.create_name.clear();
+                                    cancel_listing = true;
+                                }
                                 self.refresh_profile();
                                 self.auto_list = true;
                                 self.focus_new_session = true;
                             }
                         }
-                        let response = ui.add(
+                        let response = ui.add_enabled(
+                            !state.changing_sessions,
                             egui::TextEdit::singleline(&mut self.form.destination)
                                 .id(egui::Id::new("starcom-destination"))
                                 .font(egui::FontId::proportional(22.0))
@@ -841,6 +855,10 @@ impl DesktopUi {
                                 .hint_text("hostname, address, or alias"),
                         );
                         if response.changed() {
+                            self.form.session.clear();
+                            self.selected_other = None;
+                            self.create_name.clear();
+                            cancel_listing = true;
                             self.refresh_profile();
                             self.auto_list = false;
                         }
@@ -889,22 +907,24 @@ impl DesktopUi {
                     }
 
                     ui.add_space(12.0);
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(egui::RichText::new("Starcom sessions").strong());
-                        if ui
-                            .add_enabled(
-                                host_ready && idle && !busy,
-                                egui::Button::new("Refresh"),
-                            )
-                            .on_hover_text(
-                                "List windows in Starcom's managed tmux session. Uses tmux -N, \
-                                 so it cannot start a server.",
-                            )
-                            .clicked()
-                        {
-                            self.listed_destination.clear();
-                            self.auto_list = true;
-                        }
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("Sessions").strong());
+                            if ui
+                                .add_enabled(
+                                    host_ready && idle && !busy_here,
+                                    egui::Button::new("Refresh"),
+                                )
+                                .on_hover_text(
+                                    "List managed windows and other tmux sessions. Uses tmux -N, \
+                                     so it cannot start a server.",
+                                )
+                                .clicked()
+                            {
+                                self.listed_destination.clear();
+                                self.auto_list = true;
+                            }
+                        });
                         match state.discovery {
                             None if self.form.destination().is_empty() => {
                                 ui.weak("Pick a host to see its sessions.");
@@ -912,7 +932,7 @@ impl DesktopUi {
                             None => {
                                 ui.weak("Sessions appear after the host is contacted.");
                             }
-                            Some(desktop::Discovery::Running) => {
+                            Some(desktop::Discovery::Running) if listing_here => {
                                 ui.weak("Asking the host…");
                             }
                             Some(desktop::Discovery::Failed(ref detail)) if listing_here => {
@@ -935,16 +955,25 @@ impl DesktopUi {
                                 }
                             }
                             Some(desktop::Discovery::Sessions(ref found)) if listing_here => {
+                                if self.selected_other.is_some_and(|id| {
+                                    !found.other.iter().any(|source| source.id == id)
+                                }) {
+                                    self.selected_other = None;
+                                }
                                 let in_use = |summary: &crate::sessions::Summary| {
                                     self.unavailable_sessions.contains(&summary.name)
                                 };
                                 let pending = self.creating.as_ref().filter(|name| {
                                     !found.managed.iter().any(|summary| summary.name == **name)
                                 });
-                                if found.managed.is_empty() && pending.is_none() {
-                                    ui.weak("No Starcom sessions exist on this host yet.");
+                                if found.managed.is_empty()
+                                    && found.other.is_empty()
+                                    && pending.is_none()
+                                {
+                                    ui.weak("No tmux sessions exist on this host yet.");
                                 } else {
-                                    if !found.managed.iter().any(|summary| {
+                                    if self.selected_other.is_none()
+                                        && !found.managed.iter().any(|summary| {
                                         summary.name == self.form.session && !in_use(summary)
                                     })
                                         && pending.is_none()
@@ -992,12 +1021,13 @@ impl DesktopUi {
                                                 "This logical session is already open in Starcom.",
                                             );
                                         if response.clicked() {
+                                            self.selected_other = None;
                                             chosen = Some(summary.name.clone());
                                         }
                                         if response.double_clicked()
                                             && !unavailable
                                             && idle
-                                            && !busy
+                                            && !busy_here
                                         {
                                             chosen = Some(summary.name.clone());
                                             self.form.session = summary.name.clone();
@@ -1013,77 +1043,31 @@ impl DesktopUi {
                                         }
                                     }
                                 }
-                                if !found.other.is_empty() || !self.migration_candidates.is_empty() {
-                                    ui.separator();
-                                    ui.label(egui::RichText::new("Other tmux sessions").strong());
-                                    for source in &found.other {
-                                        let saved = self.migration_candidates.contains(&source.name);
-                                        let windows = source.windows.len();
-                                        let window_label =
-                                            if windows == 1 { "window" } else { "windows" };
-                                        let mut label = format!(
-                                            "{} · {windows} {window_label}",
-                                            source.name
-                                        );
-                                        if source.attached > 0 {
-                                            label.push_str(&format!(" · {} attached", source.attached));
-                                        }
-                                        if saved {
-                                            label.push_str(" · saved in v0.3");
-                                        }
-                                        ui.label(label);
-                                        let migrate = ui
-                                            .add_enabled(
-                                                idle && !busy && !source.grouped,
-                                                egui::Button::new("Migrate")
-                                                    .sense(egui::Sense::CLICK),
-                                            )
-                                            .on_hover_text(if source.grouped {
-                                                "Grouped tmux sessions are not migrated because their window links change together."
-                                            } else {
-                                                "Move every window into Starcom's managed tmux session. The source session closes after its final window moves."
-                                            });
-                                        if migrate.clicked() {
-                                            match self.form.listing() {
-                                                Ok(connection) => {
-                                                    self.notice = None;
-                                                    action = Action::MigrateSession(
-                                                        connection,
-                                                        source.clone(),
-                                                    );
-                                                }
-                                                Err(error) => {
-                                                    self.notice = Some(error.to_string())
-                                                }
-                                            }
-                                        }
-                                        if saved
-                                            && ui
-                                                .small_button("Exit")
-                                                .on_hover_text(
-                                                    "Remove the saved v0.3 Starcom tab. This does not change the remote tmux session.",
-                                                )
-                                                .clicked()
-                                        {
-                                            action = Action::ForgetMigration(source.name.clone());
-                                        }
+                                for source in &found.other {
+                                    let mut label = source.name.clone();
+                                    if source.windows.len() > 1 {
+                                        label.push_str(&format!(
+                                            " · {} windows",
+                                            source.windows.len()
+                                        ));
                                     }
-                                    for missing in self.migration_candidates.iter().filter(|name| {
-                                        !found.other.iter().any(|source| source.name == **name)
-                                    }) {
-                                        ui.colored_label(
-                                            ui.visuals().error_fg_color,
-                                            format!("{missing} · saved in v0.3 · not found"),
-                                        );
-                                        if ui
-                                            .small_button("Exit")
-                                            .on_hover_text(
-                                                "Remove the saved v0.3 Starcom tab. Nothing is deleted on the remote host.",
-                                            )
-                                            .clicked()
-                                        {
-                                            action = Action::ForgetMigration(missing.clone());
-                                        }
+                                    if source.attached > 0 {
+                                        label.push_str(&format!(" · {} attached", source.attached));
+                                    }
+                                    if source.grouped {
+                                        label.push_str(" · grouped");
+                                    }
+                                    let selected = self.selected_other == Some(source.id);
+                                    if ui
+                                        .add(
+                                            egui::Button::new(label)
+                                                .selected(selected)
+                                                .sense(egui::Sense::CLICK),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.selected_other = Some(source.id);
+                                        self.form.session.clear();
                                     }
                                 }
                             }
@@ -1092,46 +1076,117 @@ impl DesktopUi {
                             }
                         }
                         if host_ready {
-                            let create = ui.add(
-                                egui::TextEdit::singleline(&mut self.create_name)
-                                    .id(egui::Id::new("starcom-new-session"))
-                                    .hint_text("new session")
-                                    .desired_width(160.0)
-                                    .min_size(egui::vec2(160.0, 28.0)),
-                            );
-                            if self.focus_new_session {
-                                create.request_focus();
-                                self.focus_new_session = false;
-                            }
-                            if ui
-                                .add_enabled(
-                                    idle
-                                        && !busy
-                                        && !self.create_name.trim().is_empty(),
-                                    egui::Button::new("Create").sense(egui::Sense::CLICK),
-                                )
-                                .on_hover_text(
-                                    "Create a named window in Starcom's managed tmux session. \
-                                     This starts tmux if needed.",
-                                )
-                                .clicked()
-                            {
-                                match self.form.connection_named(self.create_name.trim()) {
-                                    Ok(connection) => {
-                                        self.notice = None;
-                                        self.creating =
-                                            Some(self.create_name.trim().to_owned());
-                                        self.form.session = self.create_name.trim().to_owned();
-                                        action = Action::CreateSession(connection);
-                                    }
-                                    Err(error) => self.notice = Some(error.to_string()),
+                            ui.horizontal(|ui| {
+                                let create = ui.add(
+                                    egui::TextEdit::singleline(&mut self.create_name)
+                                        .id(egui::Id::new("starcom-new-session"))
+                                        .hint_text("new session")
+                                        .desired_width(160.0)
+                                        .min_size(egui::vec2(160.0, 28.0)),
+                                );
+                                if self.focus_new_session {
+                                    create.request_focus();
+                                    self.focus_new_session = false;
                                 }
-                            }
+                                if ui
+                                    .add_enabled(
+                                        idle
+                                            && !busy_here
+                                            && !self.create_name.trim().is_empty(),
+                                        egui::Button::new("Create").sense(egui::Sense::CLICK),
+                                    )
+                                    .on_hover_text(
+                                        "Create a named window in Starcom's managed tmux session. \
+                                         This starts tmux if needed.",
+                                    )
+                                    .clicked()
+                                {
+                                    match self.form.connection_named(self.create_name.trim()) {
+                                        Ok(connection) => {
+                                            self.notice = None;
+                                            self.creating =
+                                                Some(self.create_name.trim().to_owned());
+                                            self.form.session = self.create_name.trim().to_owned();
+                                            action = Action::CreateSession(connection);
+                                        }
+                                        Err(error) => self.notice = Some(error.to_string()),
+                                    }
+                                }
+                            });
                         }
                     });
 
                     ui.add_space(12.0);
+                    let selected_other = match state.discovery {
+                        Some(desktop::Discovery::Sessions(ref found)) if listing_here => self
+                            .selected_other
+                            .and_then(|id| found.other.iter().find(|source| source.id == id))
+                            .cloned(),
+                        _ => None,
+                    };
+                    if self.connect_after_migration && idle {
+                        self.connect_after_migration = false;
+                        match self.form.connection() {
+                            Ok(connection) => {
+                                self.notice = None;
+                                action = Action::Connect(connection);
+                            }
+                            Err(error) => self.notice = Some(error.to_string()),
+                        }
+                    }
                     ui.horizontal(|ui| {
+                        if let Some(ref source) = selected_other {
+                            let migrate = ui
+                                .add_enabled(
+                                    idle && !busy_here && !source.grouped,
+                                    egui::Button::new("Migrate")
+                                        .min_size(egui::vec2(112.0, 28.0))
+                                        .sense(egui::Sense::CLICK),
+                                )
+                                .on_hover_text(if source.grouped {
+                                    "Grouped tmux sessions are not migrated because their window links change together."
+                                } else {
+                                    "Move every window into Starcom's managed tmux session, then connect to the first one."
+                                });
+                            if migrate.clicked() {
+                                match self.form.listing() {
+                                    Ok(connection) => {
+                                        self.notice = None;
+                                        action = Action::MigrateSession(
+                                            connection,
+                                            source.clone(),
+                                        );
+                                    }
+                                    Err(error) => self.notice = Some(error.to_string()),
+                                }
+                            }
+                            if ui
+                                .add_enabled(
+                                    idle && !busy_here,
+                                    egui::Button::new(
+                                        egui::RichText::new("Terminate")
+                                            .color(ui.visuals().error_fg_color),
+                                    )
+                                    .sense(egui::Sense::CLICK),
+                                )
+                                .on_hover_text(
+                                    "Kill this tmux session and its unshared windows and panes.",
+                                )
+                                .clicked()
+                            {
+                                match self.form.listing() {
+                                    Ok(connection) => {
+                                        self.notice = None;
+                                        action = Action::TerminateSession(
+                                            connection,
+                                            source.clone(),
+                                        );
+                                    }
+                                    Err(error) => self.notice = Some(error.to_string()),
+                                }
+                            }
+                            return;
+                        }
                         let connecting = state.phase == desktop::Phase::Connecting;
                         let session_unavailable = self
                             .unavailable_sessions
@@ -1261,6 +1316,7 @@ impl DesktopUi {
             });
         });
         if let Some(name) = chosen {
+            self.selected_other = None;
             self.form.session = name;
         }
         if matches!(action, Action::None) && self.auto_list {
@@ -1274,11 +1330,12 @@ impl DesktopUi {
                     | desktop::Phase::Reconnecting
             );
             let busy = matches!(state.discovery, Some(desktop::Discovery::Running));
+            let busy_here = busy && dest == self.listed_destination;
             if !dest.is_empty()
                 && dest != self.listed_destination
                 && self.form.host_ready()
                 && idle
-                && !busy
+                && !busy_here
             {
                 self.listed_destination = dest;
                 match self.form.listing() {
@@ -1289,6 +1346,9 @@ impl DesktopUi {
                     Err(error) => self.notice = Some(error.to_string()),
                 }
             }
+        }
+        if cancel_listing && matches!(action, Action::None) {
+            action = Action::CancelDiscovery;
         }
         action
     }
@@ -3118,6 +3178,33 @@ mod tests {
         assert!(matches!(paint(&mut ui, &mut state), Action::Connect(_)));
         assert!(ui.creating.is_none());
         assert_eq!(ui.form.session, "fresh");
+    }
+
+    #[test]
+    fn migration_selects_and_connects_the_first_managed_window() {
+        let mut ui = DesktopUi::default();
+        ui.form.destination = "zork".to_owned();
+        ui.form.host = "10.0.0.2".to_owned();
+        ui.listed_destination = "zork".to_owned();
+        let first = crate::sessions::Summary {
+            id: tmuxctl::WindowId(7),
+            name: "migrated/0".into(),
+            panes: 1,
+        };
+        let listing = crate::sessions::Listing {
+            managed: vec![first.clone()],
+            ..Default::default()
+        };
+        ui.migration_completed(&crate::sessions::Migration {
+            source: "legacy".into(),
+            windows: vec![first],
+            listing: listing.clone(),
+        });
+        let mut state = desktop::State::default();
+        state.discovery = Some(desktop::Discovery::Sessions(listing));
+        assert!(matches!(paint(&mut ui, &mut state), Action::Connect(_)));
+        assert_eq!(ui.form.session, "migrated/0");
+        assert!(!ui.connect_after_migration);
     }
 
     #[test]
