@@ -56,17 +56,17 @@ existing control attachment waits for tmux's reply, for at most five seconds.
 If tmux applies the rename but its completion reply is lost, Starcom discards
 that stream and reconnects once without retrying the non-idempotent command.
 
-The **Options (N)** checkbox immediately after **Paste** in the bottom status
+The **Options[N]** toggle immediately after **Paste** in the bottom status
 bar exposes user options attached to the selected tmux window. The editor grows
 upward from that bar by exactly the rows it needs, up to the space needed to
 keep the terminal usable; larger sets scroll. This local editor does not resize
 the remote tmux client or rebuild its pane layout. Each row has a name, value,
-and delete button; the final empty row creates another option. The `@` prefix is
+and delete button; the first empty row creates another option. The `@` prefix is
 implicit. Starcom accepts a
 nonempty name of up to 64 ASCII letters, digits, dots, underscores, and hyphens;
 spaces and other characters are dropped while typing. Values are single-line,
 control-free text up to 4096 bytes, including the empty string. The collapsed
-checkbox retains the option count, and hovering a tab lists that window's option
+toggle retains the option count, and hovering a tab lists that window's option
 names.
 
 Options are server-side tmux state, not part of the saved Starcom workspace.
@@ -91,7 +91,7 @@ accepts a hostname, address, or alias that is not in that list. Selecting a know
 resolves the supported
 profile and lists the named windows in that host's managed `starcom` session,
 selecting the first available one so
-**Connect** is available immediately. A window already open locally is red and unavailable,
+**Connect** is available immediately. A window already open locally is green and unavailable,
 which also prevents opening a duplicate local tab. Keyboard focus moves to the
 **new session** field after choosing a host, so choosing and typing can be one
 continuous action. A literal Host button is green while this workspace has a
@@ -99,6 +99,8 @@ live connection to that destination. Startup groups saved managed tabs by their
 fully resolved route and attaches once per group without listing first, using
 the current SSH configuration. Enter in the custom host field refreshes the
 managed-window list; an already-live server supplies it from the shared view.
+Non-managed tmux sessions use yellow text and show the pane count of each source
+window before their explicit **Migrate** and **Terminate** actions.
 
 Currently supported:
 

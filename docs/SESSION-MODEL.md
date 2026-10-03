@@ -99,7 +99,7 @@ the host control client. A separate, confirmed action may eventually delete a
 remote session/window; **Exit** must not acquire that meaning.
 
 The composer lists all managed windows and marks names already open in this local
-workspace red and unavailable, preventing duplicate logical tabs. An ordinary
+workspace green and unavailable, preventing duplicate logical tabs. An ordinary
 tmux client may still attach to the managed session as a fallback; its presence
 does not make every window unavailable.
 
