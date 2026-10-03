@@ -12,7 +12,7 @@ use anyhow::Context;
 use crate::ssh;
 
 const MAX_FILES: usize = 8;
-/// Files larger than this need an explicit Yes in the status bar.
+/// Files larger than this need an explicit Yes in the transient status row.
 pub const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_NAME: usize = 255;
 

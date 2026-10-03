@@ -71,7 +71,7 @@ A logical tab owns:
 
 - a unique tmux window name plus the last observed window ID;
 - selected pane, local history position, selection, and transient UI state;
-- its activity/quiet marker and ordering in the local tab strip.
+- its activity/quiet marker and ordering in the local server group.
 
 Window IDs are authoritative within a live tmux server. The saved name is the
 resume target. On reconnect, Starcom validates the saved ID and name against a

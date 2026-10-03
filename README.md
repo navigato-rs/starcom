@@ -74,10 +74,11 @@ and unavailable, and hosts already connected in this workspace appear first and
 in green, including destinations absent from SSH config. Typing is focused
 in the new-session field after the host choice. A tab is
 registered for that session while it connects and remains available for an
-explicit retry after failure. Tabs show session names only;
-the active server is shown in bold beside its latency. Each tab is one named
-window. Tabs on the same resolved server share one SSH connection, one tmux
-control client, one reconstructed view, and one reconnect schedule.
+explicit retry after failure. A narrow left sidebar groups session names under
+full-width server headers; each header carries that server's latency and pending
+input indicator. Each tab is one named window. Tabs on the same resolved server
+share one SSH connection, one tmux control client, one reconstructed view, and
+one reconnect schedule.
 
 Tabs are saved and resumed automatically by reconnecting once per server and
 reopening their named windows; this can be disabled in **About**. Startup uses the same SSH

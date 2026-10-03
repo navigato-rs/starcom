@@ -13,6 +13,10 @@ fps 5
 # Seconds a connected tab may sit without a screen change before its chip
 # turns blue. 0 disables the hint.
 idle 30
+# Width of the resizable server/session sidebar, in pixels (120..=320).
+sidebar-width 184
+# Workspace-wide terminal font size, in points (10..=28).
+font-size 14
 
 [tab]
 model window

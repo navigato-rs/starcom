@@ -55,11 +55,7 @@ pub(crate) enum Action {
     New,
     Select(u64),
     Close(u64),
-    /// Move `id` so it occupies `insert_at` in the current tab list.
-    Reorder {
-        id: u64,
-        insert_at: usize,
-    },
+    Reorder { id: u64, target: u64, after: bool },
     Tab(u64, Box<ui::Action>),
 }
 
@@ -79,6 +75,8 @@ pub(crate) struct Workspace {
     store: Option<path::PathBuf>,
     fps: u32,
     idle: u32,
+    sidebar_width: u16,
+    font_size: u16,
     restore_tabs: bool,
     about: bool,
     about_icon: Option<egui::TextureHandle>,
@@ -97,15 +95,15 @@ pub(crate) struct Workspace {
     /// The winit lifecycle can ask us to shut down through more than one path.
     /// Only the first call may persist and clear the tab list.
     shut_down: bool,
-    /// In-place session rename on a tab chip.
+    /// In-place session rename in the sidebar row.
     renaming: Option<SessionRename>,
     /// Survives extra egui layout passes in the same frame. The last `show`
     /// would otherwise overwrite a RenameSession with terminal Enter.
     submitted_rename: Option<(u64, String)>,
 }
 
-/// The server lives in the status bar; tabs stay compact and name only the
-/// session the user switches between.
+/// Server grouping is navigation chrome; a session label contains only the
+/// user-visible tmux window name.
 fn label(tab: &store::Tab) -> String {
     match tab.session.trim() {
         "" => NEW_CONNECTION.to_owned(),
@@ -113,29 +111,19 @@ fn label(tab: &store::Tab) -> String {
     }
 }
 
-fn same_endpoint(left: &store::Tab, right: &store::Tab) -> bool {
-    left.host.trim() == right.host.trim()
-        && left.user.trim() == right.user.trim()
-        && left.port == right.port
-        && left.socket.trim() == right.socket.trim()
-}
-
-fn drop_insert_at(
-    response: &egui::Response,
-    tab_id: u64,
-    index: usize,
-    pointer: Option<egui::Pos2>,
-) -> Option<usize> {
-    let dragged = response.dnd_hover_payload::<u64>()?;
-    if *dragged == tab_id {
-        return None;
+fn server_groups(tabs: &[Tab]) -> Vec<Vec<usize>> {
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    for (index, tab) in tabs.iter().enumerate() {
+        if let Some(group) = groups
+            .iter_mut()
+            .find(|group| tabs[group[0]].server == tab.server)
+        {
+            group.push(index);
+        } else {
+            groups.push(vec![index]);
+        }
     }
-    let pointer = pointer?;
-    Some(if pointer.x < response.rect.center().x {
-        index
-    } else {
-        index + 1
-    })
+    groups
 }
 
 fn format_open(secs: u64) -> String {
@@ -259,19 +247,6 @@ fn paint_tab_fills(ui: &mut egui::Ui, fill: egui::Color32, hover: egui::Color32)
     widgets.open.bg_fill = fill;
 }
 
-fn paint_drop_marker(ui: &egui::Ui, rect: egui::Rect, after: bool) {
-    let x = if after {
-        rect.right() + 2.0
-    } else {
-        rect.left() - 2.0
-    };
-    ui.painter().vline(
-        x,
-        rect.y_range(),
-        egui::Stroke::new(3.0_f32, ui.visuals().selection.stroke.color),
-    );
-}
-
 fn compact_tab_title(label: &str) -> String {
     const MAX_CHARS: usize = 24;
     let mut chars = label.chars();
@@ -282,72 +257,52 @@ fn compact_tab_title(label: &str) -> String {
     title
 }
 
-fn tab_width(label: &str, renaming: bool, busy: bool) -> f32 {
-    if renaming {
-        return 180.0;
+fn session_row(
+    ui: &mut egui::Ui,
+    text: egui::RichText,
+    selected: bool,
+    fill: egui::Color32,
+    hover: egui::Color32,
+) -> egui::Response {
+    let desired = egui::vec2(ui.available_width(), 30.0);
+    let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::CLICK | egui::Sense::DRAG);
+    let background = if selected {
+        lift(fill, 50)
+    } else if response.hovered() || response.highlighted() {
+        hover
+    } else {
+        fill
+    };
+    ui.painter().rect_filled(rect, 3.0, background);
+    if selected {
+        ui.painter().rect_stroke(
+            rect.shrink(1.0),
+            3.0,
+            egui::Stroke::new(2.0_f32, ui.visuals().selection.stroke.color),
+            egui::StrokeKind::Inside,
+        );
     }
-    let text = compact_tab_title(label);
-    20.0 + text.chars().count() as f32 * 9.0 + if busy { 21.0 } else { 0.0 }
+    let galley = egui::WidgetText::from(text).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        (rect.width() - 12.0).max(1.0),
+        egui::TextStyle::Button,
+    );
+    ui.painter().galley(
+        egui::pos2(rect.left() + 6.0, rect.center().y - galley.size().y * 0.5),
+        galley,
+        ui.visuals().text_color(),
+    );
+    response
 }
 
-fn visible_tab_range(widths: &[f32], anchor: usize, budget: f32) -> std::ops::Range<usize> {
-    if widths.is_empty() {
-        return 0..0;
-    }
-    let anchor = anchor.min(widths.len() - 1);
-    let mut start = anchor;
-    let mut end = anchor + 1;
-    let mut used = widths[anchor];
-    loop {
-        let left = start.checked_sub(1);
-        let right = (end < widths.len()).then_some(end);
-        let next = match (left, right) {
-            (Some(left), Some(right)) => {
-                if anchor - left <= right - anchor {
-                    Some((left, true))
-                } else {
-                    Some((right, false))
-                }
-            }
-            (Some(left), None) => Some((left, true)),
-            (None, Some(right)) => Some((right, false)),
-            (None, None) => None,
-        };
-        let Some((index, is_left)) = next else {
-            break;
-        };
-        if used + widths[index] > budget && end > start {
-            break;
-        }
-        used += widths[index];
-        if is_left {
-            start = index;
-        } else {
-            end = index + 1;
-        }
-    }
-    start..end
-}
-
-fn paint_animated_dashed_rect(ui: &egui::Ui, rect: egui::Rect, stroke: egui::Stroke) {
-    const DASH: f32 = 4.0;
-    const GAP: f32 = 3.0;
-    const SPEED: f32 = 14.0;
-    let dash_offset = (ui.ctx().time() as f32 * SPEED) % (DASH + GAP);
-    let path = [
-        rect.left_top(),
-        rect.right_top(),
-        rect.right_bottom(),
-        rect.left_bottom(),
-        rect.left_top(),
-    ];
-    ui.painter().extend(egui::Shape::dashed_line_with_offset(
-        &path,
-        stroke,
-        &[DASH],
-        &[GAP],
-        dash_offset,
-    ));
+fn paint_drop_marker(ui: &egui::Ui, rect: egui::Rect, after: bool) {
+    let y = if after { rect.bottom() } else { rect.top() };
+    ui.painter().hline(
+        rect.x_range(),
+        y,
+        egui::Stroke::new(3.0_f32, ui.visuals().selection.stroke.color),
+    );
 }
 
 impl Workspace {
@@ -390,6 +345,8 @@ impl Workspace {
                 .map(|home| store::path(&home)),
             fps: store::DEFAULT_FPS,
             idle: store::DEFAULT_IDLE,
+            sidebar_width: store::DEFAULT_SIDEBAR_WIDTH,
+            font_size: store::DEFAULT_FONT_SIZE,
             restore_tabs: true,
             about: false,
             about_icon: None,
@@ -461,6 +418,8 @@ impl Workspace {
             },
         };
         self.restore_tabs = saved.restore_tabs;
+        self.sidebar_width = store::clamp_sidebar_width(saved.sidebar_width);
+        self.font_size = store::clamp_font_size(saved.font_size);
         let saved_active = saved.active;
         let mut active_restored = false;
         let mut active_failure = false;
@@ -584,8 +543,8 @@ impl Workspace {
                 && now.saturating_duration_since(tab.last_output)
                     >= time::Duration::from_secs(u64::from(self.idle));
             let visible = !self.composer_open && index == self.active;
-            let chip = phase_changed || (display_changed && was_quiet);
-            if visible || chip {
+            let row_changed = phase_changed || (display_changed && was_quiet);
+            if visible || row_changed {
                 repaint = true;
             }
             if visible && display_changed {
@@ -621,6 +580,7 @@ impl Workspace {
         ctx.request_repaint_after(time::Duration::from_secs(1));
         let mut fps = self.fps;
         let mut idle = self.idle;
+        let mut font_size = self.font_size;
         let mut restore_tabs = self.restore_tabs;
         let mut close = false;
         let open_for = format_open(self.open_secs_now());
@@ -685,6 +645,14 @@ impl Workspace {
                             );
                         });
                         ui.weak("0 seconds keeps a connected tab green.");
+                        ui.horizontal(|ui| {
+                            ui.label("Terminal font size");
+                            ui.add(
+                                egui::DragValue::new(&mut font_size)
+                                    .range(store::MIN_FONT_SIZE..=store::MAX_FONT_SIZE)
+                                    .suffix(" pt"),
+                            );
+                        });
                         ui.add_space(6.0);
                         ui.checkbox(&mut restore_tabs, "Resume open tabs on startup");
                         ui.weak("Reconnects each saved host and tmux session automatically.");
@@ -704,10 +672,12 @@ impl Workspace {
         }
         if store::clamp_fps(fps) != self.fps
             || idle.min(store::MAX_IDLE) != self.idle
+            || store::clamp_font_size(font_size) != self.font_size
             || restore_tabs != self.restore_tabs
         {
             self.fps = store::clamp_fps(fps);
             self.idle = idle.min(store::MAX_IDLE);
+            self.font_size = store::clamp_font_size(font_size);
             self.restore_tabs = restore_tabs;
             self.persist();
         }
@@ -748,6 +718,8 @@ impl Workspace {
             restore_tabs: self.restore_tabs,
             fps: store::clamp_fps(self.fps),
             idle: self.idle.min(store::MAX_IDLE),
+            sidebar_width: store::clamp_sidebar_width(self.sidebar_width),
+            font_size: store::clamp_font_size(self.font_size),
             open_secs: self.open_secs.min(store::MAX_OPEN_SECS),
         };
         if let Err(error) = store::save(&file, &saved) {
@@ -756,24 +728,49 @@ impl Workspace {
         }
     }
 
-    fn reorder(&mut self, id: u64, insert_at: usize) {
+    fn reorder_within_server(&mut self, id: u64, target: u64, after: bool) {
+        let active_id = self.tabs.get(self.active).map(|tab| tab.id);
         let Some(from) = self.tabs.iter().position(|tab| tab.id == id) else {
             return;
         };
-        let insert_at = insert_at.min(self.tabs.len());
-        if from == insert_at || from + 1 == insert_at {
+        let Some(target_index) = self.tabs.iter().position(|tab| tab.id == target) else {
+            return;
+        };
+        if id == target || self.tabs[from].server != self.tabs[target_index].server {
             return;
         }
-        let active_id = self.tabs.get(self.active).map(|tab| tab.id);
-        let tab = self.tabs.remove(from);
-        let insert_at = if insert_at > from {
-            insert_at - 1
-        } else {
-            insert_at
+        let positions: Vec<_> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .filter(|(_, tab)| tab.server == self.tabs[from].server)
+            .map(|(index, _)| index)
+            .collect();
+        let Some(from_group) = positions.iter().position(|&index| index == from) else {
+            return;
         };
-        self.tabs.insert(insert_at.min(self.tabs.len()), tab);
-        if let Some(id) = active_id {
-            self.active = self.tabs.iter().position(|tab| tab.id == id).unwrap_or(0);
+        let Some(target_group) = positions.iter().position(|&index| index == target_index) else {
+            return;
+        };
+        let mut destination = target_group + usize::from(after);
+        if from_group < destination {
+            destination -= 1;
+        }
+        if from_group < destination {
+            for index in from_group..destination {
+                self.tabs.swap(positions[index], positions[index + 1]);
+            }
+        } else {
+            for index in (destination..from_group).rev() {
+                self.tabs.swap(positions[index], positions[index + 1]);
+            }
+        }
+        if let Some(active_id) = active_id {
+            self.active = self
+                .tabs
+                .iter()
+                .position(|tab| tab.id == active_id)
+                .unwrap_or(0);
         }
     }
 
@@ -1044,11 +1041,18 @@ impl Workspace {
         if let Some(migration) = self.composer.client.take_migrated() {
             self.composer.ui.migration_completed(&migration);
         }
+        for tab in self
+            .tabs
+            .iter_mut()
+            .chain(std::iter::once(&mut self.composer))
+        {
+            tab.ui.set_font_size(self.font_size);
+        }
         self.local_dirty = false;
         self.apply_renamed_session();
         self.apply_remote_window_names();
         let mut navigation = Action::None;
-        let mut reorder: Option<(u64, usize)> = None;
+        let mut reorder = None;
         let mut rename_to: Option<(u64, String)> = None;
         let composer_server = self
             .composer
@@ -1097,122 +1101,93 @@ impl Workspace {
         if root.input_mut(|input| input.consume_shortcut(&close)) {
             navigation = self.close_shortcut_action();
         }
-        egui::Panel::top("connection-tabs")
+        let sidebar = egui::Panel::left("session-sidebar")
+            .resizable(true)
+            .default_size(f32::from(self.sidebar_width))
+            .size_range(
+                f32::from(store::MIN_SIDEBAR_WIDTH)..=f32::from(store::MAX_SIDEBAR_WIDTH),
+            )
             .frame(
                 egui::Frame::new()
                     .inner_margin(egui::Margin {
                         left: 6,
                         right: 6,
                         top: 4,
-                        bottom: 0,
+                        bottom: 4,
                     })
                     .fill(root.visuals().panel_fill),
             )
             .show_inside(root, |ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-                    ui.spacing_mut().button_padding = egui::vec2(10.0, 5.0);
-                    ui.spacing_mut().interact_size.y = 28.0;
-                    // Hovered buttons grow via expansion and a thicker stroke in
-                    // inner_margin. Keep those identical so the strip does not
-                    // change height. Button::fill also kills hover, so phase
-                    // color is set on the widget visuals instead.
-                    let idle_fill = ui.visuals().widgets.inactive.weak_bg_fill;
-                    let idle_hover = lift(idle_fill, 32);
-                    let selection_stroke = ui.visuals().selection.stroke.color;
-                    let stroke_width = ui.visuals().widgets.inactive.bg_stroke.width;
-                    {
-                        let widgets = &mut ui.visuals_mut().widgets;
-                        widgets.inactive.expansion = 0.0;
-                        widgets.hovered.expansion = 0.0;
-                        widgets.active.expansion = 0.0;
-                        widgets.open.expansion = 0.0;
-                        widgets.inactive.bg_stroke.width = stroke_width;
-                        widgets.hovered.bg_stroke.width = stroke_width;
-                        widgets.active.bg_stroke.width = stroke_width;
-                        widgets.open.bg_stroke.width = stroke_width;
+                ui.spacing_mut().item_spacing = egui::vec2(0.0, 2.0);
+                let idle_fill = ui.visuals().widgets.inactive.weak_bg_fill;
+                let idle_hover = lift(idle_fill, 32);
+                let idle_after = time::Duration::from_secs(u64::from(self.idle));
+                let now = time::Instant::now();
+                for tab in &mut self.tabs {
+                    let state = tab.client.lock();
+                    let phase = logical_phase(tab, &state);
+                    let seq = state
+                        .view
+                        .as_ref()
+                        .map(|view| tab.ui.display_seq(view))
+                        .unwrap_or(0);
+                    drop(state);
+                    if seq != tab.last_seq || phase != tab.last_phase {
+                        tab.last_seq = seq;
+                        tab.last_phase = phase;
+                        tab.last_output = now;
                     }
-                    paint_tab_fills(ui, idle_fill, idle_hover);
-                    if ui
-                        .add(
-                            egui::Button::new(egui::RichText::new("About").size(14.0))
-                                .min_size(egui::vec2(0.0, 28.0))
-                                .corner_radius(5.0)
-                                .sense(egui::Sense::CLICK),
-                        )
-                        .clicked()
-                    {
-                        self.about = true;
-                    }
-                    ui.with_layout(
-                        egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(false),
-                        |ui| {
-                            ui.spacing_mut().item_spacing = egui::vec2(2.0, 0.0);
-                            ui.spacing_mut().button_padding = egui::vec2(10.0, 5.0);
-                            paint_tab_fills(ui, idle_fill, idle_hover);
-                            let idle_after = time::Duration::from_secs(u64::from(self.idle));
-                            let now = time::Instant::now();
-                            for tab in &mut self.tabs {
-                                let state = tab.client.lock();
-                                let phase = logical_phase(tab, &state);
-                                let seq = state
-                                    .view
-                                    .as_ref()
-                                    .map(|view| tab.ui.display_seq(view))
-                                    .unwrap_or(0);
-                                drop(state);
-                                if seq != tab.last_seq || phase != tab.last_phase {
-                                    tab.last_seq = seq;
-                                    tab.last_phase = phase;
-                                    tab.last_output = now;
-                                }
-                            }
-                            let anchor = self
-                                .renaming
-                                .as_ref()
-                                .and_then(|rename| {
-                                    self.tabs.iter().position(|tab| tab.id == rename.id)
-                                })
-                                .unwrap_or(self.active);
-                            let widths: Vec<_> = self
-                                .tabs
-                                .iter()
-                                .map(|tab| {
-                                    tab_width(
-                                        &tab.label,
-                                        self.renaming
-                                            .as_ref()
-                                            .is_some_and(|rename| rename.id == tab.id),
-                                        busy_phase(tab_phase(tab)),
-                                    ) + ui.spacing().item_spacing.x
-                                })
-                                .collect();
-                            let tab_budget = (ui.available_width() - 34.0).max(1.0);
-                            let overflow = widths.iter().sum::<f32>() > tab_budget;
-                            let range = if overflow {
-                                visible_tab_range(&widths, anchor, (tab_budget - 92.0).max(1.0))
-                            } else {
-                                0..self.tabs.len()
-                            };
-                            if range.start > 0 {
-                                let hidden = range.start;
-                                if ui
-                                    .add(
-                                        egui::Button::new(format!("◀ {hidden}"))
-                                            .min_size(egui::vec2(44.0, 32.0)),
-                                    )
-                                    .on_hover_text(format!("Show {hidden} hidden tabs"))
-                                    .clicked()
-                                {
-                                    navigation = Action::Select(self.tabs[range.start - 1].id);
-                                }
-                            }
-                            let mut tab_chrome = Vec::new();
-                            for index in range.clone() {
+                }
+
+                let controls_height = if self.composer_open || self.tabs.is_empty() {
+                    0.0
+                } else {
+                    32.0
+                };
+                let footer_height = if self.notice.is_some() { 92.0 } else { 66.0 }
+                    + controls_height;
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .max_height((ui.available_height() - footer_height).max(1.0))
+                    .show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        for group in server_groups(&self.tabs) {
+                            let first = group[0];
+                            let server = self.tabs[first].ui.server_name().trim();
+                            let server = if server.is_empty() { "Demo" } else { server };
+                            egui::Frame::new()
+                                .fill(ui.visuals().code_bg_color)
+                                .stroke(egui::Stroke::new(
+                                    1.0_f32,
+                                    ui.visuals().widgets.noninteractive.bg_stroke.color,
+                                ))
+                                .inner_margin(egui::Margin::symmetric(6, 4))
+                                .show(ui, |ui| {
+                                    ui.allocate_ui_with_layout(
+                                        egui::vec2(ui.available_width(), 20.0),
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            let state = self.tabs[first].client.lock();
+                                            ui::paint_server_status(ui, &state);
+                                            ui.with_layout(
+                                                egui::Layout::left_to_right(egui::Align::Center),
+                                                |ui| {
+                                                    ui.add(
+                                                        egui::Label::new(
+                                                            egui::RichText::new(server)
+                                                                .strong()
+                                                                .size(14.0),
+                                                        )
+                                                        .truncate(),
+                                                    );
+                                                },
+                                            );
+                                        },
+                                    );
+                                });
+
+                            for index in group {
                                 let id = self.tabs[index].id;
-                                let last_output = self.tabs[index].last_output;
-                                let label = self.tabs[index].label.clone();
-                                let server = self.tabs[index].ui.server_name().to_owned();
                                 let phase = tab_phase(&self.tabs[index]);
                                 let option_names = {
                                     let state = self.tabs[index].client.lock();
@@ -1223,7 +1198,7 @@ impl Workspace {
                                     {
                                         let rename = self.renaming.as_mut().expect("checked");
                                         let edit = egui::TextEdit::singleline(&mut rename.draft)
-                                            .desired_width(180.0)
+                                            .desired_width(ui.available_width())
                                             .font(egui::TextStyle::Button)
                                             .hint_text("session name");
                                         let mut output = edit.show(ui);
@@ -1264,86 +1239,80 @@ impl Workspace {
                                         }
                                         return;
                                     }
-                                    let busy = busy_phase(phase);
-                                    let mut title = compact_tab_title(&label);
-                                    if busy {
-                                        title = format!("   {title}");
-                                        ui.ctx()
-                                            .request_repaint_after(time::Duration::from_millis(50));
-                                    }
+
                                     let selected = !self.composer_open && index == self.active;
                                     let quiet = self.idle > 0
                                         && live_phase(phase)
-                                        && now.saturating_duration_since(last_output) >= idle_after;
+                                        && now.saturating_duration_since(
+                                            self.tabs[index].last_output,
+                                        ) >= idle_after;
                                     if !quiet && self.idle > 0 && live_phase(phase) {
                                         ui.ctx().request_repaint_after(idle_after.saturating_sub(
-                                            now.saturating_duration_since(last_output),
+                                            now.saturating_duration_since(
+                                                self.tabs[index].last_output,
+                                            ),
                                         ));
                                     }
                                     let color = tab_color(phase, idle_fill, quiet);
-                                    let mut text = egui::RichText::new(title).size(16.0).strong();
-                                    if matches!(
-                                        phase,
-                                        desktop::Phase::Failed | desktop::Phase::Disconnected
-                                    ) {
-                                        text = text.color(egui::Color32::from_rgb(255, 196, 196));
+                                    let text = egui::RichText::new(compact_tab_title(
+                                        &self.tabs[index].label,
+                                    ))
+                                    .size(16.0)
+                                    .strong()
+                                    .color(egui::Color32::from_rgb(250, 250, 250));
+                                    let response =
+                                        session_row(ui, text, selected, color, lift(color, 32))
+                                            .on_hover_ui(|ui| {
+                                                if !option_names.is_empty() {
+                                                    ui.weak(format!(
+                                                        "{} window options",
+                                                        option_names.len()
+                                                    ));
+                                                    for name in &option_names {
+                                                        ui.label(name);
+                                                    }
+                                                    ui.separator();
+                                                }
+                                                ui.weak(if phase == desktop::Phase::Watching {
+                                                    "Click to switch · double-click to rename · drag to reorder"
+                                                } else {
+                                                    "Click to switch · drag to reorder"
+                                                });
+                                            });
+                                    response.dnd_set_drag_payload(id);
+                                    if response.dragged() {
+                                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                                        ui.ctx().request_repaint();
                                     }
-                                    paint_tab_fills(ui, color, lift(color, 32));
-                                    if selected {
-                                        ui.visuals_mut().selection.bg_fill = lift(color, 50);
-                                        ui.visuals_mut().selection.stroke.color =
-                                            egui::Color32::from_rgb(250, 250, 250);
+                                    if let Some(dragged) = response.dnd_hover_payload::<u64>()
+                                        && *dragged != id
+                                        && self
+                                            .tabs
+                                            .iter()
+                                            .find(|tab| tab.id == *dragged)
+                                            .is_some_and(|tab| {
+                                                tab.server == self.tabs[index].server
+                                            })
+                                    {
+                                        let after = ui
+                                            .input(|input| input.pointer.interact_pos())
+                                            .is_some_and(|pointer| {
+                                                pointer.y >= response.rect.center().y
+                                            });
+                                        paint_drop_marker(ui, response.rect, after);
+                                        if let Some(dragged) =
+                                            response.dnd_release_payload::<u64>()
+                                        {
+                                            reorder = Some((*dragged, id, after));
+                                        }
                                     }
-                                    let button = egui::Button::new(text)
-                                        .selected(selected)
-                                        .min_size(egui::vec2(0.0, 32.0))
-                                        .corner_radius(egui::CornerRadius {
-                                            nw: 6,
-                                            ne: 6,
-                                            sw: 0,
-                                            se: 0,
-                                        })
-                                        .sense(egui::Sense::CLICK | egui::Sense::DRAG)
-                                        .stroke(egui::Stroke::new(
-                                            2.0_f32,
-                                            if selected {
-                                                selection_stroke
-                                            } else {
-                                                egui::Color32::TRANSPARENT
-                                            },
-                                        ));
-                                    let hint = if phase == desktop::Phase::Watching {
-                                        "Click to switch · double-click to rename · drag to reorder"
-                                    } else {
-                                        "Click to switch · drag to reorder"
-                                    };
-                                    let response = ui.add(button).on_hover_ui(|ui| {
-                                        if !server.is_empty() {
-                                            ui.label(egui::RichText::new(&server).strong());
-                                        }
-                                        if !option_names.is_empty() {
-                                            ui.separator();
-                                            ui.weak(format!(
-                                                "{} window options",
-                                                option_names.len()
-                                            ));
-                                            for name in &option_names {
-                                                ui.label(name);
-                                            }
-                                        }
-                                        ui.separator();
-                                        ui.weak(hint);
-                                    });
-                                    tab_chrome.push((
-                                        id,
-                                        response.rect,
-                                        self.tabs[index].ui.saved(),
-                                        response.hovered(),
-                                    ));
-                                    if busy {
+                                    if selected && !ui.clip_rect().intersects(response.rect) {
+                                        response.scroll_to_me(Some(egui::Align::Center));
+                                    }
+                                    if busy_phase(phase) {
                                         let indicator = egui::Rect::from_center_size(
                                             egui::pos2(
-                                                response.rect.left() + 14.0,
+                                                response.rect.right() - 10.0,
                                                 response.rect.center().y,
                                             ),
                                             egui::vec2(14.0, 14.0),
@@ -1353,23 +1322,8 @@ impl Workspace {
                                             indicator,
                                             ui.ctx().time(),
                                         );
-                                    }
-                                    response.dnd_set_drag_payload(id);
-                                    if response.dragged() {
-                                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-                                        ui.ctx().request_repaint();
-                                    }
-                                    if let Some(insert_at) = drop_insert_at(
-                                        &response,
-                                        id,
-                                        index,
-                                        ui.input(|i| i.pointer.interact_pos()),
-                                    ) {
-                                        paint_drop_marker(ui, response.rect, insert_at > index);
-                                        if let Some(dragged) = response.dnd_release_payload::<u64>()
-                                        {
-                                            reorder = Some((*dragged, insert_at));
-                                        }
+                                        ui.ctx()
+                                            .request_repaint_after(time::Duration::from_millis(50));
                                     }
                                     if response.double_clicked()
                                         && phase == desktop::Phase::Watching
@@ -1386,11 +1340,6 @@ impl Workspace {
                                             draft: self.tabs[index].ui.session_name().to_owned(),
                                             focus: true,
                                         });
-                                        // The editor replaces this chip on the
-                                        // next paint. The double-click frame
-                                        // itself did not contain a TextEdit,
-                                        // so egui has no widget-driven reason
-                                        // to schedule that paint for us.
                                         ui.ctx().request_repaint();
                                     } else if response.clicked() || response.double_clicked() {
                                         navigation = Action::Select(id);
@@ -1398,85 +1347,58 @@ impl Workspace {
                                     }
                                 });
                             }
-                            if let Some((hovered, _, endpoint, _)) =
-                                tab_chrome.iter().find(|(_, _, _, hovered)| *hovered)
-                            {
-                                let stroke = egui::Stroke::new(1.0_f32, selection_stroke);
-                                let mut animated = false;
-                                for (id, rect, sibling, _) in &tab_chrome {
-                                    if id != hovered && same_endpoint(endpoint, sibling) {
-                                        paint_animated_dashed_rect(ui, rect.shrink(1.0), stroke);
-                                        animated = true;
-                                    }
-                                }
-                                if animated {
-                                    ui.ctx()
-                                        .request_repaint_after(time::Duration::from_millis(33));
-                                }
-                            }
-                            let hidden_right = self.tabs.len().saturating_sub(range.end);
-                            if hidden_right > 0
-                                && ui
-                                    .add(
-                                        egui::Button::new(format!("{hidden_right} ▶"))
-                                            .min_size(egui::vec2(44.0, 32.0)),
-                                    )
-                                    .on_hover_text(format!("Show {hidden_right} hidden tabs"))
-                                    .clicked()
-                            {
-                                navigation = Action::Select(self.tabs[range.end].id);
-                            }
-                            paint_tab_fills(ui, idle_fill, idle_hover);
-                            if self.composer_open {
-                                ui.visuals_mut().selection.bg_fill = lift(idle_fill, 50);
-                                ui.visuals_mut().selection.stroke.color =
-                                    egui::Color32::from_rgb(250, 250, 250);
-                            }
-                            let add = ui
-                                .add_enabled(
-                                    self.tabs.len() < MAX_TABS || self.composer_open,
-                                    egui::Button::new(egui::RichText::new("+").size(16.0).strong())
-                                        .selected(self.composer_open)
-                                        .min_size(egui::vec2(30.0, 32.0))
-                                        .corner_radius(egui::CornerRadius {
-                                            nw: 6,
-                                            ne: 6,
-                                            sw: 0,
-                                            se: 0,
-                                        })
-                                        .sense(egui::Sense::CLICK)
-                                        .stroke(egui::Stroke::new(
-                                            2.0_f32,
-                                            if self.composer_open {
-                                                selection_stroke
-                                            } else {
-                                                egui::Color32::TRANSPARENT
-                                            },
-                                        )),
-                                )
-                                .on_hover_text("New connection");
-                            if add.dnd_hover_payload::<u64>().is_some() {
-                                paint_drop_marker(ui, add.rect, false);
-                                if let Some(id) = add.dnd_release_payload::<u64>() {
-                                    reorder = Some((*id, self.tabs.len()));
-                                }
-                            }
-                            if add.clicked() {
-                                navigation = Action::New;
-                            }
-                            if let Some(ref notice) = self.notice {
-                                ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(notice.as_str())
-                                            .color(ui.visuals().error_fg_color),
-                                    )
-                                    .truncate(),
-                                );
-                            }
-                        },
-                    );
-                });
+                            ui.add_space(4.0);
+                        }
+                    });
+
+                if let Some(ref notice) = self.notice {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(notice.as_str()).color(ui.visuals().error_fg_color),
+                        )
+                        .truncate(),
+                    )
+                    .on_hover_text(notice);
+                }
+                paint_tab_fills(ui, idle_fill, idle_hover);
+                let add = ui
+                    .add_enabled(
+                        self.tabs.len() < MAX_TABS || self.composer_open,
+                        egui::Button::new(egui::RichText::new("+ New session").size(14.0).strong())
+                            .selected(self.composer_open)
+                            .min_size(egui::vec2(ui.available_width(), 28.0)),
+                    )
+                    .on_hover_text("New connection");
+                if add.clicked() {
+                    navigation = Action::New;
+                }
+                if ui
+                    .add(
+                        egui::Button::new(egui::RichText::new("About").size(14.0))
+                            .min_size(egui::vec2(ui.available_width(), 28.0)),
+                    )
+                    .clicked()
+                {
+                    self.about = true;
+                }
+                if !self.composer_open
+                    && let Some(tab) = self.tabs.get_mut(self.active)
+                {
+                    let client = sync::Arc::clone(&tab.client);
+                    let state = client.lock();
+                    tab.ui.show_sidebar_controls(ui, &state);
+                }
             });
+        let resize_id = egui::Id::new("session-sidebar").with("__resize");
+        if let Some(response) = root.ctx().read_response(resize_id)
+            && (response.dragged() || response.drag_stopped())
+        {
+            self.sidebar_width =
+                store::clamp_sidebar_width(sidebar.response.rect.width().round() as u16);
+            if response.drag_stopped() {
+                self.persist();
+            }
+        }
         if self.about {
             self.show_about(root.ctx());
         }
@@ -1490,8 +1412,8 @@ impl Workspace {
         } else if let Some(tab) = self.tabs.get_mut(self.active) {
             tab.ui.take_dropped_files(root.ctx(), &tab.client.lock());
         }
-        if let Some((id, insert_at)) = reorder {
-            navigation = Action::Reorder { id, insert_at };
+        if let Some((id, target, after)) = reorder {
+            navigation = Action::Reorder { id, target, after };
         }
         if let Some((id, name)) = rename_to {
             self.submitted_rename = Some((id, name));
@@ -1538,9 +1460,8 @@ impl Workspace {
             (tab.id, action)
         };
         if !matches!(navigation, Action::None) {
-            // Reorder keeps this tab painted so the focused pane stays in
-            // egui's used_ids. Skipping a frame would drop keyboard focus
-            // while the white border still claimed the pane was selected.
+            // The selected tab was still painted this frame, keeping its egui
+            // ids alive until the navigation action is applied.
             return navigation;
         }
         Action::Tab(id, Box::new(action))
@@ -1571,8 +1492,8 @@ impl Workspace {
                         self.persist();
                     }
                 }
-                Action::Reorder { id, insert_at } => {
-                    self.reorder(id, insert_at);
+                Action::Reorder { id, target, after } => {
+                    self.reorder_within_server(id, target, after);
                     self.persist();
                 }
                 Action::Close(id) => {
@@ -2043,16 +1964,6 @@ mod tests {
     }
 
     #[test]
-    fn tab_overflow_range_keeps_the_active_tab_visible() {
-        let widths = [60.0, 80.0, 70.0, 90.0, 50.0];
-        let range = visible_tab_range(&widths, 3, 175.0);
-        assert!(range.contains(&3));
-        assert!(range.start > 0);
-        assert!(range.end < widths.len());
-        assert!(widths[range.clone()].iter().sum::<f32>() <= 175.0);
-    }
-
-    #[test]
     fn long_tab_names_are_compact_without_splitting_unicode() {
         let label = "abcdefghijklmnopqrstuvw界yz";
         let title = compact_tab_title(label);
@@ -2105,47 +2016,23 @@ mod tests {
     }
 
     #[test]
-    fn endpoint_identity_ignores_alias_but_not_transport_details() {
-        let left = store::Tab {
-            destination: "dev".into(),
-            host: "10.0.0.2".into(),
-            user: "alice".into(),
-            port: 22,
-            socket: "/tmp/tmux.sock".into(),
-            ..store::Tab::default()
-        };
-        let mut right = left.clone();
-        right.destination = "another-alias".into();
-        assert!(same_endpoint(&left, &right));
-        right.port = 2222;
-        assert!(!same_endpoint(&left, &right));
-    }
-
-    #[test]
-    fn reordering_tabs_keeps_the_active_tab() {
+    fn vertical_reordering_keeps_the_active_session() {
         let mut workspace = Workspace::new(sync::Arc::new(|| {}), desktop::Startup::Demo).unwrap();
         let first = workspace.tabs[0].id;
         workspace.push_idle_tab().unwrap();
         let second = workspace.tabs[1].id;
-        assert_eq!(workspace.active, 1);
+        workspace.active = 0;
         workspace.apply(
             Action::Reorder {
                 id: second,
-                insert_at: 0,
+                target: first,
+                after: false,
             },
             || None,
         );
         assert_eq!(workspace.tabs[0].id, second);
         assert_eq!(workspace.tabs[1].id, first);
-        assert_eq!(workspace.active, 0);
-        workspace.apply(
-            Action::Reorder {
-                id: second,
-                insert_at: 0,
-            },
-            || None,
-        );
-        assert_eq!(workspace.tabs[0].id, second);
+        assert_eq!(workspace.tabs[workspace.active].id, first);
     }
 
     #[test]
@@ -2224,6 +2111,8 @@ mod tests {
                 restore_tabs: true,
                 fps: store::DEFAULT_FPS,
                 idle: store::DEFAULT_IDLE,
+                sidebar_width: store::DEFAULT_SIDEBAR_WIDTH,
+                font_size: store::DEFAULT_FONT_SIZE,
                 open_secs: 0,
             },
         )
@@ -2553,6 +2442,8 @@ mod tests {
             store,
             fps: store::DEFAULT_FPS,
             idle: store::DEFAULT_IDLE,
+            sidebar_width: store::DEFAULT_SIDEBAR_WIDTH,
+            font_size: store::DEFAULT_FONT_SIZE,
             restore_tabs: true,
             about: false,
             about_icon: None,
@@ -2717,12 +2608,10 @@ mod tests {
                 workspace.show(root);
             });
         }
-        let status_h = egui::containers::panel::PanelState::load(&ctx, egui::Id::new("status"))
-            .map(|state| state.rect.height())
-            .unwrap_or(0.0);
         assert!(
-            (1.0..48.0).contains(&status_h),
-            "status bar must not eat the window, height was {status_h}"
+            egui::containers::panel::PanelState::load(&ctx, egui::Id::new("status-message"))
+                .is_none(),
+            "an idle terminal must not reserve a status row"
         );
         let (start, end) = workspace.tabs[0].ui.smoke_selection(&ctx);
         assert!(start.x > 0.0 && start.x < end.x);
@@ -2739,7 +2628,7 @@ mod tests {
     }
 
     #[test]
-    fn overflowing_tabs_keep_the_top_panel_to_one_row() {
+    fn many_sessions_keep_the_sidebar_narrow() {
         let ctx = egui::Context::default();
         crate::window::configure(&ctx);
         let mut workspace = Workspace::new(sync::Arc::new(|| {}), desktop::Startup::Demo).unwrap();
@@ -2759,13 +2648,13 @@ mod tests {
                 workspace.show(root);
             });
         }
-        let tabs_h =
-            egui::containers::panel::PanelState::load(&ctx, egui::Id::new("connection-tabs"))
-                .map(|state| state.rect.height())
+        let sidebar_width =
+            egui::containers::panel::PanelState::load(&ctx, egui::Id::new("session-sidebar"))
+                .map(|state| state.rect.width())
                 .unwrap_or(0.0);
         assert!(
-            (1.0..48.0).contains(&tabs_h),
-            "tab overflow must stay on one row, height was {tabs_h}"
+            (170.0..200.0).contains(&sidebar_width),
+            "session navigation must stay narrow, width was {sidebar_width}"
         );
     }
 
@@ -2818,7 +2707,7 @@ mod tests {
         workspace.tabs[1].client.demo().unwrap();
         assert!(
             workspace.remote_changed(),
-            "a hidden tab's phase change updates its visible chip"
+            "a hidden tab's phase change updates its visible row"
         );
         assert!(!workspace.remote_changed());
 
