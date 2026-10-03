@@ -50,6 +50,9 @@ pub struct Tab {
     pub user: String,
     /// Last session this tab attached to, used as the startup resume target.
     pub session: String,
+    /// Compatibility attachment to an arbitrary v0.3 tmux session. New tabs
+    /// use a named window in Starcom's managed session instead.
+    pub legacy: bool,
     /// Last tmux window and pane selected in this tab. These are hints only:
     /// reconnect validates them against the new snapshot before using them.
     pub window: Option<u32>,
@@ -126,6 +129,7 @@ pub fn load(file: &path::Path) -> anyhow::Result<Option<Workspace>> {
 
 fn parse(text: &str) -> anyhow::Result<Workspace> {
     let mut workspace = Workspace::default();
+    let mut version = 1_u32;
     let mut fields: Option<collections::BTreeMap<&str, &str>> = None;
     for (number, line) in text.lines().enumerate() {
         let where_ = || format!("line {}", number + 1);
@@ -140,7 +144,9 @@ fn parse(text: &str) -> anyhow::Result<Workspace> {
                 "saved workspace holds more than {MAX_TABS} tabs"
             );
             if let Some(fields) = fields.take() {
-                workspace.tabs.push(tab(&fields).with_context(where_)?);
+                workspace
+                    .tabs
+                    .push(tab(&fields, version).with_context(where_)?);
             }
             fields = Some(collections::BTreeMap::new());
             continue;
@@ -198,11 +204,14 @@ fn parse(text: &str) -> anyhow::Result<Workspace> {
                 );
                 workspace.open_secs = open;
             }
-            None if key == "version" => anyhow::ensure!(
-                matches!(value, "1" | "2"),
-                "{}: unsupported saved-workspace version {value}",
-                where_()
-            ),
+            None if key == "version" => {
+                version = value.parse().with_context(where_)?;
+                anyhow::ensure!(
+                    matches!(version, 1..=3),
+                    "{}: unsupported saved-workspace version {value}",
+                    where_()
+                );
+            }
             None => anyhow::bail!("{}: unexpected key {key} before any [tab]", where_()),
         }
     }
@@ -211,13 +220,13 @@ fn parse(text: &str) -> anyhow::Result<Workspace> {
             workspace.tabs.len() < MAX_TABS,
             "saved workspace holds more than {MAX_TABS} tabs"
         );
-        workspace.tabs.push(tab(&fields)?);
+        workspace.tabs.push(tab(&fields, version)?);
     }
     workspace.active = workspace.active.min(workspace.tabs.len().saturating_sub(1));
     Ok(workspace)
 }
 
-fn tab(fields: &collections::BTreeMap<&str, &str>) -> anyhow::Result<Tab> {
+fn tab(fields: &collections::BTreeMap<&str, &str>, version: u32) -> anyhow::Result<Tab> {
     // Reject unknown keys rather than ignoring them: a file written by a newer
     // Starcom may mean something by them, and guessing is how settings drift.
     for key in fields.keys() {
@@ -228,6 +237,7 @@ fn tab(fields: &collections::BTreeMap<&str, &str>) -> anyhow::Result<Tab> {
                     | "host"
                     | "user"
                     | "session"
+                    | "model"
                     | "window"
                     | "pane"
                     | "port"
@@ -272,6 +282,12 @@ fn tab(fields: &collections::BTreeMap<&str, &str>) -> anyhow::Result<Tab> {
         host: text("host"),
         user: text("user"),
         session: text("session"),
+        legacy: match fields.get("model") {
+            Some(&"window") => false,
+            Some(&"legacy-session") => true,
+            Some(value) => anyhow::bail!("invalid model value {value:?}"),
+            None => version < 3,
+        },
         window: id("window")?,
         pane: id("pane")?,
         port: fields
@@ -294,7 +310,7 @@ pub fn render(workspace: &Workspace) -> String {
         "# Starcom saved connection tabs.\n\
          # Destinations and preferences only: no keys, passphrases, host-key\n\
          # material, or terminal contents.\n\
-         version 2\n",
+         version 3\n",
     );
     out.push_str(&format!("active {}\n", workspace.active));
     out.push_str(&format!(
@@ -324,6 +340,14 @@ pub fn render(workspace: &Workspace) -> String {
         put("host", &tab.host);
         put("user", &tab.user);
         put("session", &tab.session);
+        put(
+            "model",
+            if tab.legacy {
+                "legacy-session"
+            } else {
+                "window"
+            },
+        );
         if let Some(window) = tab.window {
             put("window", &window.to_string());
         }
@@ -378,6 +402,7 @@ mod tests {
                     host: "10.0.0.2".into(),
                     user: "alice".into(),
                     session: String::new(),
+                    legacy: false,
                     window: Some(4),
                     pane: Some(9),
                     port: 2222,
@@ -475,8 +500,22 @@ mod tests {
         assert_eq!(parsed.tabs[0].session, "work");
         assert_eq!(parsed.tabs[0].window, None);
         assert_eq!(parsed.tabs[0].pane, None);
+        assert!(parsed.tabs[0].legacy);
         assert!(render(&parsed).contains("session work"));
-        assert!(render(&parsed).contains("version 2"));
+        assert!(render(&parsed).contains("version 3"));
+        assert!(render(&parsed).contains("model legacy-session"));
+    }
+
+    #[test]
+    fn v03_tabs_remain_explicit_legacy_session_attachments() {
+        let parsed =
+            parse("version 2\n[tab]\nhost zork\nuser alice\nsession zork/0\naccess interactive\n")
+                .unwrap();
+        assert!(parsed.tabs[0].legacy);
+        let migrated = render(&parsed);
+        assert!(migrated.contains("version 3"));
+        assert!(migrated.contains("model legacy-session"));
+        assert!(parse(&migrated).unwrap().tabs[0].legacy);
     }
 
     #[test]
@@ -523,7 +562,7 @@ mod tests {
             load(&file).is_err(),
             "the old agent/key radio must not be guessed at"
         );
-        fs::write(&file, "version 3\n").unwrap();
+        fs::write(&file, "version 4\n").unwrap();
         assert!(
             load(&file).is_err(),
             "a newer format must not be guessed at"

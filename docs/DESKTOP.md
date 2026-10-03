@@ -1,8 +1,9 @@
 # Desktop client
 
-Starcom has an experimental **interactive** desktop client. It attaches to an
-existing tmux session, reconstructs each pane into an Alacritty terminal model,
-and presents tmux windows and panes through Blade/egui.
+Starcom has an experimental **interactive** desktop client. It attaches once to
+the managed `starcom` tmux session on each server, reconstructs its panes into
+Alacritty terminal models, and presents each named tmux window as a logical
+session tab through Blade/egui.
 
 The implementation is usable enough for focused testing, but it is not yet a
 finished terminal: application mouse drags, broad TUI compatibility, and native
@@ -20,8 +21,9 @@ attach to a tmux server.
 
 ## Connection tabs
 
-A registered Starcom tab owns one SSH/tmux client, one terminal view, and its
-pending input tokens. Use **+** or Ctrl-Shift-T (Cmd-T on macOS) to open the only
+A registered managed tab owns its logical-window UI state. Tabs on the same
+resolved server share one SSH connection, tmux control client, reconstructed
+view, input pipeline, and reconnect epoch. Use **+** or Ctrl-Shift-T (Cmd-T on macOS) to open the only
 connection form, on the plus chip itself. Pressing **Connect** promotes that
 composer to a registered tab while the attachment starts. Drag a tab to reorder
 the strip. Overflow stays on one row, with counted arrows for hidden tabs instead
@@ -34,29 +36,28 @@ server is shown in bold in the status bar beside the last control-command round
 trip time, instead of being repeated in every tab. The tab shows connection
 progress and then the terminal workspace. A failed attachment remains registered,
 turns red, and offers **Reconnect** beside **Exit**; selecting it never deletes it.
-**Exit** or Ctrl-Shift-W/Cmd-W closes the registered tab and detaches that
-Starcom client; the tmux server and remote jobs continue running. Tabs are green while connected,
+**Exit** or Ctrl-Shift-W/Cmd-W closes the registered tab; the shared control
+client detaches only after its last local tab closes. The tmux server, windows,
+and remote jobs continue running. Tabs are green while connected,
 including while a pane layout is rebuilt, and yellow while connecting or
 reconnecting.
 
-A Starcom tab is one tmux session and shows one window of that session. A
-window picker is not in this increment. Double-click a connected tab to rename
-that tmux session. Enter confirms, Escape or clicking away cancels. The new
+A Starcom tab is one uniquely named window in the managed tmux session.
+Double-click a connected tab to rename that tmux window. Enter confirms, Escape
+or clicking away cancels. The new
 name is written to the saved workspace after tmux accepts it, so a restart
 reconnects to the real remote name. A name already in use is reported without
 dropping the attachment, and
 the previous name is restored. The status bar shows **Renaming…** while the
 existing control attachment waits for tmux's reply, for at most five seconds.
 If tmux applies the rename but its completion reply is lost, Starcom discards
-that stream and reconnects once using the saved new name instead of retrying
-the non-idempotent command.
+that stream and reconnects once without retrying the non-idempotent command.
 
-Each tab currently opens its own SSH connection and remote tmux control client.
-These normally share one existing tmux server; Starcom does not normally start a
-tmux server per tab. The target after v0.3 is one host-owned connection/control
-client with logical Starcom sessions represented by tmux windows. See
-[SESSION-MODEL.md](SESSION-MODEL.md); that ownership change is not implemented
-yet.
+Workspace v3 records whether a tab is a managed window. Tabs loaded from v0.3
+workspace files remain explicit compatibility attachments to their original
+arbitrary tmux sessions, so migration never silently redirects or deletes them.
+Those legacy tabs retain their old independent attachment behavior. See
+[SESSION-MODEL.md](SESSION-MODEL.md).
 
 ## SSH configuration
 
@@ -65,15 +66,16 @@ including direct hosts not present in SSH config. Literal `Host` aliases from
 `~/.ssh/config` follow for one-click selection; the field after those buttons
 accepts a hostname, address, or alias that is not in that list. Selecting a known host
 resolves the supported
-profile and lists that host's tmux sessions with each session's window count,
+profile and lists the named windows in that host's managed `starcom` session,
 selecting the first available one so
-**Connect** is available immediately. An attached session is red and unavailable,
+**Connect** is available immediately. A window already open locally is red and unavailable,
 which also prevents opening a duplicate local tab. Keyboard focus moves to the
 **new session** field after choosing a host, so choosing and typing can be one
 continuous action. A literal Host button is green while this workspace has a
-live connection to that destination. Startup resume attaches directly to each saved
-session without listing first, using the current SSH configuration. Enter in the
-custom host field always starts a fresh session-list request.
+live connection to that destination. Startup groups saved managed tabs by their
+fully resolved route and attaches once per group without listing first, using
+the current SSH configuration. Enter in the custom host field refreshes the
+managed-window list; an already-live server supplies it from the shared view.
 
 Currently supported:
 
@@ -139,27 +141,27 @@ The demo neither reads nor writes this file.
 
 ## Finding and creating sessions
 
-Selecting a known host lists its sessions automatically. **Refresh** asks again.
+Selecting a known host lists its managed windows automatically. **Refresh** asks again.
 The query runs `tmux -N`, so it can never bring a tmux server into existence: a
-host with no tmux running says so. Attached sessions are shown in red and cannot
+host with no tmux running says so. Locally open windows are shown in red and cannot
 be selected. The last session this tab attached to is selected when it is still
 available on the host; otherwise the first available name in the list. Choosing
 another only fills the field, and double-clicking attaches.
 
-Starcom also asks on its own when a connection fails because that session does
+Starcom also asks on its own when a connection fails because the managed session does
 not exist. You have already asked to connect and already authenticated, and the
 list is exactly the missing information. No other failure triggers it —
 authentication and host-key failures could not list anyway, and the others
 already say what happened.
 
-The **new session** field beside the list, then **Create**, makes that session on
-the host and attaches as soon as tmux confirms it. The typed name appears in the
-list immediately. This starts a tmux server if none is running. It is the only
-path in Starcom that may start one. No failure anywhere else falls back to it:
-an attach that cannot find its session still fails, exactly as before.
+The **new session** field beside the list, then **Create**, makes a named window
+and opens its tab. The first creation may start tmux and the managed `starcom`
+session; later creations issue `new-window` through the live control client. No
+failure path creates either one implicitly.
 
-Both run on the tab's worker over their own short-lived connection, so neither
-blocks the window or disturbs a live attachment.
+Before a server workspace is attached, listing and first creation use bounded
+short-lived connections. Once attached, listing comes from the shared view and
+creation stays on the existing control stream.
 
 ## Terminal input
 
@@ -315,9 +317,9 @@ the persistent workspace labels.
 
 The buttons:
 
-- move this pane to a new session on the same server. Starcom chooses the first
+- move this pane to a new logical session/window on the same server. Starcom chooses the first
   available `pane-N` name, moves the pane with a guarded tmux transaction, and
-  selects a new tab attached to it. The resulting tab immediately enters its
+  selects a new tab sharing the same server attachment. The resulting tab immediately enters its
   inline rename editor so a descriptive name can be typed without another
   click. This button is hidden when the session has only one pane.
 - split right (`split-window -h`)
@@ -358,11 +360,12 @@ block the resize transaction.
 
 ## Disconnect and exit behavior
 
-**Exit** is the only way a session tab is removed: it drops the attachment and
-the chip; remote jobs keep running. To connect somewhere else, use **+**,
+**Exit** is the only way a session tab is removed: it drops the local tab and
+detaches only when it was the server workspace's final tab; remote jobs keep running. To connect somewhere else, use **+**,
 which is the only connection form. Failed chips stay in the strip when selected.
-If the remote session ends — last pane `exit`, an explicit detach, or a dead
-tmux server — the tab stays, the last view is frozen, and the chip turns red
+If the managed tmux session ends, the shared connection fails and its tabs keep
+their last frozen view. If one managed window disappears, only its logical tab
+becomes unavailable. In both cases the affected chip stays red
 so you can still copy from it, press **Reconnect**, or press **Exit**.
 
 **Reconnect automatically after connection loss** is on by default in the

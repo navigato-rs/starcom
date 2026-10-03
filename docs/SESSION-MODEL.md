@@ -1,6 +1,7 @@
 # Host workspaces and logical sessions
 
-Status: target architecture after v0.3; not implemented yet.
+Status: implemented after v0.3. Isolated-fixture coverage for every sizing and
+ordinary-client edge case remains open.
 
 ## Decision
 
@@ -102,12 +103,12 @@ workspace red and unavailable, preventing duplicate logical tabs. An ordinary
 tmux client may still attach to the managed session as a fallback; its presence
 does not make every window unavailable.
 
-Existing arbitrary tmux sessions must not silently disappear during migration.
-The implementation should either offer an explicit one-time import/link path or
-keep an advanced legacy attachment path. Linking a window into the managed
-session is promising because it preserves the PTY and ordinary tmux fallback,
-but its naming, last-link deletion, and shared-layout effects need fixture tests
-before it becomes a migration mechanism.
+Existing arbitrary tmux sessions do not silently disappear during migration.
+Workspace format v3 marks new tabs as managed windows; v1/v2 entries are loaded
+as explicit legacy-session attachments to their original tmux session. They keep
+the old one-attachment behavior until the user closes them. A future import/link
+operation may move them into the managed session, but it needs fixture coverage
+for naming, last-link deletion, and shared-layout effects first.
 
 ## Correctness implications
 

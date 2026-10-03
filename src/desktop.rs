@@ -12,13 +12,65 @@ use crate::{
 #[derive(Clone)]
 pub struct Connection {
     pub options: ssh::Options,
+    /// Hidden tmux session owned by one server workspace.
     pub session: core::SessionName,
+    /// User-visible logical session, implemented as one uniquely named window.
+    pub window: core::SessionName,
+    /// False only for explicit compatibility attachments restored from v0.3.
+    pub managed: bool,
     pub socket: Option<String>,
     pub history: usize,
     pub access: session::Access,
     /// Retry transport loss automatically. Only transport loss: authentication,
     /// trust, missing-session, and detach never retry regardless of this.
     pub reconnect: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ServerKey {
+    host: String,
+    port: u16,
+    user: String,
+    known_hosts: path::PathBuf,
+    files: Vec<path::PathBuf>,
+    agent: bool,
+    identities_only: bool,
+    host_key_alias: Option<String>,
+    strict_host_key_checking: ssh::StrictHostKeyChecking,
+    jumps: Vec<ServerKey>,
+    socket: Option<String>,
+    control_session: String,
+    managed: bool,
+}
+
+impl Connection {
+    pub(crate) fn server_key(&self) -> ServerKey {
+        fn endpoint(options: &ssh::Options, socket: Option<String>) -> ServerKey {
+            ServerKey {
+                host: options.host.clone(),
+                port: options.port,
+                user: options.user.clone(),
+                known_hosts: options.known_hosts.clone(),
+                files: options.authentication.files.clone(),
+                agent: options.authentication.agent,
+                identities_only: options.authentication.identities_only,
+                host_key_alias: options.host_key_alias.clone(),
+                strict_host_key_checking: options.strict_host_key_checking,
+                jumps: options
+                    .jumps
+                    .iter()
+                    .map(|jump| endpoint(jump, None))
+                    .collect(),
+                socket,
+                control_session: String::new(),
+                managed: false,
+            }
+        }
+        let mut key = endpoint(&self.options, self.socket.clone());
+        key.control_session = self.session.as_str().to_owned();
+        key.managed = self.managed;
+        key
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -106,7 +158,7 @@ pub(crate) enum Request {
 }
 
 /// The outcome of the last discovery request, for the connection form.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Discovery {
     Running,
     Sessions(Vec<sessions::Summary>),
@@ -116,10 +168,9 @@ pub enum Discovery {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct MovedSession {
+    pub source: tmuxctl::WindowId,
     pub name: String,
-    /// Moving the session's only pane destroys the old tmux session and its
-    /// control attachment; the workspace should replace that tab, not add one.
-    pub source_ended: bool,
+    pub window: tmuxctl::WindowId,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -144,6 +195,8 @@ pub(crate) struct State {
     pending: Option<Request>,
     stopping: bool,
     pub generation: u64,
+    /// Effective host-workspace policy for the current/pending attachment.
+    connection: Option<Connection>,
     pub phase: Phase,
     pub view: Option<snapshot::View>,
     pub error: Option<String>,
@@ -163,14 +216,16 @@ pub(crate) struct State {
     pub last_rtt: Option<time::Duration>,
     /// Breakdown for the last acknowledged ordinary-input transaction.
     pub input_latency: Option<inspect::InputLatency>,
-    /// Pending in-band `rename-session` (new name, previous name).
-    rename: Option<(core::SessionName, String)>,
+    /// Pending in-band `rename-window` (window, new name, previous name).
+    rename: Option<(Option<tmuxctl::WindowId>, core::SessionName, String)>,
+    /// Explicit in-band creation of another logical session/window.
+    create_window: Option<core::SessionName>,
     /// The rename is queued or waiting for tmux's bounded reply.
     pub renaming: bool,
     /// Name tmux accepted, for the tab label and saved workspace.
-    renamed: Option<String>,
+    renamed: Option<(Option<tmuxctl::WindowId>, String)>,
     /// Previous session name, restored if tmux rejected the rename.
-    rename_revert: Option<String>,
+    rename_revert: Option<(Option<tmuxctl::WindowId>, String)>,
     /// Completed pane handoff waiting for the workspace to open its new tab.
     moved_session: Option<MovedSession>,
     actions: collections::VecDeque<Pending>,
@@ -187,6 +242,7 @@ impl Default for State {
             pending: None,
             stopping: false,
             generation: 0,
+            connection: None,
             phase: Phase::Idle,
             view: None,
             error: None,
@@ -199,6 +255,7 @@ impl Default for State {
             last_rtt: None,
             input_latency: None,
             rename: None,
+            create_window: None,
             renaming: false,
             renamed: None,
             rename_revert: None,
@@ -224,6 +281,7 @@ impl State {
         self.failure = None;
         self.input_latency = None;
         self.rename = None;
+        self.create_window = None;
         self.renaming = false;
         self.renamed = None;
         self.rename_revert = None;
@@ -421,6 +479,7 @@ impl Client {
         let mut state = self.lock();
         state.cancel();
         state.access = connection.access;
+        state.connection = Some(connection.clone());
         state.phase = Phase::Connecting;
         state.pending = Some(Request::Attach(connection));
         drop(state);
@@ -429,15 +488,88 @@ impl Client {
         Ok(())
     }
 
-    /// Ask the host which sessions exist. This runs on the worker, opens its own
-    /// short-lived connection, and cannot start a tmux server.
+    pub(crate) fn reconnect(&self, mut requested: Connection) -> anyhow::Result<()> {
+        requested.options.validate()?;
+        anyhow::ensure!(
+            requested.history <= snapshot::MAX_HISTORY_LINES,
+            "history exceeds budget"
+        );
+        let mut state = self.lock();
+        if let Some(current) = state.connection.as_ref() {
+            anyhow::ensure!(
+                current.server_key() == requested.server_key(),
+                "cannot reconnect a different server route"
+            );
+            requested.history = requested.history.max(current.history);
+            requested.reconnect |= current.reconnect;
+            if current.access == session::Access::Interactive {
+                requested.access = session::Access::Interactive;
+            }
+        }
+        state.cancel();
+        state.access = requested.access;
+        state.connection = Some(requested.clone());
+        state.phase = Phase::Connecting;
+        state.pending = Some(Request::Attach(requested));
+        drop(state);
+        self.shared.1.notify_one();
+        (self.wake)();
+        Ok(())
+    }
+
+    /// Merge per-tab preferences into the one server-workspace attachment.
+    /// Security and routing identity were compared before this call; history,
+    /// interactivity, and reconnect are monotonic workspace-wide policies.
+    pub(crate) fn ensure_policy(&self, requested: Connection) -> anyhow::Result<()> {
+        let mut state = self.lock();
+        let Some(current) = state.connection.as_ref() else {
+            // Test connectors may deliberately avoid starting a worker.
+            return Ok(());
+        };
+        anyhow::ensure!(
+            current.server_key() == requested.server_key(),
+            "cannot merge different server routes"
+        );
+        let mut merged = current.clone();
+        merged.history = merged.history.max(requested.history);
+        merged.reconnect |= requested.reconnect;
+        if requested.access == session::Access::Interactive {
+            merged.access = session::Access::Interactive;
+        }
+        if merged.history == current.history
+            && merged.reconnect == current.reconnect
+            && merged.access == current.access
+        {
+            return Ok(());
+        }
+        state.cancel();
+        state.access = merged.access;
+        state.connection = Some(merged.clone());
+        state.phase = Phase::Connecting;
+        state.pending = Some(Request::Attach(merged));
+        drop(state);
+        self.shared.1.notify_one();
+        (self.wake)();
+        Ok(())
+    }
+
+    /// Ask which managed windows exist. This opens one short-lived connection
+    /// when the server workspace is not already attached and cannot start tmux.
     pub fn list_sessions(&self, connection: Connection) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            connection.managed,
+            "legacy sessions do not have managed windows"
+        );
         self.query(Request::ListSessions(connection))
     }
 
-    /// Explicitly create a session. Unlike every other path in Starcom, this may
-    /// start a tmux server — which is why only a deliberate action reaches it.
+    /// Explicitly bootstrap a managed session/window. This may start tmux,
+    /// which is why only a deliberate action reaches it.
     pub fn create_session(&self, connection: Connection, size: core::Size) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            connection.managed,
+            "cannot create a managed window on a legacy tab"
+        );
         self.query(Request::CreateSession(connection, size))
     }
 
@@ -476,9 +608,20 @@ impl Client {
         self.lock().discovery = None;
     }
 
+    pub(crate) fn set_discovery(&self, discovery: Discovery) {
+        let mut state = self.lock();
+        if state.discovery.as_ref() == Some(&discovery) {
+            return;
+        }
+        state.discovery = Some(discovery);
+        drop(state);
+        (self.wake)();
+    }
+
     pub fn disconnect(&self) {
         let mut state = self.lock();
         state.cancel();
+        state.connection = None;
         state.phase = Phase::Disconnected;
         drop(state);
         self.shared.1.notify_one();
@@ -511,14 +654,18 @@ impl Client {
     /// Queue one rename on the existing control attachment. The command is
     /// never retried: an uncertain completion instead reconnects to the
     /// optimistically saved new name.
-    pub(crate) fn rename_session(
+    pub(crate) fn rename_window(
         &self,
+        window: tmuxctl::WindowId,
         name: core::SessionName,
         previous: String,
     ) -> anyhow::Result<()> {
         let mut state = self.lock();
         anyhow::ensure!(
-            state.input_ready() || state.phase == Phase::Connecting,
+            matches!(
+                state.phase,
+                Phase::Connecting | Phase::Watching | Phase::Resynchronizing | Phase::Reconnecting
+            ),
             "connect with an interactive session to rename it"
         );
         anyhow::ensure!(
@@ -526,7 +673,15 @@ impl Client {
             "read-only sessions cannot be renamed"
         );
         anyhow::ensure!(!state.renaming, "a session rename is already running");
-        state.rename = Some((name, previous));
+        anyhow::ensure!(
+            !state.view.as_ref().is_some_and(|view| {
+                view.window_named(name.as_str())
+                    .is_some_and(|existing| existing != window)
+            }),
+            "a logical session named '{}' already exists",
+            name.as_str()
+        );
+        state.rename = Some((Some(window), name, previous));
         state.renaming = true;
         state.renamed = None;
         state.rename_revert = None;
@@ -538,11 +693,69 @@ impl Client {
         Ok(())
     }
 
-    pub(crate) fn take_renamed(&self) -> Option<String> {
+    pub(crate) fn rename_session(
+        &self,
+        name: core::SessionName,
+        previous: String,
+    ) -> anyhow::Result<()> {
+        let mut state = self.lock();
+        anyhow::ensure!(state.input_ready(), "connect before renaming this session");
+        anyhow::ensure!(
+            state.access == session::Access::Interactive,
+            "read-only sessions cannot be renamed"
+        );
+        anyhow::ensure!(!state.renaming, "a session rename is already running");
+        state.rename = Some((None, name, previous));
+        state.renaming = true;
+        state.renamed = None;
+        state.rename_revert = None;
+        if let Some(ref wake) = state.io_wake {
+            wake.notify();
+        }
+        drop(state);
+        self.shared.1.notify_one();
+        Ok(())
+    }
+
+    pub(crate) fn create_window(&self, name: core::SessionName) -> anyhow::Result<()> {
+        let mut state = self.lock();
+        anyhow::ensure!(
+            matches!(
+                state.phase,
+                Phase::Connecting | Phase::Watching | Phase::Resynchronizing | Phase::Reconnecting
+            ),
+            "connect before creating another session"
+        );
+        anyhow::ensure!(
+            state.access == session::Access::Interactive,
+            "read-only sessions cannot create windows"
+        );
+        anyhow::ensure!(
+            state.create_window.is_none(),
+            "a session is already being created"
+        );
+        anyhow::ensure!(
+            state
+                .view
+                .as_ref()
+                .is_none_or(|view| view.window_named(name.as_str()).is_none()),
+            "a logical session named '{}' already exists",
+            name.as_str()
+        );
+        state.create_window = Some(name);
+        if let Some(ref wake) = state.io_wake {
+            wake.notify();
+        }
+        drop(state);
+        self.shared.1.notify_one();
+        Ok(())
+    }
+
+    pub(crate) fn take_renamed(&self) -> Option<(Option<tmuxctl::WindowId>, String)> {
         self.lock().renamed.take()
     }
 
-    pub(crate) fn take_rename_revert(&self) -> Option<String> {
+    pub(crate) fn take_rename_revert(&self) -> Option<(Option<tmuxctl::WindowId>, String)> {
         self.lock().rename_revert.take()
     }
 
@@ -705,10 +918,10 @@ fn worker_loop(shared: Shared, wake: Wake) {
                     Request::CreateSession(ref connection, size) => sessions::create(
                         &connection.options,
                         connection.socket.as_deref(),
-                        &connection.session,
+                        &connection.window,
                         size,
                     )
-                    .map(|()| Discovery::Created(connection.session.as_str().to_owned())),
+                    .map(|()| Discovery::Created(connection.window.as_str().to_owned())),
                     Request::Attach(_) => unreachable!("attach handled above"),
                 };
                 let mut state = shared
@@ -884,8 +1097,8 @@ fn report_failure(
     });
     if scheduled.is_none() {
         state.retry = None;
-        if let Some((_, previous)) = state.rename.take() {
-            state.rename_revert = Some(previous);
+        if let Some((window, _, previous)) = state.rename.take() {
+            state.rename_revert = Some((window, previous));
         }
         state.renaming = false;
         state.phase = match failure {
@@ -986,7 +1199,7 @@ fn take_ordinary_input(
     // A rename is a session-scoped ordering barrier. Once requested, drain
     // input already on the wire instead of letting newly typed input postpone
     // it indefinitely.
-    if !state.input_ready() || state.rename.is_some() {
+    if !state.input_ready() || state.rename.is_some() || state.create_window.is_some() {
         return Ok(None);
     }
     loop {
@@ -1108,6 +1321,75 @@ fn watch(
     let mut last_alive = reconnect::AliveClock::now();
     wake();
     loop {
+        let create = {
+            let mut state = shared
+                .0
+                .lock()
+                .unwrap_or_else(sync::PoisonError::into_inner);
+            if !state.accepts(epoch) {
+                return Ok(Outcome::Cancelled);
+            }
+            inspector
+                .input_idle()
+                .then(|| state.create_window.take())
+                .flatten()
+        };
+        if let Some(name) = create {
+            match inspector.new_window(&name) {
+                Ok((_window, notifications)) => {
+                    let mut state = shared
+                        .0
+                        .lock()
+                        .unwrap_or_else(sync::PoisonError::into_inner);
+                    if state.accepts(epoch) {
+                        if let Some(ref mut view) = state.view {
+                            for event in notifications {
+                                view.apply(event);
+                            }
+                            view.invalidate();
+                        }
+                        state.phase = Phase::Resynchronizing;
+                        state.last_rtt = inspector.last_rtt;
+                        state.error = None;
+                    }
+                    drop(state);
+                    wake();
+                    continue;
+                }
+                Err(error) if reconnect::classify(&error) == reconnect::Failure::Transport => {
+                    let mut state = shared
+                        .0
+                        .lock()
+                        .unwrap_or_else(sync::PoisonError::into_inner);
+                    if state.accepts(epoch) {
+                        state.error = Some(
+                            "The new session may have been created, but its completion was not observed; reconnecting without retrying it."
+                                .to_owned(),
+                        );
+                    }
+                    drop(state);
+                    wake();
+                    return Err(error);
+                }
+                Err(error) => {
+                    let raced = error.to_string().contains("another tmux client");
+                    let mut state = shared
+                        .0
+                        .lock()
+                        .unwrap_or_else(sync::PoisonError::into_inner);
+                    if state.accepts(epoch) {
+                        state.error = Some(format!("Could not create session: {error}"));
+                        if raced {
+                            state.view.as_mut().expect("view published").invalidate();
+                            state.phase = Phase::Resynchronizing;
+                        }
+                    }
+                    drop(state);
+                    wake();
+                    continue;
+                }
+            }
+        }
         // Rename before resync/input. It is session-scoped and does not depend
         // on the current pane geometry.
         let rename = {
@@ -1123,11 +1405,24 @@ fn watch(
                 .then(|| state.rename.take())
                 .flatten()
         };
-        if let Some((name, previous)) = rename {
+        if let Some((window, name, previous)) = rename {
             // Once written, the command must never be replayed. Point any
             // recovery at the optimistic name before attempting delivery.
-            connection.session = name.clone();
-            match inspector.rename_session(session_id, &name) {
+            if window.is_some() {
+                connection.window = name.clone();
+            } else {
+                connection.session = name.clone();
+                connection.window = name.clone();
+            }
+            let result = match window {
+                Some(window) => inspector.rename_window(
+                    window,
+                    &name,
+                    &core::SessionName::new(previous.clone())?,
+                ),
+                None => inspector.rename_session(session_id, &name),
+            };
+            match result {
                 Ok(notifications) => {
                     let mut state = shared
                         .0
@@ -1135,7 +1430,15 @@ fn watch(
                         .unwrap_or_else(sync::PoisonError::into_inner);
                     if state.accepts(epoch) {
                         state.renaming = false;
-                        state.renamed = Some(name.as_str().to_owned());
+                        if let Some(ref mut configured) = state.connection {
+                            if window.is_some() {
+                                configured.window = name.clone();
+                            } else {
+                                configured.session = name.clone();
+                                configured.window = name.clone();
+                            }
+                        }
+                        state.renamed = Some((window, name.as_str().to_owned()));
                         state.rename_revert = None;
                         state.last_rtt = inspector.last_rtt;
                         state.error = None;
@@ -1158,10 +1461,18 @@ fn watch(
                         .unwrap_or_else(sync::PoisonError::into_inner);
                     if state.accepts(epoch) {
                         state.renaming = false;
+                        if let Some(ref mut configured) = state.connection {
+                            if window.is_some() {
+                                configured.window = name.clone();
+                            } else {
+                                configured.session = name.clone();
+                                configured.window = name.clone();
+                            }
+                        }
                         // Delivery is uncertain, so recovery must target the new
                         // name and the workspace must persist that same target.
                         // The command itself is never replayed.
-                        state.renamed = Some(name.as_str().to_owned());
+                        state.renamed = Some((window, name.as_str().to_owned()));
                         state.error = Some(
                             "The rename was delivered but its completion was not observed; reconnecting to the new name."
                                 .to_owned(),
@@ -1172,7 +1483,13 @@ fn watch(
                     return Ok(Outcome::RenameReconnect);
                 }
                 Err(error) => {
-                    connection.session = core::SessionName::new(previous.clone())?;
+                    let raced = error.to_string().contains("another tmux client");
+                    if window.is_some() {
+                        connection.window = core::SessionName::new(previous.clone())?;
+                    } else {
+                        connection.session = core::SessionName::new(previous.clone())?;
+                        connection.window = core::SessionName::new(previous.clone())?;
+                    }
                     let mut state = shared
                         .0
                         .lock()
@@ -1180,7 +1497,19 @@ fn watch(
                     if state.accepts(epoch) {
                         state.renaming = false;
                         state.error = Some(format!("Could not rename session: {error}"));
-                        state.rename_revert = Some(previous);
+                        if raced {
+                            state.view.as_mut().expect("view published").invalidate();
+                            state.phase = Phase::Resynchronizing;
+                        }
+                        if let Some(ref mut configured) = state.connection {
+                            if window.is_some() {
+                                configured.window = core::SessionName::new(previous.clone())?;
+                            } else {
+                                configured.session = core::SessionName::new(previous.clone())?;
+                                configured.window = core::SessionName::new(previous.clone())?;
+                            }
+                        }
+                        state.rename_revert = Some((window, previous));
                     }
                     drop(state);
                     wake();
@@ -1420,10 +1749,21 @@ fn watch(
                             state.view.as_ref().expect("view published"),
                             pending.target.pane,
                         )?;
+                        let move_name =
+                            if matches!(&pending.action, input::Action::MoveToNewSession) {
+                                let existing = state
+                                    .view
+                                    .as_ref()
+                                    .expect("view published")
+                                    .windows()
+                                    .values()
+                                    .cloned()
+                                    .collect();
+                                Some(inspect::move_session_name(&existing, target.pane)?)
+                            } else {
+                                None
+                            };
                         let resizing = pending.action.changes_layout();
-                        let source_ended =
-                            matches!(pending.action, input::Action::MoveToNewSession)
-                                && state.view.as_ref().expect("view published").panes().len() == 1;
                         // Ordinary input is consumed by the bounded pipeline
                         // above. Reaching this synchronous path with it would
                         // reintroduce one-acknowledgment-per-input latency.
@@ -1435,16 +1775,19 @@ fn watch(
                             "ordinary input bypassed the pipeline"
                         );
                         let actions = vec![pending.action];
-                        Some((target, actions, resizing, source_ended))
+                        Some((target, actions, resizing, move_name))
                     } else {
                         None
                     }
                 };
-                if let Some((target, actions, resizing, source_ended)) = pending {
+                if let Some((target, actions, resizing, move_name)) = pending {
                     // The pop above is the dispatch boundary. Cancellation may
                     // follow while I/O is in flight; these actions are NEVER requeued.
                     if matches!(actions.as_slice(), [input::Action::MoveToNewSession]) {
-                        let moved = inspector.move_to_new_session(target, target.size)?;
+                        let moved = inspector.move_to_new_session(
+                            target,
+                            move_name.expect("pane move has a generated name"),
+                        )?;
                         let mut state = shared
                             .0
                             .lock()
@@ -1464,25 +1807,17 @@ fn watch(
                             state.phase = Phase::Resynchronizing;
                         } else {
                             state.moved_session = Some(MovedSession {
-                                name: moved.session.as_str().to_owned(),
-                                source_ended,
+                                source: target.window,
+                                name: moved.name.as_str().to_owned(),
+                                window: moved.window,
                             });
                             state.discard_actions();
-                            if source_ended {
-                                state.view.as_mut().expect("view published").disconnect();
-                                state.phase = Phase::Disconnected;
-                                state.io_wake = None;
-                            } else {
-                                state.view.as_mut().expect("view published").invalidate();
-                                state.phase = Phase::Resynchronizing;
-                            }
+                            state.view.as_mut().expect("view published").invalidate();
+                            state.phase = Phase::Resynchronizing;
                         }
                         state.last_rtt = inspector.last_rtt;
                         drop(state);
                         wake();
-                        if source_ended && moved.applied {
-                            return Ok(Outcome::Cancelled);
-                        }
                         continue;
                     }
                     let mut outcome = inspector.interact(target, &actions)?;
@@ -1730,14 +2065,15 @@ mod tests {
             state.access = session::Access::Interactive;
         }
         client
-            .rename_session(
+            .rename_window(
+                tmuxctl::WindowId(0),
                 core::SessionName::new("renamed").unwrap(),
                 "pane-1".to_owned(),
             )
             .unwrap();
         let state = client.lock();
         assert!(state.renaming);
-        assert_eq!(state.rename.as_ref().unwrap().0.as_str(), "renamed");
+        assert_eq!(state.rename.as_ref().unwrap().1.as_str(), "renamed");
     }
 
     #[test]
@@ -1872,7 +2208,11 @@ mod tests {
         state
             .enqueue(target, input::Action::Bytes(b"held".to_vec()))
             .unwrap();
-        state.rename = Some((core::SessionName::new("renamed").unwrap(), "old".to_owned()));
+        state.rename = Some((
+            Some(tmuxctl::WindowId(0)),
+            core::SessionName::new("renamed").unwrap(),
+            "old".to_owned(),
+        ));
         assert!(take_ordinary_input(&mut state).unwrap().is_none());
         assert_eq!(state.actions.len(), 1);
     }

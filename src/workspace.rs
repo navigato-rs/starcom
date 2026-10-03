@@ -1,11 +1,11 @@
-//! Connection tabs own independent clients, forms, selection and input tokens.
-//! A new tab displays a form, never a sidebar alongside somebody else's panes.
+//! Logical tabs own independent UI state while tabs on one resolved server
+//! share a single SSH/tmux control client and reconstructed managed-session view.
 
 use std::{fs, io, path, sync, time};
 
 use anyhow::Context;
 
-use crate::{core, desktop, dialog, reconnect, ssh_config, store, ui};
+use crate::{core, desktop, dialog, reconnect, sessions, ssh_config, store, ui};
 
 const MAX_TABS: usize = 16;
 const NEW_CONNECTION: &str = "New connection";
@@ -41,7 +41,8 @@ fn rename_key_outcome(enter: bool, escape: bool, lost_focus: bool) -> RenameKey 
 struct Tab {
     id: u64,
     label: String,
-    client: desktop::Client,
+    client: sync::Arc<desktop::Client>,
+    server: Option<desktop::ServerKey>,
     ui: ui::DesktopUi,
     last_seq: u64,
     last_output: time::Instant,
@@ -178,7 +179,8 @@ fn spawn_tab(
     Ok(Tab {
         id,
         label: NEW_CONNECTION.into(),
-        client: desktop::Client::new(wake)?,
+        client: sync::Arc::new(desktop::Client::new(wake)?),
+        server: None,
         ui: ui::DesktopUi::with_config(config, config_load_error),
         last_seq: 0,
         last_output: time::Instant::now(),
@@ -199,6 +201,22 @@ fn live_phase(phase: desktop::Phase) -> bool {
         phase,
         desktop::Phase::Watching | desktop::Phase::Demo | desktop::Phase::Resynchronizing
     )
+}
+
+fn logical_phase(tab: &Tab, state: &desktop::State) -> desktop::Phase {
+    if state.phase != desktop::Phase::Demo
+        && live_phase(state.phase)
+        && !tab.ui.window_available(state)
+    {
+        desktop::Phase::Failed
+    } else {
+        state.phase
+    }
+}
+
+fn tab_phase(tab: &Tab) -> desktop::Phase {
+    let state = tab.client.lock();
+    logical_phase(tab, &state)
 }
 
 fn lift(color: egui::Color32, by: u8) -> egui::Color32 {
@@ -460,10 +478,21 @@ impl Workspace {
                 )?;
                 restored.label = label(&tab);
                 restored.ui.restore(tab);
-                let result = restored
-                    .ui
-                    .resume()
-                    .and_then(|connection| resume(&restored.client, connection));
+                let result = restored.ui.resume().and_then(|connection| {
+                    let key = connection.server_key();
+                    if let Some(existing) = self
+                        .tabs
+                        .iter()
+                        .find(|tab| tab.server.as_ref() == Some(&key))
+                    {
+                        existing.client.ensure_policy(connection)?;
+                        restored.client = sync::Arc::clone(&existing.client);
+                    } else {
+                        resume(&restored.client, connection)?;
+                    }
+                    restored.server = Some(key);
+                    Ok(())
+                });
                 match result {
                     Ok(()) => {
                         if saved_index == saved_active {
@@ -540,7 +569,7 @@ impl Workspace {
             let seq = state
                 .view
                 .as_ref()
-                .map(crate::snapshot::View::display_seq)
+                .map(|view| tab.ui.display_seq(view))
                 .unwrap_or(0);
             drop(state);
 
@@ -803,7 +832,9 @@ impl Workspace {
 
     fn remove_tab(&mut self, index: usize) {
         self.cancel_transient();
-        self.tabs.remove(index); // Client::drop invalidates tokens and wakes its worker.
+        // The shared client drops only with its final logical tab; that drop
+        // invalidates tokens and wakes the one server worker.
+        self.tabs.remove(index);
         self.finish_tab_removal(index);
     }
 
@@ -891,16 +922,67 @@ impl Workspace {
     }
 
     fn apply_renamed_session(&mut self) {
-        let mut changed = false;
-        for tab in &mut self.tabs {
-            let name = tab
+        let mut events = Vec::new();
+        for index in 0..self.tabs.len() {
+            if self.tabs[..index]
+                .iter()
+                .any(|tab| sync::Arc::ptr_eq(&tab.client, &self.tabs[index].client))
+            {
+                continue;
+            }
+            if let Some((window, name)) = self.tabs[index]
                 .client
                 .take_renamed()
-                .or_else(|| tab.client.take_rename_revert());
-            let Some(name) = name else {
+                .or_else(|| self.tabs[index].client.take_rename_revert())
+            {
+                events.push((sync::Arc::clone(&self.tabs[index].client), window, name));
+            }
+        }
+        let mut changed = false;
+        for (client, window, name) in events {
+            if let Some(tab) = self.tabs.iter_mut().find(|tab| {
+                sync::Arc::ptr_eq(&tab.client, &client)
+                    && match window {
+                        Some(window) => tab.ui.current_window() == Some(window),
+                        None => tab.ui.legacy_session(),
+                    }
+            }) && name != tab.ui.session_name()
+            {
+                tab.ui.set_session_name(name);
+                tab.label = label(&tab.ui.saved());
+                if tab.ui.legacy_session()
+                    && let Ok(connection) = tab.ui.connection()
+                {
+                    tab.server = Some(connection.server_key());
+                }
+                changed = true;
+            }
+        }
+        if changed {
+            self.persist();
+        }
+    }
+
+    fn apply_remote_window_names(&mut self) {
+        let mut changed = false;
+        for tab in &mut self.tabs {
+            if tab.ui.legacy_session() {
+                continue;
+            }
+            let Some(window) = tab.ui.current_window() else {
                 continue;
             };
-            if name != tab.ui.session_name() {
+            let name = {
+                let state = tab.client.lock();
+                state
+                    .view
+                    .as_ref()
+                    .and_then(|view| view.window_name(window))
+                    .map(str::to_owned)
+            };
+            if let Some(name) = name
+                && name != tab.ui.session_name()
+            {
                 tab.ui.set_session_name(name);
                 tab.label = label(&tab.ui.saved());
                 changed = true;
@@ -912,22 +994,31 @@ impl Workspace {
     }
 
     fn apply_moved_session(&mut self) -> anyhow::Result<()> {
-        let moved =
-            self.tabs.iter().enumerate().find_map(|(index, tab)| {
-                tab.client.take_moved_session().map(|moved| (index, moved))
-            });
-        let Some((source, moved)) = moved else {
+        let moved = self.tabs.iter().find_map(|tab| {
+            tab.client
+                .take_moved_session()
+                .map(|moved| (sync::Arc::clone(&tab.client), moved))
+        });
+        let Some((client, moved)) = moved else {
             return Ok(());
         };
+        let source = self
+            .tabs
+            .iter()
+            .position(|tab| {
+                sync::Arc::ptr_eq(&tab.client, &client)
+                    && tab.ui.current_window() == Some(moved.source)
+            })
+            .context("the source logical session disappeared during its pane move")?;
         anyhow::ensure!(
-            moved.source_ended || self.tabs.len() < MAX_TABS,
+            self.tabs.len() < MAX_TABS,
             "the pane moved, but the workspace already has {MAX_TABS} tabs; open its '{}' session manually",
             moved.name
         );
 
         let mut saved = self.tabs[source].ui.saved();
         saved.session.clone_from(&moved.name);
-        saved.window = None;
+        saved.window = Some(moved.window.0);
         saved.pane = None;
         let mut tab = spawn_tab(
             self.alloc_id(),
@@ -937,17 +1028,12 @@ impl Workspace {
         )?;
         tab.label = label(&saved);
         tab.ui.restore(saved);
-        let connection = tab.ui.resume()?;
-        tab.client.connect(connection)?;
+        tab.client = client;
+        tab.server = self.tabs[source].server.clone();
 
-        if moved.source_ended {
-            self.tabs[source] = tab;
-            self.active = source;
-        } else {
-            let insert_at = source + 1;
-            self.tabs.insert(insert_at, tab);
-            self.active = insert_at;
-        }
+        let insert_at = source + 1;
+        self.tabs.insert(insert_at, tab);
+        self.active = insert_at;
         self.composer_open = false;
         self.renaming = Some(SessionRename {
             id: self.tabs[self.active].id,
@@ -964,10 +1050,16 @@ impl Workspace {
         }
         self.local_dirty = false;
         self.apply_renamed_session();
+        self.apply_remote_window_names();
         let mut navigation = Action::None;
         let mut reorder: Option<(u64, usize)> = None;
         let mut rename_to: Option<(u64, String)> = None;
-        let composer_endpoint = self.composer.ui.saved();
+        let composer_server = self
+            .composer
+            .ui
+            .connection()
+            .ok()
+            .map(|connection| connection.server_key());
         let connected_servers = self
             .tabs
             .iter()
@@ -976,6 +1068,36 @@ impl Workspace {
             .filter(|server| !server.is_empty())
             .collect();
         self.composer.ui.set_connected_servers(connected_servers);
+        if let Some(ref server) = composer_server
+            && let Some(tab) = self
+                .tabs
+                .iter()
+                .find(|tab| tab.server.as_ref() == Some(server) && live_phase(tab.client.phase()))
+        {
+            let found = {
+                let state = tab.client.lock();
+                state.view.as_ref().map(|view| {
+                    view.windows()
+                        .iter()
+                        .map(|(id, name)| sessions::Summary {
+                            id: *id,
+                            name: name.clone(),
+                            panes: view
+                                .panes()
+                                .values()
+                                .filter(|pane| pane.state.window == *id)
+                                .count(),
+                        })
+                        .collect()
+                })
+            };
+            if let Some(found) = found {
+                self.composer.ui.accept_live_discovery();
+                self.composer
+                    .client
+                    .set_discovery(desktop::Discovery::Sessions(found));
+            }
+        }
         let unavailable = self
             .tabs
             .iter()
@@ -986,7 +1108,9 @@ impl Workspace {
                         | desktop::Phase::Watching
                         | desktop::Phase::Resynchronizing
                         | desktop::Phase::Reconnecting
-                ) && same_endpoint(&composer_endpoint, &tab.ui.saved())
+                ) && composer_server
+                    .as_ref()
+                    .is_some_and(|server| tab.server.as_ref() == Some(server))
             })
             .map(|tab| tab.ui.session_name().to_owned())
             .filter(|session| !session.is_empty())
@@ -1064,11 +1188,11 @@ impl Workspace {
                             let now = time::Instant::now();
                             for tab in &mut self.tabs {
                                 let state = tab.client.lock();
-                                let phase = state.phase;
+                                let phase = logical_phase(tab, &state);
                                 let seq = state
                                     .view
                                     .as_ref()
-                                    .map(crate::snapshot::View::display_seq)
+                                    .map(|view| tab.ui.display_seq(view))
                                     .unwrap_or(0);
                                 drop(state);
                                 if seq != tab.last_seq || phase != tab.last_phase {
@@ -1093,7 +1217,7 @@ impl Workspace {
                                         self.renaming
                                             .as_ref()
                                             .is_some_and(|rename| rename.id == tab.id),
-                                        busy_phase(tab.client.phase()),
+                                        busy_phase(tab_phase(tab)),
                                     ) + ui.spacing().item_spacing.x
                                 })
                                 .collect();
@@ -1123,7 +1247,7 @@ impl Workspace {
                                 let last_output = self.tabs[index].last_output;
                                 let label = self.tabs[index].label.clone();
                                 let server = self.tabs[index].ui.server_name().to_owned();
-                                let phase = self.tabs[index].client.phase();
+                                let phase = tab_phase(&self.tabs[index]);
                                 ui.push_id(id, |ui| {
                                     if self.renaming.as_ref().is_some_and(|rename| rename.id == id)
                                     {
@@ -1268,6 +1392,7 @@ impl Workspace {
                                     }
                                     if response.double_clicked()
                                         && phase == desktop::Phase::Watching
+                                        && self.tabs[index].ui.saved().interactive
                                     {
                                         self.notice = None;
                                         ui.ctx().memory_mut(|memory| {
@@ -1476,11 +1601,37 @@ impl Workspace {
                     let mut return_to_composer = false;
                     let mut promoted_composer = false;
                     let can_add_session = self.tabs.len() < MAX_TABS;
+                    let composer_connect = self.composer_open
+                        && id == self.composer.id
+                        && matches!(action.as_ref(), ui::Action::Connect(_));
+                    let composer_create = self.composer_open
+                        && id == self.composer.id
+                        && matches!(action.as_ref(), ui::Action::CreateSession(_));
+                    let composer_list = self.composer_open
+                        && id == self.composer.id
+                        && matches!(action.as_ref(), ui::Action::ListSessions(_));
+                    let reusable = if composer_connect || composer_create || composer_list {
+                        match action.as_ref() {
+                            ui::Action::Connect(connection)
+                            | ui::Action::CreateSession(connection)
+                            | ui::Action::ListSessions(connection) => {
+                                let key = connection.server_key();
+                                self.tabs
+                                    .iter()
+                                    .find(|tab| {
+                                        tab.server.as_ref() == Some(&key)
+                                            && live_phase(tab.client.phase())
+                                    })
+                                    .map(|tab| sync::Arc::clone(&tab.client))
+                            }
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+                    let promote = composer_connect || (composer_create && reusable.is_some());
                     {
-                        if self.composer_open
-                            && id == self.composer.id
-                            && matches!(*action, ui::Action::Connect(_))
-                        {
+                        if promote {
                             self.promote_composer()?;
                             promoted_composer = true;
                         }
@@ -1497,7 +1648,18 @@ impl Workspace {
                         let result = match *action {
                             ui::Action::None => Ok(()),
                             ui::Action::Connect(connection) => {
-                                let started = tab.client.connect(connection).map(|()| {
+                                let key = connection.server_key();
+                                let started = if let Some(client) = reusable {
+                                    client.ensure_policy(connection.clone())?;
+                                    tab.client = client;
+                                    Ok(())
+                                } else if tab.server.is_some() {
+                                    tab.client.reconnect(connection)
+                                } else {
+                                    tab.client.connect(connection)
+                                }
+                                .map(|()| {
+                                    tab.server = Some(key);
                                     tab.label = label(&tab.ui.saved());
                                     tab.ui.reset_client_size();
                                     tab.ui.open_terminal();
@@ -1509,28 +1671,82 @@ impl Workspace {
                                 started
                             }
                             ui::Action::ListSessions(connection) => {
-                                tab.client.list_sessions(connection)
+                                let found = reusable.as_ref().and_then(|client| {
+                                    let state = client.lock();
+                                    state.view.as_ref().map(|view| {
+                                        view.windows()
+                                            .iter()
+                                            .map(|(id, name)| sessions::Summary {
+                                                id: *id,
+                                                name: name.clone(),
+                                                panes: view
+                                                    .panes()
+                                                    .values()
+                                                    .filter(|pane| pane.state.window == *id)
+                                                    .count(),
+                                            })
+                                            .collect()
+                                    })
+                                });
+                                if let Some(found) = found {
+                                    tab.ui.accept_live_discovery();
+                                    tab.client
+                                        .set_discovery(desktop::Discovery::Sessions(found));
+                                    Ok(())
+                                } else {
+                                    tab.client.list_sessions(connection)
+                                }
                             }
                             ui::Action::CreateSession(connection) => {
-                                // A creation size only sets the new session's initial
-                                // geometry; tmux owns it from then on.
-                                tab.client
-                                    .create_session(connection, crate::core::Size::default())
+                                if let Some(client) = reusable {
+                                    let key = connection.server_key();
+                                    let name = connection.window.clone();
+                                    let mut policy = connection;
+                                    policy.access = crate::session::Access::Interactive;
+                                    let started = client
+                                        .ensure_policy(policy)
+                                        .and_then(|()| client.create_window(name))
+                                        .map(|()| {
+                                            tab.client = client;
+                                            tab.server = Some(key);
+                                            tab.label = label(&tab.ui.saved());
+                                            tab.ui.reset_client_size();
+                                            tab.ui.open_terminal();
+                                        });
+                                    save = started.is_ok();
+                                    return_to_composer = promoted_composer && started.is_err();
+                                    started
+                                } else {
+                                    // The first window deliberately starts the managed
+                                    // session through a bounded one-shot connection.
+                                    tab.client
+                                        .create_session(connection, crate::core::Size::default())
+                                }
                             }
                             ui::Action::RenameSession(name) => {
                                 self.submitted_rename = None;
+                                anyhow::ensure!(
+                                    tab.ui.saved().interactive,
+                                    "read-only sessions cannot be renamed"
+                                );
                                 let parsed = core::SessionName::new(name)?;
                                 let previous = tab.ui.session_name().to_owned();
                                 if parsed.as_str() == previous {
                                     Ok(())
                                 } else {
-                                    tab.client.rename_session(parsed, previous)
+                                    if tab.ui.legacy_session() {
+                                        tab.client.rename_session(parsed, previous)
+                                    } else {
+                                        let window = tab.ui.current_window().ok_or_else(|| {
+                                            anyhow::anyhow!("logical session window is unavailable")
+                                        })?;
+                                        tab.client.rename_window(window, parsed, previous)
+                                    }
                                 }
                             }
                             ui::Action::Disconnect => {
                                 // Exit is the only way a session tab is removed.
                                 close_after_exit = Some(id);
-                                tab.client.disconnect();
                                 Ok(())
                             }
                             // Resolve clipboard reads in place so the whole frame
@@ -2049,6 +2265,7 @@ mod tests {
                         resumed.push((
                             connection.options.host,
                             connection.session.as_str().to_owned(),
+                            connection.window.as_str().to_owned(),
                         ));
                         Ok(())
                     },
@@ -2061,8 +2278,8 @@ mod tests {
         assert_eq!(
             resumed,
             [
-                ("10.0.0.2".into(), "work".into()),
-                ("build.example.test".into(), "ci".into())
+                ("10.0.0.2".into(), "starcom".into(), "work".into()),
+                ("build.example.test".into(), "starcom".into(), "ci".into())
             ]
         );
         // The injected connector keeps this test off the network. Opening the
@@ -2166,6 +2383,7 @@ mod tests {
                         resumed = Some((
                             connection.options.host,
                             connection.session.as_str().to_owned(),
+                            connection.window.as_str().to_owned(),
                         ));
                         Ok(())
                     },
@@ -2176,7 +2394,10 @@ mod tests {
         assert_eq!(started.tabs[0].ui.saved().window, Some(0));
         assert_eq!(started.tabs[0].ui.saved().pane, Some(1));
         assert_eq!(started.tabs[0].label, "work");
-        assert_eq!(resumed, Some(("dev.example.test".into(), "work".into())));
+        assert_eq!(
+            resumed,
+            Some(("dev.example.test".into(), "starcom".into(), "work".into()))
+        );
         assert!(!started.tabs[0].ui.showing_form());
         assert!(!started.composer_open);
     }
@@ -2235,7 +2456,7 @@ mod tests {
                 .composer
                 .client
                 .error()
-                .is_some_and(|error| error.contains("choose a tmux session"))
+                .is_some_and(|error| error.contains("choose a session"))
         );
     }
 
@@ -2311,6 +2532,64 @@ mod tests {
             renaming: None,
             submitted_rename: None,
         }
+    }
+
+    #[test]
+    fn restored_windows_on_one_server_share_one_client_and_resume() {
+        let directory = std::env::temp_dir().join(format!(
+            "starcom-shared-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(directory.clone());
+        let file = directory.join("workspace.conf");
+        let tab = |session: &str| store::Tab {
+            host: "zork.example.test".into(),
+            user: "alice".into(),
+            session: session.into(),
+            known_hosts: "/tmp/known_hosts".into(),
+            port: 22,
+            history: store::DEFAULT_HISTORY,
+            interactive: true,
+            reconnect: true,
+            ..store::Tab::default()
+        };
+        store::save(
+            &file,
+            &store::Workspace {
+                tabs: vec![tab("work"), tab("build")],
+                ..store::Workspace::default()
+            },
+        )
+        .unwrap();
+
+        let mut workspace = idle_workspace(Some(file));
+        let mut resumed = Vec::new();
+        workspace
+            .restore_with(
+                |_, _| dialog::BrokenStore::Exit,
+                |_, connection| {
+                    resumed.push(connection.window.as_str().to_owned());
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(resumed, ["work"]);
+        assert_eq!(workspace.tabs.len(), 2);
+        assert!(sync::Arc::ptr_eq(
+            &workspace.tabs[0].client,
+            &workspace.tabs[1].client
+        ));
+        assert_eq!(workspace.tabs[0].server, workspace.tabs[1].server);
     }
 
     fn broken_workspace(file: path::PathBuf) -> Workspace {

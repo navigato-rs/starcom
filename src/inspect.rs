@@ -105,7 +105,8 @@ struct PendingInput {
 #[cfg(feature = "gui")]
 pub(crate) struct PaneMove {
     pub applied: bool,
-    pub session: core::SessionName,
+    pub window: tmuxctl::WindowId,
+    pub name: core::SessionName,
     pub notifications: Vec<tmuxctl::Notification>,
 }
 
@@ -237,6 +238,22 @@ impl Inspector {
         Ok(batch.replies.remove(0))
     }
 
+    #[cfg(feature = "gui")]
+    fn live_request(
+        &mut self,
+        command: &str,
+    ) -> anyhow::Result<(Vec<String>, Vec<tmuxctl::Notification>)> {
+        let mut batch = self.request_batch(&[command.to_owned()])?;
+        Ok((
+            batch.replies.remove(0),
+            batch
+                .notifications
+                .into_iter()
+                .map(|(_, event)| event)
+                .collect(),
+        ))
+    }
+
     /// Tell tmux this client's cell size so pane widths match the GUI font.
     /// Returns notifications that arrived with the reply (layout-change and a
     /// TUI's SIGWINCH redraw). Callers must not drop them: restore starts with
@@ -295,18 +312,40 @@ impl Inspector {
     /// its final reply is lost, abort this stream so the caller can reconnect
     /// to the optimistically saved name without replaying the command.
     #[cfg(feature = "gui")]
-    pub(crate) fn rename_session(
+    pub(crate) fn rename_window(
         &mut self,
-        session: tmuxctl::SessionId,
+        window: tmuxctl::WindowId,
         name: &core::SessionName,
+        previous: &core::SessionName,
     ) -> anyhow::Result<Vec<tmuxctl::Notification>> {
-        let command = command::Command::rename_session(session, name);
+        let mut notifications = Vec::new();
+        let command = command::Command::rename_window(window, name);
         match self.exchange_with_timeout(command.as_str(), 1, time::Duration::from_secs(5)) {
-            Ok(batch) => Ok(batch
-                .notifications
-                .into_iter()
-                .map(|(_, event)| event)
-                .collect()),
+            Ok(batch) => {
+                notifications.extend(batch.notifications.into_iter().map(|(_, event)| event));
+                let (listed, later) =
+                    self.live_request("list-windows -F '#{window_id}\t#{window_name}'\n")?;
+                notifications.extend(later);
+                let listed: Vec<_> = listed
+                    .into_iter()
+                    .filter_map(|line| {
+                        line.split_once('\t')
+                            .map(|(id, name)| (id.to_owned(), name.to_owned()))
+                    })
+                    .collect();
+                let matching = listed
+                    .iter()
+                    .filter(|(_, candidate)| candidate == name.as_str())
+                    .count();
+                let target_matches = listed
+                    .iter()
+                    .any(|(id, candidate)| id == &window.to_string() && candidate == name.as_str());
+                if matching != 1 || !target_matches {
+                    self.request(command::Command::rename_window(window, previous).as_str())?;
+                    anyhow::bail!("another tmux client created the same logical session name");
+                }
+                Ok(notifications)
+            }
             Err(error) => {
                 if error.to_string().contains("tmux rejected request") {
                     return Err(error);
@@ -320,98 +359,159 @@ impl Inspector {
         }
     }
 
-    /// Move one pane into a fresh detached session on this same tmux server.
-    /// The temporary pane id is read from tmux, so this is independent of the
-    /// user's base-index setting. A guarded rejection removes the empty target;
-    /// an uncertain transport result is never retried or cleaned up blindly.
+    #[cfg(feature = "gui")]
+    pub(crate) fn rename_session(
+        &mut self,
+        session: tmuxctl::SessionId,
+        name: &core::SessionName,
+    ) -> anyhow::Result<Vec<tmuxctl::Notification>> {
+        let command = command::Command::rename_session(session, name);
+        match self.exchange_with_timeout(command.as_str(), 1, time::Duration::from_secs(5)) {
+            Ok(batch) => Ok(batch
+                .notifications
+                .into_iter()
+                .map(|(_, event)| event)
+                .collect()),
+            Err(error) if error.to_string().contains("tmux rejected request") => Err(error),
+            Err(_) => {
+                self.abort();
+                Err(ssh::Error::transport(
+                    "tmux rename completion was not observed; the command was not retried",
+                )
+                .into())
+            }
+        }
+    }
+
+    /// Create a uniquely named window on the existing control stream. Tmux
+    /// itself permits duplicate names, so recheck after creation and remove
+    /// only the window created by this command if an external client raced us.
+    #[cfg(feature = "gui")]
+    pub(crate) fn new_window(
+        &mut self,
+        name: &core::SessionName,
+    ) -> anyhow::Result<(tmuxctl::WindowId, Vec<tmuxctl::Notification>)> {
+        let mut notifications = Vec::new();
+        let command = command::Command::new_window(name);
+        let batch =
+            match self.exchange_with_timeout(command.as_str(), 1, time::Duration::from_secs(5)) {
+                Ok(batch) => batch,
+                Err(error) if error.to_string().contains("tmux rejected request") => {
+                    return Err(error);
+                }
+                Err(_) => {
+                    self.abort();
+                    return Err(ssh::Error::transport(
+                        "tmux new-window completion was not observed; the command was not retried",
+                    )
+                    .into());
+                }
+            };
+        let reply = batch
+            .replies
+            .first()
+            .and_then(|reply| reply.first())
+            .context("missing new-window result")?;
+        let (window, actual_name) = reply
+            .split_once('\t')
+            .context("invalid new-window result")?;
+        let window = tmuxctl::WindowId(
+            window
+                .strip_prefix('@')
+                .context("invalid new-window id")?
+                .parse()?,
+        );
+        anyhow::ensure!(actual_name == name.as_str(), "tmux changed the window name");
+
+        notifications.extend(batch.notifications.iter().map(|(_, event)| event.clone()));
+        let (listed, later) =
+            self.live_request("list-windows -F '#{window_id}\t#{window_name}'\n")?;
+        notifications.extend(later);
+        let listed: Vec<_> = listed
+            .into_iter()
+            .filter_map(|line| {
+                line.split_once('\t')
+                    .map(|(id, name)| (id.to_owned(), name.to_owned()))
+            })
+            .collect();
+        let matching = listed
+            .iter()
+            .filter(|(_, candidate)| candidate == name.as_str())
+            .count();
+        let target_matches = listed
+            .iter()
+            .any(|(id, candidate)| id == &window.to_string() && candidate == name.as_str());
+        if matching != 1 || !target_matches {
+            let cleanup = self.request(command::Command::kill_window(window).as_str())?;
+            anyhow::ensure!(cleanup.is_empty(), "invalid duplicate-window cleanup reply");
+            anyhow::bail!("another tmux client created the same logical session name");
+        }
+        Ok((window, notifications))
+    }
+
+    /// Move one pane into a fresh window in the attached managed session.
+    /// An uncertain result is never retried.
     #[cfg(feature = "gui")]
     pub(crate) fn move_to_new_session(
         &mut self,
         target: input::Target,
-        size: core::Size,
+        name: core::SessionName,
     ) -> anyhow::Result<PaneMove> {
         anyhow::ensure!(self.input_buffer_prefix.is_some(), "read-only attachment");
-        let listed = self.request("list-sessions -F '#{session_name}'\n")?;
-        let mut existing: collections::BTreeSet<_> = listed.into_iter().collect();
-        let mut attempts = 0_u8;
-        let (name, created) = loop {
-            let name = move_session_name(&existing, target.pane)?;
-            let command = command::Command::new_detached_session(&name, size);
-            match self.exchange(command.as_str(), 1) {
-                Ok(batch) => break (name, batch.replies.into_iter().next().unwrap_or_default()),
-                Err(error) if error.to_string().contains("tmux rejected request") => {
-                    // A race can claim the name after the listing. `%error`
-                    // completed the reply, so it is safe to ask which case it
-                    // was and choose another name only when that name exists.
-                    let current: collections::BTreeSet<_> = self
-                        .request("list-sessions -F '#{session_name}'\n")?
-                        .into_iter()
-                        .collect();
-                    if !current.contains(name.as_str()) {
-                        return Err(error).context("could not create pane-move session");
-                    }
-                    existing = current;
-                    attempts += 1;
-                    anyhow::ensure!(attempts < 8, "session names kept changing during pane move");
-                }
-                Err(error) => {
-                    self.abort();
-                    return Err(error).context("could not create pane-move session");
-                }
-            }
-        };
-        anyhow::ensure!(created.len() == 1, "invalid new-session reply");
-        let placeholder = created[0]
-            .strip_prefix('%')
-            .context("invalid placeholder pane id")?
-            .parse()
-            .context("invalid placeholder pane id")?;
-        let placeholder = tmuxctl::PaneId(placeholder);
-        let commands = [
-            command::Command::join_pane(target.pane, placeholder),
-            command::Command::kill_pane(placeholder),
-        ];
-        let mut wire = format!(
-            "if-shell -F -t {} '{}' {{ ",
+        let mut notifications = Vec::new();
+        let command = command::Command::break_pane(target.pane, &name);
+        let wire = format!(
+            "if-shell -F -t {} '{}' {{ {} ; display-message -p STARCOM-APPLIED }} {{ display-message -p '' ; display-message -p STARCOM-BLOCKED }}\n",
             target.pane,
-            target.guard(true)
+            target.guard(true),
+            command.as_str().trim_end_matches('\n'),
         );
-        for command in &commands {
-            wire.push_str(command.as_str().trim_end_matches('\n'));
-            wire.push_str(" ; ");
-        }
-        wire.push_str("display-message -p STARCOM-APPLIED } { ");
-        for _ in &commands {
-            wire.push_str("display-message -p '' ; ");
-        }
-        wire.push_str("display-message -p STARCOM-BLOCKED }\n");
-        let result = self.exchange(&wire, commands.len() + 2);
+        let result = self.exchange(&wire, 3);
         if result.is_err() {
             self.abort();
         }
         let batch =
             result.context("pane move failed; delivery may be uncertain and was not retried")?;
-        let last = batch
+        let marker = batch
             .replies
             .last()
-            .ok_or_else(|| anyhow::anyhow!("missing pane-move result"))?;
+            .and_then(|reply| reply.first())
+            .context("missing pane-move marker")?;
         anyhow::ensure!(
-            last.len() == 1 && matches!(last[0].as_str(), "STARCOM-APPLIED" | "STARCOM-BLOCKED"),
-            "invalid pane-move result"
+            matches!(marker.as_str(), "STARCOM-APPLIED" | "STARCOM-BLOCKED"),
+            "invalid pane-move marker"
         );
-        let applied = last[0] == "STARCOM-APPLIED";
-        let notifications = batch
-            .notifications
-            .into_iter()
-            .map(|(_, event)| event)
-            .collect::<Vec<_>>();
-        if !applied {
-            let cleanup = self.request(command::Command::kill_session(&name).as_str())?;
-            anyhow::ensure!(cleanup.is_empty(), "invalid move cleanup reply");
+        if marker == "STARCOM-BLOCKED" {
+            notifications.extend(batch.notifications.into_iter().map(|(_, event)| event));
+            return Ok(PaneMove {
+                applied: false,
+                window: target.window,
+                name,
+                notifications,
+            });
         }
+        let reply = batch
+            .replies
+            .iter()
+            .flat_map(|reply| reply.iter())
+            .find(|line| line.starts_with('@') && line.contains('\t'))
+            .context("missing pane-move result")?;
+        let (window, actual_name) = reply.split_once('\t').context("invalid pane-move result")?;
+        let window = tmuxctl::WindowId(
+            window
+                .strip_prefix('@')
+                .context("invalid pane-move window id")?
+                .parse()?,
+        );
+        anyhow::ensure!(
+            actual_name == name.as_str(),
+            "tmux changed pane-move window name"
+        );
+        notifications.extend(batch.notifications.into_iter().map(|(_, event)| event));
         Ok(PaneMove {
-            applied,
-            session: name,
+            applied: true,
+            window,
+            name,
             notifications,
         })
     }
@@ -731,9 +831,13 @@ impl Inspector {
                         | "select-pane"
                         | "swap-pane"
                         | "rename-session"
+                        | "rename-window"
                         | "new-session"
+                        | "new-window"
+                        | "break-pane"
                         | "join-pane"
                         | "kill-session"
+                        | "kill-window"
                         | "list-sessions"
                         | "if-shell"
                         | "display-message"
@@ -782,9 +886,13 @@ impl Inspector {
                         | "after-select-pane"
                         | "after-swap-pane"
                         | "after-rename-session"
+                        | "after-rename-window"
                         | "after-new-session"
+                        | "after-new-window"
+                        | "after-break-pane"
                         | "after-join-pane"
                         | "after-kill-session"
+                        | "after-kill-window"
                         | "after-if-shell"
                         | "after-display-message"
                 ) {
@@ -1173,7 +1281,7 @@ impl Drop for Inspector {
 }
 
 #[cfg(feature = "gui")]
-fn move_session_name(
+pub(crate) fn move_session_name(
     existing: &collections::BTreeSet<String>,
     pane: tmuxctl::PaneId,
 ) -> anyhow::Result<core::SessionName> {

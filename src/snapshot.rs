@@ -331,6 +331,7 @@ pub enum Status {
 /// Published models. Invalidated views remain readable; no input API is exposed.
 pub struct View {
     pub session: tmuxctl::SessionId,
+    windows: collections::BTreeMap<tmuxctl::WindowId, String>,
     panes: collections::BTreeMap<tmuxctl::PaneId, Pane>,
     status: Status,
     /// tmux's own `%exit` reason, when it gave one. Reconnection policy needs to
@@ -345,6 +346,7 @@ pub struct View {
     /// carry no output must not wake the GUI. Mid-2026 synchronized updates
     /// do not bump this until ESU or timeout, so a torn erase is never painted.
     display_seq: u64,
+    window_display_seq: collections::BTreeMap<tmuxctl::WindowId, u64>,
 }
 
 /// `%exit` carries no reason on older servers; the distinction matters, so an
@@ -360,13 +362,35 @@ impl ExitReason {
 
 impl View {
     pub fn new(session: tmuxctl::SessionId, panes: Vec<Pane>) -> anyhow::Result<Self> {
+        let windows = panes
+            .iter()
+            .map(|pane| (pane.state.window, pane.state.window.to_string()))
+            .collect();
+        Self::new_named(session, panes, windows)
+    }
+
+    pub(crate) fn new_named(
+        session: tmuxctl::SessionId,
+        panes: Vec<Pane>,
+        windows: collections::BTreeMap<tmuxctl::WindowId, String>,
+    ) -> anyhow::Result<Self> {
         anyhow::ensure!(
             !panes.is_empty() && panes.len() <= MAX_PANES,
             "pane count exceeds budget"
         );
+        anyhow::ensure!(!windows.is_empty(), "window list is empty");
+        let mut names = collections::BTreeSet::new();
+        for name in windows.values() {
+            crate::core::SessionName::new(name.clone())?;
+            anyhow::ensure!(names.insert(name), "duplicate tmux window name");
+        }
         let mut cells = 0usize;
         let mut map = collections::BTreeMap::new();
         for pane in panes {
+            anyhow::ensure!(
+                windows.contains_key(&pane.state.window),
+                "pane refers to an unknown window"
+            );
             // Charge the complete per-pane allocation ceiling, including both
             // visible grids, rather than only the number of nonblank cells.
             cells = cells
@@ -381,19 +405,36 @@ impl View {
                 "duplicate pane"
             );
         }
+        let window_display_seq = windows.keys().map(|window| (*window, 0)).collect();
         Ok(Self {
             session,
+            windows,
             panes: map,
             status: Status::Watching,
             exit: None,
             window_closed: false,
             session_closed: false,
             display_seq: 0,
+            window_display_seq,
         })
     }
 
     pub fn panes(&self) -> &collections::BTreeMap<tmuxctl::PaneId, Pane> {
         &self.panes
+    }
+
+    pub(crate) fn windows(&self) -> &collections::BTreeMap<tmuxctl::WindowId, String> {
+        &self.windows
+    }
+
+    pub(crate) fn window_named(&self, name: &str) -> Option<tmuxctl::WindowId> {
+        self.windows
+            .iter()
+            .find_map(|(id, candidate)| (candidate == name).then_some(*id))
+    }
+
+    pub(crate) fn window_name(&self, window: tmuxctl::WindowId) -> Option<&str> {
+        self.windows.get(&window).map(String::as_str)
     }
     /// Local selection changes only the client model, never the remote pane.
     #[cfg(feature = "gui")]
@@ -404,7 +445,7 @@ impl View {
     pub(crate) fn invalidate(&mut self) {
         if self.status == Status::Watching {
             self.status = Status::NeedsResync;
-            self.display_seq = self.display_seq.wrapping_add(1);
+            self.bump_all();
         }
     }
 
@@ -413,13 +454,31 @@ impl View {
     }
     pub fn disconnect(&mut self) {
         if self.status != Status::Disconnected {
-            self.display_seq = self.display_seq.wrapping_add(1);
+            self.bump_all();
         }
         self.status = Status::Disconnected;
     }
 
     pub(crate) fn display_seq(&self) -> u64 {
         self.display_seq
+    }
+
+    pub(crate) fn window_display_seq(&self, window: tmuxctl::WindowId) -> u64 {
+        self.window_display_seq.get(&window).copied().unwrap_or(0)
+    }
+
+    fn bump_window(&mut self, window: tmuxctl::WindowId) {
+        self.display_seq = self.display_seq.wrapping_add(1);
+        if let Some(seq) = self.window_display_seq.get_mut(&window) {
+            *seq = seq.wrapping_add(1);
+        }
+    }
+
+    fn bump_all(&mut self) {
+        self.display_seq = self.display_seq.wrapping_add(1);
+        for seq in self.window_display_seq.values_mut() {
+            *seq = seq.wrapping_add(1);
+        }
     }
 
     /// Soonest DECSET 2026 timeout across panes, if a synchronized update is open.
@@ -432,14 +491,16 @@ impl View {
 
     /// Apply synchronized updates whose 150ms timeout elapsed.
     pub(crate) fn flush_expired_sync(&mut self) -> bool {
-        let mut changed = false;
+        let mut changed = collections::BTreeSet::new();
         for pane in self.panes.values_mut() {
-            changed |= pane.terminal.flush_expired_sync();
+            if pane.terminal.flush_expired_sync() {
+                changed.insert(pane.state.window);
+            }
         }
-        if changed {
-            self.display_seq = self.display_seq.wrapping_add(1);
+        for window in &changed {
+            self.bump_window(*window);
         }
-        changed
+        !changed.is_empty()
     }
 
     /// Why tmux ended this control session, if it said. `None` means the view
@@ -494,17 +555,23 @@ impl View {
         match notification {
             tmuxctl::Notification::Output { pane, bytes }
             | tmuxctl::Notification::ExtendedOutput { pane, bytes, .. } => {
-                match self.panes.get_mut(&pane) {
+                let changed = match self.panes.get_mut(&pane) {
                     Some(terminal) if !bytes.is_empty() => {
                         if terminal.terminal.feed(&bytes) {
-                            self.display_seq = self.display_seq.wrapping_add(1);
+                            Some(terminal.state.window)
+                        } else {
+                            None
                         }
                     }
-                    Some(_) => {}
+                    Some(_) => None,
                     None => {
                         self.status = Status::NeedsResync;
-                        self.display_seq = self.display_seq.wrapping_add(1);
+                        self.bump_all();
+                        None
                     }
+                };
+                if let Some(window) = changed {
+                    self.bump_window(window);
                 }
             }
             tmuxctl::Notification::Exit(_) => self.disconnect(),
@@ -521,8 +588,21 @@ impl View {
                 // Same attached session, new name. Pane models are unchanged;
                 // a full snapshot here is what froze the GUI after rename.
             }
+            tmuxctl::Notification::WindowRenamed(id, ref name) => {
+                if self.windows.contains_key(&id)
+                    && crate::core::SessionName::new(name.clone()).is_ok()
+                    && !self
+                        .windows
+                        .iter()
+                        .any(|(other, existing)| *other != id && existing == name)
+                {
+                    self.windows.insert(id, name.clone());
+                    self.bump_window(id);
+                } else {
+                    self.invalidate();
+                }
+            }
             tmuxctl::Notification::SessionsChanged
-            | tmuxctl::Notification::WindowRenamed(..)
             | tmuxctl::Notification::WindowPaneChanged { .. }
             | tmuxctl::Notification::SessionWindowChanged { .. }
             | tmuxctl::Notification::ClientSessionChanged { .. }
@@ -530,7 +610,7 @@ impl View {
             tmuxctl::Notification::WindowClose(_) => {
                 self.window_closed = true;
                 self.status = Status::NeedsResync;
-                self.display_seq = self.display_seq.wrapping_add(1);
+                self.bump_all();
             }
             tmuxctl::Notification::LayoutChange { .. }
             | tmuxctl::Notification::WindowAdd(_)
@@ -539,7 +619,7 @@ impl View {
             | tmuxctl::Notification::SessionChanged(..)
             | tmuxctl::Notification::Unknown(_) => {
                 self.status = Status::NeedsResync;
-                self.display_seq = self.display_seq.wrapping_add(1);
+                self.bump_all();
             }
             _ => {}
         }
@@ -852,6 +932,41 @@ mod tests {
         let mut detached = View::new(tmuxctl::SessionId(0), vec![pane]).unwrap();
         detached.apply(tmuxctl::Notification::Exit(Some("detached".into())));
         assert!(!detached.session_closed());
+    }
+
+    #[test]
+    fn managed_window_names_are_unique_and_authoritative() {
+        let first = Pane::restore(state(12, 3), &lines(&["", "", ""]), &[], &[], 0).unwrap();
+        let mut second_state = state(12, 3);
+        second_state.pane = tmuxctl::PaneId(2);
+        second_state.window = tmuxctl::WindowId(3);
+        let second = Pane::restore(second_state, &lines(&["", "", ""]), &[], &[], 0).unwrap();
+        let duplicate = collections::BTreeMap::from([
+            (tmuxctl::WindowId(2), "work".to_owned()),
+            (tmuxctl::WindowId(3), "work".to_owned()),
+        ]);
+        assert!(View::new_named(tmuxctl::SessionId(0), vec![first, second], duplicate).is_err());
+    }
+
+    #[test]
+    fn output_activity_is_scoped_to_its_logical_window() {
+        let first = Pane::restore(state(12, 3), &lines(&["", "", ""]), &[], &[], 0).unwrap();
+        let mut second_state = state(12, 3);
+        second_state.pane = tmuxctl::PaneId(2);
+        second_state.window = tmuxctl::WindowId(3);
+        let second = Pane::restore(second_state, &lines(&["", "", ""]), &[], &[], 0).unwrap();
+        let windows = collections::BTreeMap::from([
+            (tmuxctl::WindowId(2), "work".to_owned()),
+            (tmuxctl::WindowId(3), "build".to_owned()),
+        ]);
+        let mut view =
+            View::new_named(tmuxctl::SessionId(0), vec![first, second], windows).unwrap();
+        view.apply(tmuxctl::Notification::Output {
+            pane: tmuxctl::PaneId(1),
+            bytes: b"changed".to_vec(),
+        });
+        assert_eq!(view.window_display_seq(tmuxctl::WindowId(2)), 1);
+        assert_eq!(view.window_display_seq(tmuxctl::WindowId(3)), 0);
     }
 
     #[test]

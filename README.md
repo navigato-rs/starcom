@@ -67,26 +67,30 @@ Use **+** to open the connection screen. Pick a `Host` from `~/.ssh/config` or t
 another destination; Starcom resolves supported user/host/port/key settings and
 resolves ProxyJump through Sunset’s shared client and reports unsupported policy
 instead of bypassing it.
-Choosing a host lists its tmux sessions and their window counts, then selects the
+Choosing a host lists the named windows in Starcom's managed `starcom` tmux
+session, then selects the
 first available one so **Connect** is the next click. Attached sessions are red and unavailable, and
 hosts already connected in this workspace appear first and in green, including
 destinations absent from SSH config. Typing is focused
 in the new-session field after the host choice. A tab is
 registered for that session while it connects and remains available for an
 explicit retry after failure. Tabs show session names only;
-the active server is shown in bold beside its latency. Each tab currently shows
-one window of one tmux session.
+the active server is shown in bold beside its latency. Each tab is one named
+window. Tabs on the same resolved server share one SSH connection, one tmux
+control client, one reconstructed view, and one reconnect schedule.
 
-Tabs are saved and resumed automatically by reconnecting to their previous host
-and tmux session; this can be disabled in **About**. Startup uses the same SSH
+Tabs are saved and resumed automatically by reconnecting once per server and
+reopening their named windows; this can be disabled in **About**. Startup uses the same SSH
 authentication and host-key checks as **Connect**, while the saved file holds
 destinations, never credentials.
-**Create session** is the one action that may start a tmux server, and it asks
-first.
+**Create** is the one action that may start a tmux server. Later creates use
+`new-window` on the existing control stream. Saved v0.3 tabs remain explicit
+compatibility attachments to their original arbitrary tmux sessions; they are
+not silently reinterpreted or deleted.
 
 The desktop currently supports local scrollback, selection and copying, pane
 split/move/zoom/close controls, moving a pane into an automatically named new
-session on the same server, session rename, and opt-in shared tmux pane
+logical session/window on the same server, session rename, and opt-in shared tmux pane
 resizing. Wheel events go to the application when it asked for mouse reports or
 uses the alternate screen; unmodified clicks go only when requested, while
 drags stay local selection. Focus a connected pane, then drop up to eight files
@@ -100,6 +104,6 @@ Host keys must already be trusted.
 
 [Desktop usage](docs/DESKTOP.md) · [SSH details](docs/SSH.md) ·
 [Synchronization limits](docs/SYNCHRONIZATION.md) ·
-[next session model](docs/SESSION-MODEL.md) · [Roadmap](PLAN.md)
+[session model](docs/SESSION-MODEL.md) · [Roadmap](PLAN.md)
 
 Feedback and private diagnostics: [privacy and reporting](PRIVACY.md).

@@ -62,6 +62,10 @@ impl Command {
         Self(format!("kill-pane -t {pane}\n"))
     }
 
+    pub fn kill_window(window: tmuxctl::WindowId) -> Self {
+        Self(format!("kill-window -t {window}\n"))
+    }
+
     pub fn zoom_pane(pane: tmuxctl::PaneId) -> Self {
         Self(format!("resize-pane -Z -t {pane}\n"))
     }
@@ -74,26 +78,18 @@ impl Command {
         Self(format!("swap-pane -s {src} -t {dst}\n"))
     }
 
-    /// Start the temporary one-pane session used as a destination for a move.
-    /// `-P` returns the placeholder pane id so subsequent commands never rely
-    /// on the server's base-index option.
-    pub fn new_detached_session(name: &crate::core::SessionName, size: crate::core::Size) -> Self {
-        let name = shell_quote(name.as_str()).expect("SessionName is shell-quotable");
+    pub fn break_pane(pane: tmuxctl::PaneId, name: &crate::core::SessionName) -> Self {
+        let quoted = shell_quote(name.as_str()).expect("SessionName is shell-quotable");
         Self(format!(
-            "new-session -d -P -F '#{{pane_id}}' -s {name} -x {} -y {}\n",
-            size.columns(),
-            size.rows()
+            "break-pane -d -P -F '#{{window_id}}\t#{{window_name}}' -n {quoted} -s {pane}\n"
         ))
     }
 
-    pub fn join_pane(src: tmuxctl::PaneId, dst: tmuxctl::PaneId) -> Self {
-        Self(format!("join-pane -d -s {src} -t {dst}\n"))
-    }
-
-    pub fn kill_session(name: &crate::core::SessionName) -> Self {
-        let name = shell_quote(&format!("={}", name.as_str()))
-            .expect("SessionName target is shell-quotable");
-        Self(format!("kill-session -t {name}\n"))
+    pub fn new_window(name: &crate::core::SessionName) -> Self {
+        let quoted = shell_quote(name.as_str()).expect("SessionName is shell-quotable");
+        Self(format!(
+            "new-window -d -P -F '#{{window_id}}\t#{{window_name}}' -n {quoted}\n"
+        ))
     }
 
     /// Rename the attached session. Target by session id so control mode does
@@ -104,6 +100,11 @@ impl Command {
         // `$` in `$0` is tmux format/env expansion unless quoted.
         let target = shell_quote(&session.to_string()).expect("session ids are quotable");
         Self(format!("rename-session -t {target} {quoted}\n"))
+    }
+
+    pub fn rename_window(window: tmuxctl::WindowId, name: &crate::core::SessionName) -> Self {
+        let quoted = shell_quote(name.as_str()).expect("SessionName is shell-quotable");
+        Self(format!("rename-window -t {window} {quoted}\n"))
     }
 
     /// One axis only. The window's total size comes from `client_size`.
@@ -214,22 +215,6 @@ mod tests {
         assert_eq!(
             Command::swap_pane(tmuxctl::PaneId(3), tmuxctl::PaneId(5)).as_str(),
             "swap-pane -s %3 -t %5\n"
-        );
-        assert_eq!(
-            Command::new_detached_session(
-                &crate::core::SessionName::new("pane-3").unwrap(),
-                crate::core::Size::new(120, 40).unwrap(),
-            )
-            .as_str(),
-            "new-session -d -P -F '#{pane_id}' -s 'pane-3' -x 120 -y 40\n"
-        );
-        assert_eq!(
-            Command::join_pane(tmuxctl::PaneId(3), tmuxctl::PaneId(5)).as_str(),
-            "join-pane -d -s %3 -t %5\n"
-        );
-        assert_eq!(
-            Command::kill_session(&crate::core::SessionName::new("pane-3").unwrap()).as_str(),
-            "kill-session -t '=pane-3'\n"
         );
         assert_eq!(
             Command::rename_session(

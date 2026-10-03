@@ -64,6 +64,8 @@ fn desktop_worker_publishes_live_view_and_rejects_cancelled_requests() {
     let connection = desktop::Connection {
         options: options(),
         session: core::SessionName::new("starcom").unwrap(),
+        window: core::SessionName::new("0").unwrap(),
+        managed: false,
         socket: Some(root().join("tmux.sock").to_str().unwrap().to_owned()),
         history: 20,
         access: session::Access::Interactive,
@@ -211,6 +213,8 @@ exec sleep 600
     let connection = desktop::Connection {
         options: options(),
         session: core::SessionName::new("starcom-input").unwrap(),
+        window: core::SessionName::new("0").unwrap(),
+        managed: false,
         socket: Some(socket.to_str().unwrap().to_owned()),
         history: 50,
         access: session::Access::Interactive,
@@ -350,7 +354,7 @@ exec sleep 600
 #[cfg(feature = "gui")]
 #[test]
 #[ignore = "requires the isolated SSH/tmux fixture"]
-fn desktop_worker_moves_a_pane_to_a_fresh_session() {
+fn desktop_worker_moves_a_pane_to_a_fresh_window() {
     use starcom::{core, desktop, input, session};
     use std::sync;
 
@@ -393,13 +397,17 @@ fn desktop_worker_moves_a_pane_to_a_fresh_session() {
         .to_owned();
     let pane_id = tmuxctl::PaneId(pane.strip_prefix('%').unwrap().parse().unwrap());
     let moved = format!("pane-{}", pane_id.0);
-    let _ = tmux().args(["kill-session", "-t", &moved]).status();
+    let _ = tmux()
+        .args(["kill-window", "-t", &format!("{source}:{moved}")])
+        .status();
 
     let client = desktop::Client::new(sync::Arc::new(|| {})).unwrap();
     client
         .connect(desktop::Connection {
             options: options(),
             session: core::SessionName::new(source).unwrap(),
+            window: core::SessionName::new("0").unwrap(),
+            managed: true,
             socket: Some(root().join("tmux.sock").to_str().unwrap().to_owned()),
             history: 20,
             access: session::Access::Interactive,
@@ -413,9 +421,15 @@ fn desktop_worker_moves_a_pane_to_a_fresh_session() {
     client
         .submit(target, input::Action::MoveToNewSession)
         .unwrap();
-    wait_until(20, "pane did not reach its generated session", || {
+    wait_until(20, "pane did not reach its generated window", || {
         let output = tmux()
-            .args(["list-panes", "-t", &format!("={moved}"), "-F", "#{pane_id}"])
+            .args([
+                "list-panes",
+                "-t",
+                &format!("{source}:{moved}"),
+                "-F",
+                "#{pane_id}",
+            ])
             .output()
             .unwrap();
         output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == pane
@@ -426,8 +440,8 @@ fn desktop_worker_moves_a_pane_to_a_fresh_session() {
         || client.phase() == desktop::Phase::Watching,
     );
     assert!(
-        client.target(pane_id).is_none(),
-        "moved pane stayed in source view"
+        client.target(pane_id).is_some(),
+        "the shared managed-session view lost the moved pane"
     );
     let source_panes = tmux()
         .args(["list-panes", "-t", source, "-F", "#{pane_id}"])
@@ -443,7 +457,6 @@ fn desktop_worker_moves_a_pane_to_a_fresh_session() {
 
     client.disconnect();
     let _ = tmux().args(["kill-session", "-t", source]).status();
-    let _ = tmux().args(["kill-session", "-t", &moved]).status();
 }
 
 /// M3: a transport drop must reattach on its own, publish freshly reconstructed
@@ -484,6 +497,8 @@ fn transport_loss_reattaches_without_replaying_input_or_creating_a_session() {
         .connect(desktop::Connection {
             options: options(),
             session: core::SessionName::new(session_name).unwrap(),
+            window: core::SessionName::new("0").unwrap(),
+            managed: false,
             socket: Some(socket.to_str().unwrap().to_owned()),
             history: 20,
             access: session::Access::Interactive,
@@ -633,6 +648,8 @@ fn a_destroyed_session_stops_instead_of_reattaching() {
         .connect(desktop::Connection {
             options: options(),
             session: core::SessionName::new(session_name).unwrap(),
+            window: core::SessionName::new("0").unwrap(),
+            managed: false,
             socket: Some(root().join("tmux.sock").to_str().unwrap().to_owned()),
             history: 20,
             access: session::Access::ReadOnly,
@@ -709,6 +726,8 @@ fn loss_during_a_paste_never_delivers_it_twice() {
         .connect(desktop::Connection {
             options: options(),
             session: core::SessionName::new(session_name).unwrap(),
+            window: core::SessionName::new("0").unwrap(),
+            managed: false,
             socket: Some(root().join("tmux.sock").to_str().unwrap().to_owned()),
             history: 40,
             access: session::Access::Interactive,
@@ -765,6 +784,8 @@ fn loss_during_a_remote_layout_change_reconstructs_the_new_layout() {
         .connect(desktop::Connection {
             options: options(),
             session: core::SessionName::new(session_name).unwrap(),
+            window: core::SessionName::new("0").unwrap(),
+            managed: false,
             socket: Some(root().join("tmux.sock").to_str().unwrap().to_owned()),
             history: 20,
             access: session::Access::ReadOnly,
@@ -890,6 +911,8 @@ fn a_restarted_server_is_reported_as_a_replacement() {
         .connect(desktop::Connection {
             options: options(),
             session: core::SessionName::new("restarted").unwrap(),
+            window: core::SessionName::new("0").unwrap(),
+            managed: false,
             socket: Some(socket.to_str().unwrap().to_owned()),
             history: 20,
             access: session::Access::ReadOnly,
@@ -1014,6 +1037,8 @@ fn a_missing_session_lists_what_the_host_does_have() {
         .connect(desktop::Connection {
             options: options(),
             session: core::SessionName::new("starcom-does-not-exist").unwrap(),
+            window: core::SessionName::new("0").unwrap(),
+            managed: false,
             socket: Some(root().join("tmux.sock").to_str().unwrap().to_owned()),
             history: 20,
             access: session::Access::ReadOnly,

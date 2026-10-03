@@ -11,13 +11,13 @@ reported. Alternate-screen panes and a History setting below tmux's buffer are
 not treated as lost output. Loss during output, input, paste, and a remote layout
 change, plus a restarted tmux server, are covered by fixture tests.
 
-M4 now persists non-secret tabs, resumes their saved sessions by default with an
-opt-out setting, and adds explicit session discovery and creation. ProxyJump
-uses Sunset's shared std-only client. After v0.3, the next management milestone
-is a host workspace: one SSH/control attachment per resolved server and one tmux
-window per user-visible Starcom session. The target model and migration hazards
-are recorded in `docs/SESSION-MODEL.md`; it is not implemented yet. Certificate
-and MFA workflows remain open. M5 follows the ownership migration.
+M4 now persists non-secret tabs, groups managed tabs into one SSH/control
+workspace per resolved server, and maps each user-visible session to a uniquely
+named window in the managed `starcom` tmux session. V0.3 saves retain an explicit
+legacy-session attachment path. Discovery, create, rename, reconnect, and pane
+handoff use that ownership model. ProxyJump uses Sunset's shared std-only client.
+The remaining M4.1 work is broader isolated-fixture coverage for sizing and
+ordinary-client interaction. Certificate and MFA workflows remain open.
 
 Development lands on protected `main` through short-lived pull requests. CI runs
 for pull requests and updates to `main`. Routine milestone branches, generated
@@ -167,8 +167,8 @@ terminal checkpoint.
   registered on Connect. Failed first attachments return to `+`.
 - Host-first connection: known `Host` aliases, automatic session listing, first
   session selected, Connect without a separate list step.
-- One Starcom tab is one tmux session and shows one window of that session.
-  A window picker is deferred.
+- One Starcom tab is one uniquely named window in the managed `starcom` tmux
+  session. Tabs on the same resolved server share one control attachment.
 - Interactive clients report `refresh-client -C` from GUI font metrics so
   tmux cell counts match the painted pane; divider drags send `resize-pane`.
 - Local scrollback, selection, word/line selection, copying, and font sizing.
@@ -266,7 +266,7 @@ verified to fail when automatic retry is disabled.
   Listing is also offered on its own after an attach fails because the session is
   missing: the user has already authenticated and the list is the answer. No
   other failure asks, and listing still never attaches or creates.
-- [ ] Replace persistent per-tab attachments with one host workspace per resolved
+- [x] Replace persistent per-tab attachments with one host workspace per resolved
   route. One managed tmux session (`starcom` by default) contains one window per
   user-visible session, so this needs only one Sunset exec channel rather than
   SSH channel pooling. Preserve exact routing/security identity and make the
@@ -285,9 +285,9 @@ verified to fail when automatic retry is disabled.
 
 Gate: a user with several hosts can reopen yesterday's tabs, see what is running,
 and start what is missing, without Starcom authenticating or creating anything on
-its own. Met for persistence and discovery. Host-workspace ownership and richer
-authentication remain; ProxyJump's former transport blocker is carried as a
-pinned fork.
+its own. Met for persistence, managed-window discovery, and host-workspace
+ownership. Richer authentication remains; ProxyJump's former transport blocker
+is carried as a pinned fork.
 
 ### M4.1 — Host workspaces and logical sessions
 
@@ -296,10 +296,10 @@ pinned fork.
   a host, and prevent opening a session that already has an attached client.
 - [x] Specify the host/window ownership model, identity boundaries, lifecycle,
   migration needs, and safety tests.
-- [ ] Capture and validate tmux window names and identities.
-- [ ] Own one worker/view/reconnect epoch per resolved server workspace.
-- [ ] Map logical tabs to uniquely named windows in the managed tmux session.
-- [ ] Restore grouped server workspaces and provide an explicit v0.3 migration
+- [x] Capture and validate tmux window names and identities.
+- [x] Own one worker/view/reconnect epoch per resolved server workspace.
+- [x] Map logical tabs to uniquely named windows in the managed tmux session.
+- [x] Restore grouped server workspaces and provide an explicit v0.3 migration
   path for arbitrary existing tmux sessions.
 - [ ] Cover multi-window output, replacement, disconnect, sizing, and ordinary
   tmux fallback in the isolated SSH fixture.
