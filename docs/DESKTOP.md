@@ -34,8 +34,11 @@ URL, total time Starcom has been open, and the workspace `fps` / `idle` settings
 Tabs use browser-style top edges and show only the session name. The active
 server is shown in bold in the status bar beside the last control-command round
 trip time, instead of being repeated in every tab. The tab shows connection
-progress and then the terminal workspace. A failed attachment remains registered,
-turns red, and offers **Reconnect** beside **Exit**; selecting it never deletes it.
+progress and then the terminal workspace. A failed attachment remains registered
+and turns red. An unreachable server offers **Reconnect** beside **Exit**. A
+reachable server whose named window is missing offers **Recreate**, which creates
+an empty managed window with that same name and attaches to it. Selecting either
+action never deletes the tab.
 **Exit** or Ctrl-Shift-W/Cmd-W closes the registered tab; the shared control
 client detaches only after its last local tab closes. The tmux server, windows,
 and remote jobs continue running. Tabs are green while connected,
@@ -53,9 +56,13 @@ existing control attachment waits for tmux's reply, for at most five seconds.
 If tmux applies the rename but its completion reply is lost, Starcom discards
 that stream and reconnects once without retrying the non-idempotent command.
 
-The **Options (N)** checkbox below the tabs exposes user options attached to the
-selected tmux window. Each row has a name, value, and delete button; the final
-empty row creates another option. The `@` prefix is implicit. Starcom accepts a
+The **Options (N)** checkbox immediately after **Paste** in the bottom status
+bar exposes user options attached to the selected tmux window. The editor grows
+upward from that bar by exactly the rows it needs, up to the space needed to
+keep the terminal usable; larger sets scroll. This local editor does not resize
+the remote tmux client or rebuild its pane layout. Each row has a name, value,
+and delete button; the final empty row creates another option. The `@` prefix is
+implicit. Starcom accepts a
 nonempty name of up to 64 ASCII letters, digits, dots, underscores, and hyphens;
 spaces and other characters are dropped while typing. Values are single-line,
 control-free text up to 4096 bytes, including the empty string. The collapsed
@@ -395,8 +402,9 @@ detaches only when it was the server workspace's final tab; remote jobs keep run
 which is the only connection form. Failed chips stay in the strip when selected.
 If the managed tmux session ends, the shared connection fails and its tabs keep
 their last frozen view. If one managed window disappears, only its logical tab
-becomes unavailable. In both cases the affected chip stays red
-so you can still copy from it, press **Reconnect**, or press **Exit**.
+becomes unavailable. In both cases the affected chip stays red so you can still
+copy from it. A missing window offers **Recreate**; an inaccessible server offers
+**Reconnect**; and **Exit** remains the only action that removes the tab.
 
 **Reconnect automatically after connection loss** is on by default in the
 connection form. Only transport loss is retried. That includes a TCP drop, a

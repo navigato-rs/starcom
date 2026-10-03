@@ -1591,7 +1591,8 @@ impl Workspace {
                     let composer_create = self.composer_open
                         && id == self.composer.id
                         && matches!(action.as_ref(), ui::Action::CreateSession(_));
-                    let reusable = if composer_connect || composer_create {
+                    let session_create = matches!(action.as_ref(), ui::Action::CreateSession(_));
+                    let reusable = if composer_connect || session_create {
                         match action.as_ref() {
                             ui::Action::Connect(connection)
                             | ui::Action::CreateSession(connection) => {
