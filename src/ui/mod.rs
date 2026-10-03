@@ -8,7 +8,8 @@ mod terminal;
 use std::{collections, fs, path, sync, thread, time};
 
 use crate::{
-    core, desktop, input as terminal_input, session, sessions, snapshot, ssh, ssh_config, store,
+    core, desktop, input as terminal_input, reconnect, session, sessions, snapshot, ssh,
+    ssh_config, store,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -385,6 +386,9 @@ pub struct DesktopUi {
     zoomed_windows: collections::BTreeSet<tmuxctl::WindowId>,
     window: Option<tmuxctl::WindowId>,
     options_open: bool,
+    /// Local chrome height reserved below the terminal. Added back when
+    /// deriving tmux's client size so toggling metadata does not resize panes.
+    option_panel_height: f32,
     options_window: Option<tmuxctl::WindowId>,
     option_rows: Vec<OptionDraft>,
     /// Last pane the user selected, independent of transient keyboard focus.
@@ -466,6 +470,7 @@ impl DesktopUi {
             zoomed_windows: collections::BTreeSet::new(),
             window: None,
             options_open: false,
+            option_panel_height: 0.0,
             options_window: None,
             option_rows: vec![OptionDraft::empty()],
             selected: None,
@@ -1370,6 +1375,9 @@ impl DesktopUi {
             // window. Never follow a saved pane into another window: that
             // would silently redirect this tab after a remote move.
             let named = view.window_named(self.session_name());
+            if named.is_some() {
+                self.creating = None;
+            }
             if let (Some(previous), Some(current)) = (self.window, named)
                 && previous != current
             {
@@ -1444,6 +1452,7 @@ impl DesktopUi {
             .unwrap_or_default();
         if self.options_window != self.window {
             self.options_window = self.window;
+            self.options_open = false;
             self.option_rows = remote.iter().map(OptionDraft::from_remote).collect();
             self.option_rows.push(OptionDraft::empty());
             return;
@@ -1456,22 +1465,22 @@ impl DesktopUi {
     }
 
     fn show_option_panel(&mut self, root: &mut egui::Ui, state: &desktop::State) -> Action {
-        self.sync_option_rows(state);
+        if !self.options_open {
+            self.option_panel_height = 0.0;
+            return Action::None;
+        }
         let count = self
             .option_rows
             .iter()
             .filter(|row| !row.name.is_empty())
             .count();
-        let rows = self.option_rows.len().min(6) as f32;
-        let height = if self.options_open {
-            34.0 + rows * 30.0
-        } else {
-            34.0
-        };
+        let desired_height = 8.0 + self.option_rows.len() as f32 * 30.0;
+        let height = desired_height.min((root.available_height() - 120.0).max(38.0));
+        self.option_panel_height = height;
         let editable = self.form.interactive && state.input_ready() && self.window.is_some();
         let mut submit = None;
         let mut delete = None;
-        egui::Panel::top("window-options")
+        egui::Panel::bottom("window-options")
             .resizable(false)
             .exact_size(height)
             .frame(
@@ -1480,19 +1489,23 @@ impl DesktopUi {
                     .fill(root.visuals().panel_fill),
             )
             .show_inside(root, |ui| {
-                ui.checkbox(&mut self.options_open, format!("Options ({count})"))
-                    .on_hover_text("Window-scoped tmux user options");
-                if !self.options_open {
-                    return;
-                }
-                ui.separator();
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
+                    .stick_to_bottom(true)
                     .show(ui, |ui| {
                         for index in 0..self.option_rows.len() {
                             ui.push_id(index, |ui| {
                                 let row = &mut self.option_rows[index];
                                 ui.horizontal(|ui| {
+                                    let name_id = ui.id().with("name");
+                                    let value_id = ui.id().with("value");
+                                    // Read Enter and focus before TextEdit gets
+                                    // a chance to consume/surrender either.
+                                    let enter_pressed =
+                                        ui.input(|input| input.key_pressed(egui::Key::Enter));
+                                    let focused_before = ui.memory(|memory| {
+                                        memory.has_focus(name_id) || memory.has_focus(value_id)
+                                    });
                                     let row_editable = editable
                                         && (row.original.is_some()
                                             || count < core::MAX_USER_OPTIONS);
@@ -1500,6 +1513,7 @@ impl DesktopUi {
                                     let name = ui.add_enabled(
                                         row_editable,
                                         egui::TextEdit::singleline(&mut row.name)
+                                            .id(name_id)
                                             .desired_width(160.0)
                                             .hint_text("name"),
                                     );
@@ -1511,6 +1525,7 @@ impl DesktopUi {
                                     let value = ui.add_enabled(
                                         row_editable,
                                         egui::TextEdit::singleline(&mut row.value)
+                                            .id(value_id)
                                             .desired_width(value_width)
                                             .hint_text("value"),
                                     );
@@ -1528,13 +1543,12 @@ impl DesktopUi {
                                     {
                                         delete = Some(index);
                                     }
-                                    let enter = ui.input(|input| {
-                                        input.key_pressed(egui::Key::Enter)
-                                            && (name.has_focus()
-                                                || value.has_focus()
-                                                || name.lost_focus()
-                                                || value.lost_focus())
-                                    });
+                                    let enter = enter_pressed
+                                        && (focused_before
+                                            || name.has_focus()
+                                            || value.has_focus()
+                                            || name.lost_focus()
+                                            || value.lost_focus());
                                     let row_lost_focus = (name.lost_focus() || value.lost_focus())
                                         && !name.has_focus()
                                         && !value.has_focus();
@@ -1634,6 +1648,15 @@ impl DesktopUi {
         // Navigation and terminal steps are separate results, so a button press
         // can never quietly consume the keystrokes collected in the same frame.
         let mut action = Action::None;
+        if self.creating.as_deref() == Some(self.session_name())
+            && matches!(state.discovery, Some(desktop::Discovery::Created(ref name)) if name == self.session_name())
+        {
+            self.creating = None;
+            match self.form.connection() {
+                Ok(connection) => action = Action::Connect(connection),
+                Err(error) => self.notice = Some(error.to_string()),
+            }
+        }
         let mut steps: Vec<Step> = Vec::new();
         let connection_epoch = state.epoch();
         if let Some((target, paths)) = self.poll_upload(root.ctx()) {
@@ -1657,6 +1680,7 @@ impl DesktopUi {
                 self.notice_until = Some(time::Instant::now() + time::Duration::from_secs(5));
             }
         }
+        self.sync_option_rows(state);
 
         // egui remembers last frame's panel rect with no max. A single wrap
         // to a tall status bar then never shrinks, which is the "status ate
@@ -1685,24 +1709,46 @@ impl DesktopUi {
                         state.phase,
                         desktop::Phase::Watching | desktop::Phase::Resynchronizing
                     );
+                let recreate = can_recreate_missing_session(state, logical_missing);
                 if (matches!(
                     state.phase,
                     desktop::Phase::Failed | desktop::Phase::Disconnected
                 ) || logical_missing)
                     && ui
-                    .add(
-                        egui::Button::new(egui::RichText::new("Reconnect").size(14.0))
+                    .add_enabled(
+                        !state.changing_sessions,
+                        egui::Button::new(
+                            egui::RichText::new(if recreate {
+                                if state.changing_sessions {
+                                    "Recreating…"
+                                } else {
+                                    "Recreate"
+                                }
+                            } else {
+                                "Reconnect"
+                            })
+                            .size(14.0),
+                        )
                             .min_size(egui::vec2(0.0, 28.0))
                             .corner_radius(5.0)
                             .sense(egui::Sense::CLICK),
                     )
-                    .on_hover_text("Reconnect this server and refresh its logical sessions.")
+                    .on_hover_text(if recreate {
+                        "Create a new empty window with this session name on the same server."
+                    } else {
+                        "Attempt to reconnect to this server."
+                    })
                     .clicked()
                 {
                     match self.form.connection() {
                         Ok(connection) => {
                             self.notice = None;
-                            action = Action::Connect(connection);
+                            if recreate {
+                                self.creating = Some(self.session_name().to_owned());
+                                action = Action::CreateSession(connection);
+                            } else {
+                                action = Action::Connect(connection);
+                            }
                         }
                         Err(error) => self.notice = Some(error.to_string()),
                     }
@@ -1858,6 +1904,26 @@ impl DesktopUi {
                         {
                             steps.push(Step::RequestPaste(target));
                         }
+                        let option_count = self
+                            .option_rows
+                            .iter()
+                            .filter(|row| !row.name.is_empty())
+                            .count();
+                        let options_loaded = self.window.is_some_and(|window| {
+                            state.window_options.contains_key(&window)
+                        });
+                        ui.add_enabled(
+                            options_loaded,
+                            egui::Checkbox::new(
+                                &mut self.options_open,
+                                if options_loaded {
+                                    format!("Options ({option_count})")
+                                } else {
+                                    "Options (…)".to_owned()
+                                },
+                            ),
+                        )
+                        .on_hover_text("Show window-scoped tmux user options");
                         ui.separator();
                         if let Some((ref name, done, total)) = self.upload_progress {
                             let frac = if total == 0 {
@@ -1998,10 +2064,10 @@ impl DesktopUi {
                 let (cell_width, row_height) = terminal::cell_metrics(ui, self.font_size);
                 let controls = input_ready;
                 if input_ready {
-                    let inner = rect.shrink(4.0);
-                    let columns = ((inner.width() / cell_width).floor() as usize).max(1);
-                    let rows = ((inner.height() / row_height).floor() as usize).max(1);
-                    if let Ok(size) = core::Size::new(columns, rows)
+                    // The option editor is local chrome, not a request to
+                    // shrink the remote tmux client and rebuild every pane.
+                    if let Ok(size) =
+                        terminal_client_size(rect, self.option_panel_height, cell_width, row_height)
                         && self.client_cells != Some(size)
                     {
                         let stable = match self.pending_client_cells {
@@ -2567,6 +2633,23 @@ fn latency_warning(
     waiting
         .filter(|waiting| *waiting >= threshold)
         .map(|waiting| (waiting, threshold))
+}
+
+fn can_recreate_missing_session(state: &desktop::State, logical_missing: bool) -> bool {
+    (state.failure == Some(reconnect::Failure::MissingSession) || logical_missing)
+        && !matches!(state.discovery, Some(desktop::Discovery::Failed(_)))
+}
+
+fn terminal_client_size(
+    rect: egui::Rect,
+    local_bottom_chrome: f32,
+    cell_width: f32,
+    row_height: f32,
+) -> Result<core::Size, core::InvalidValue> {
+    let inner = rect.shrink(4.0);
+    let columns = ((inner.width() / cell_width).floor() as usize).max(1);
+    let rows = (((inner.height() + local_bottom_chrome) / row_height).floor() as usize).max(1);
+    core::Size::new(columns, rows)
 }
 
 fn paint_latency(ui: &mut egui::Ui, rtt: Option<time::Duration>, warning: bool) -> egui::Response {
@@ -3348,6 +3431,24 @@ mod tests {
     }
 
     #[test]
+    fn missing_windows_recreate_but_unreachable_servers_reconnect() {
+        let mut state = desktop::State::default();
+        state.failure = Some(reconnect::Failure::MissingSession);
+        state.discovery = Some(desktop::Discovery::Sessions(
+            crate::sessions::Listing::default(),
+        ));
+        assert!(can_recreate_missing_session(&state, false));
+
+        state.discovery = Some(desktop::Discovery::Failed("unreachable".into()));
+        assert!(!can_recreate_missing_session(&state, false));
+
+        state.failure = Some(reconnect::Failure::Transport);
+        state.discovery = None;
+        assert!(!can_recreate_missing_session(&state, false));
+        assert!(can_recreate_missing_session(&state, true));
+    }
+
+    #[test]
     fn a_published_view_replaces_the_form_once() {
         let mut ui = DesktopUi::default();
         let mut state = desktop::State::interactive_demo().unwrap();
@@ -3638,5 +3739,19 @@ mod tests {
         .unwrap();
         let rows = vec![OptionDraft::from_remote(&remote), OptionDraft::empty()];
         assert_eq!(draft_options(&rows).unwrap(), [remote]);
+    }
+
+    #[test]
+    fn local_option_chrome_does_not_change_the_reported_tmux_size() {
+        let full = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let option_height = 68.0;
+        let reduced = egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(full.width(), full.height() - option_height),
+        );
+        assert_eq!(
+            terminal_client_size(full, 0.0, 8.0, 16.0).unwrap(),
+            terminal_client_size(reduced, option_height, 8.0, 16.0).unwrap(),
+        );
     }
 }

@@ -104,6 +104,9 @@ onto the window to upload them over SFTP into `/tmp`. Large drops ask before
 uploading; an in-flight transfer can be cancelled.
 Transport loss reconnects automatically with visible, cancellable backoff;
 authentication, trust, and missing-session failures stop and wait for you.
+Red tabs distinguish recovery: an unreachable server offers **Reconnect**, while
+a reachable server with a missing named window offers **Recreate** for a new
+empty window under the saved name.
 
 SSH and cryptography use Rust libraries; OpenSSL is not a build dependency.
 Host keys must already be trusted.

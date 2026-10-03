@@ -126,7 +126,9 @@ The following are correctness rules, not optional polish:
 - Session discovery uses `tmux -N` and cannot start a server. Starcom asks on its
   own only after an attach failed because the session was missing, when the user
   has already authenticated and the list is the answer. Creating a session is
-  reachable only from a confirmed action, never from a failed attach.
+  reachable only from a confirmed action, never from a failed attach. A red tab
+  offers explicit recreation only when the host was reachable and its named
+  window was missing; transport failure continues to offer reconnect.
 - Closing a tab or the application detaches its client while leaving remote jobs
   alive. Graphics resources are released while the native event loop/display is
   still valid.

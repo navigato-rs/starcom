@@ -799,7 +799,7 @@ impl Client {
         Ok(())
     }
 
-    pub(crate) fn set_window_option(
+    pub fn set_window_option(
         &self,
         window: tmuxctl::WindowId,
         previous: Option<core::UserOptionName>,
@@ -845,7 +845,7 @@ impl Client {
         Ok(())
     }
 
-    pub(crate) fn delete_window_option(
+    pub fn delete_window_option(
         &self,
         window: tmuxctl::WindowId,
         name: core::UserOptionName,
@@ -974,6 +974,14 @@ impl Client {
     /// outlive it. No networking runs under this lock.
     pub fn with_view<R>(&self, read: impl FnOnce(Option<&snapshot::View>) -> R) -> R {
         read(self.lock().view.as_ref())
+    }
+
+    pub fn window_options(&self, window: tmuxctl::WindowId) -> Vec<core::UserOption> {
+        self.lock()
+            .window_options
+            .get(&window)
+            .cloned()
+            .unwrap_or_default()
     }
 
     pub(crate) fn lock(&self) -> sync::MutexGuard<'_, State> {

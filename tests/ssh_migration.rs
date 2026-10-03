@@ -107,6 +107,51 @@ fn desktop_worker_publishes_live_view_and_rejects_cancelled_requests() {
 #[cfg(feature = "gui")]
 #[test]
 #[ignore = "requires the isolated SSH/tmux fixture"]
+fn desktop_worker_sets_and_deletes_window_options_without_stalling() {
+    use starcom::{core, desktop, session};
+    use std::sync;
+
+    let client = desktop::Client::new(sync::Arc::new(|| {})).unwrap();
+    client
+        .connect(desktop::Connection {
+            options: options(),
+            session: core::SessionName::new("starcom").unwrap(),
+            window: core::SessionName::new("0").unwrap(),
+            socket: Some(root().join("tmux.sock").to_str().unwrap().to_owned()),
+            history: 20,
+            access: session::Access::Interactive,
+            reconnect: false,
+        })
+        .unwrap();
+    wait_until(20, "worker did not attach for option edit", || {
+        client.phase() == desktop::Phase::Watching
+    });
+    let window =
+        client.with_view(|view| view.unwrap().panes().values().next().unwrap().state.window);
+    let name = core::UserOptionName::new("starcom-test-option").unwrap();
+    let option = core::UserOption::new(name.clone(), "value with spaces".into()).unwrap();
+    client
+        .set_window_option(window, None, option.clone())
+        .unwrap();
+    wait_until(10, "window option set stalled", || {
+        client.window_options(window).contains(&option)
+    });
+    assert_eq!(client.phase(), desktop::Phase::Watching);
+
+    client.delete_window_option(window, name).unwrap();
+    wait_until(10, "window option delete stalled", || {
+        !client
+            .window_options(window)
+            .iter()
+            .any(|existing| existing.name == option.name)
+    });
+    assert_eq!(client.phase(), desktop::Phase::Watching);
+    client.disconnect();
+}
+
+#[cfg(feature = "gui")]
+#[test]
+#[ignore = "requires the isolated SSH/tmux fixture"]
 fn desktop_worker_delivers_input_paste_and_resize_once() {
     use starcom::{core, desktop, input, session};
     use std::{os::unix::fs::PermissionsExt as _, process::Command, sync, thread};
