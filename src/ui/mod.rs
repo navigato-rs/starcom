@@ -7,7 +7,9 @@ mod terminal;
 
 use std::{collections, fs, path, sync, thread, time};
 
-use crate::{core, desktop, input as terminal_input, session, snapshot, ssh, ssh_config, store};
+use crate::{
+    core, desktop, input as terminal_input, session, sessions, snapshot, ssh, ssh_config, store,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Screen {
@@ -49,6 +51,7 @@ pub struct Form {
     host: String,
     pub user: String,
     session: String,
+    legacy: bool,
     port: u16,
     identity: String,
     identity_files: Vec<String>,
@@ -72,6 +75,7 @@ impl Default for Form {
             host: String::new(),
             user: desktop::local_user(),
             session: String::new(),
+            legacy: false,
             port: 22,
             identity: String::new(),
             identity_files: Vec::new(),
@@ -105,6 +109,7 @@ impl Form {
             host: self.host.clone(),
             user: self.user.clone(),
             session: self.session.clone(),
+            legacy: self.legacy,
             window: None,
             pane: None,
             port: self.port,
@@ -129,6 +134,7 @@ impl Form {
                 saved.user
             },
             session: saved.session,
+            legacy: saved.legacy,
             port: saved.port,
             identity: saved.identity,
             identity_files: Vec::new(),
@@ -199,7 +205,7 @@ impl Form {
     }
 
     fn connection(&self) -> anyhow::Result<desktop::Connection> {
-        anyhow::ensure!(!self.session.trim().is_empty(), "choose a tmux session");
+        anyhow::ensure!(!self.session.trim().is_empty(), "choose a session");
         self.connection_named(self.session.trim())
     }
 
@@ -254,7 +260,13 @@ impl Form {
         options.validate()?;
         Ok(desktop::Connection {
             options,
-            session: core::SessionName::new(session)?,
+            session: core::SessionName::new(if self.legacy {
+                session
+            } else {
+                sessions::MANAGED_SESSION
+            })?,
+            window: core::SessionName::new(session)?,
+            managed: !self.legacy,
             socket: (!self.socket.is_empty()).then(|| self.socket.clone()),
             history: self.history,
             access: if self.interactive {
@@ -278,14 +290,13 @@ pub(crate) enum Step {
 pub enum Action {
     None,
     Connect(desktop::Connection),
-    /// Ask the host which sessions exist. Cannot start a tmux server.
+    /// Ask which windows exist in Starcom's managed tmux session.
     ListSessions(desktop::Connection),
-    /// Explicitly create a session, which may start a server. Only ever from a
-    /// confirmed button press, never from a failed attach.
+    /// Explicitly create a logical session/window, which may start a server.
     CreateSession(desktop::Connection),
     Disconnect,
-    /// Rename the attached tmux session. The worker updates the tab label
-    /// after tmux accepts the name.
+    /// Rename this logical session. Managed tabs rename their tmux window;
+    /// restored v0.3 compatibility tabs rename their arbitrary tmux session.
     RenameSession(String),
     /// Every terminal step this frame produced, in order. Never a subset: a
     /// frame that cannot deliver all of its steps reports that to the user.
@@ -450,6 +461,10 @@ impl DesktopUi {
         Ok(connection)
     }
 
+    pub(crate) fn connection(&self) -> anyhow::Result<desktop::Connection> {
+        self.form.connection()
+    }
+
     pub(crate) fn saved(&self) -> store::Tab {
         let mut saved = self.form.saved();
         saved.window = self.window.map(|window| window.0);
@@ -463,6 +478,11 @@ impl DesktopUi {
 
     pub(crate) fn set_connected_servers(&mut self, servers: collections::BTreeSet<String>) {
         self.connected_servers = servers;
+    }
+
+    pub(crate) fn accept_live_discovery(&mut self) {
+        self.listed_destination = self.form.destination().to_owned();
+        self.auto_list = false;
     }
 
     pub(crate) fn server_name(&self) -> &str {
@@ -504,6 +524,33 @@ impl DesktopUi {
 
     pub(crate) fn session_name(&self) -> &str {
         self.form.session.trim()
+    }
+
+    pub(crate) fn window_available(&self, state: &desktop::State) -> bool {
+        state.view.as_ref().is_some_and(|view| {
+            self.form.legacy || view.window_named(self.session_name()).is_some()
+        })
+    }
+
+    pub(crate) fn legacy_session(&self) -> bool {
+        self.form.legacy
+    }
+
+    pub(crate) fn current_window(&self) -> Option<tmuxctl::WindowId> {
+        self.window
+    }
+
+    pub(crate) fn display_seq(&self, view: &snapshot::View) -> u64 {
+        if self.form.legacy {
+            view.display_seq()
+        } else {
+            self.window
+                .or_else(|| view.window_named(self.session_name()))
+                .map_or_else(
+                    || view.display_seq(),
+                    |window| view.window_display_seq(window),
+                )
+        }
     }
 
     pub(crate) fn set_session_name(&mut self, name: String) {
@@ -630,7 +677,7 @@ impl DesktopUi {
                 ui.vertical_centered(|ui| {
                     ui.add_space(20.0);
                     ui.heading("Connect");
-                    ui.weak("One Starcom tab is one tmux session on one host.");
+                    ui.weak("One Starcom tab is one named window on one host.");
                 });
                 ui.add_space(14.0);
                 ui.scope(|ui| {
@@ -753,15 +800,15 @@ impl DesktopUi {
 
                     ui.add_space(12.0);
                     ui.horizontal_wrapped(|ui| {
-                        ui.label(egui::RichText::new("tmux sessions").strong());
+                        ui.label(egui::RichText::new("Starcom sessions").strong());
                         if ui
                             .add_enabled(
                                 host_ready && idle && !busy,
                                 egui::Button::new("Refresh"),
                             )
                             .on_hover_text(
-                                "Ask the host which tmux sessions exist. Uses tmux -N, so it \
-                                 cannot start a server.",
+                                "List windows in Starcom's managed tmux session. Uses tmux -N, \
+                                 so it cannot start a server.",
                             )
                             .clicked()
                         {
@@ -799,14 +846,13 @@ impl DesktopUi {
                             }
                             Some(desktop::Discovery::Sessions(ref found)) if listing_here => {
                                 let in_use = |summary: &crate::sessions::Summary| {
-                                    summary.attached > 0
-                                        || self.unavailable_sessions.contains(&summary.name)
+                                    self.unavailable_sessions.contains(&summary.name)
                                 };
                                 let pending = self.creating.as_ref().filter(|name| {
                                     !found.iter().any(|summary| summary.name == **name)
                                 });
                                 if found.is_empty() && pending.is_none() {
-                                    ui.weak("The host is running tmux with no sessions.");
+                                ui.weak("No Starcom sessions exist on this host yet.");
                                 } else {
                                     if !found.iter().any(|summary| {
                                         summary.name == self.form.session && !in_use(summary)
@@ -830,12 +876,12 @@ impl DesktopUi {
                                         let unavailable = in_use(summary);
                                         let selected =
                                             !unavailable && self.form.session == summary.name;
-                                        let window_label = if summary.windows == 1 {
-                                            "1 window".to_owned()
+                                        let pane_label = if summary.panes == 1 {
+                                            "1 pane".to_owned()
                                         } else {
-                                            format!("{} windows", summary.windows)
+                                            format!("{} panes", summary.panes)
                                         };
-                                        let mut text = format!("{} · {window_label}", summary.name);
+                                        let mut text = format!("{} · {pane_label}", summary.name);
                                         if unavailable {
                                             text.push_str(" · in use");
                                         }
@@ -853,7 +899,7 @@ impl DesktopUi {
                                                 .sense(egui::Sense::CLICK),
                                             )
                                             .on_disabled_hover_text(
-                                                "This session already has an attached client.",
+                                                "This logical session is already open in Starcom.",
                                             );
                                         if response.clicked() {
                                             chosen = Some(summary.name.clone());
@@ -886,7 +932,7 @@ impl DesktopUi {
                             let create = ui.add(
                                 egui::TextEdit::singleline(&mut self.create_name)
                                     .id(egui::Id::new("starcom-new-session"))
-                                    .hint_text("new tmux session")
+                                    .hint_text("new session")
                                     .desired_width(160.0)
                                     .min_size(egui::vec2(160.0, 28.0)),
                             );
@@ -902,8 +948,8 @@ impl DesktopUi {
                                     egui::Button::new("Create").sense(egui::Sense::CLICK),
                                 )
                                 .on_hover_text(
-                                    "Create a named session on the host. This starts a tmux \
-                                     server if none is running.",
+                                    "Create a named window in Starcom's managed tmux session. \
+                                     This starts tmux if needed.",
                                 )
                                 .clicked()
                             {
@@ -931,7 +977,8 @@ impl DesktopUi {
                                 state.discovery,
                                 Some(desktop::Discovery::Sessions(ref found)) if listing_here
                                     && found.iter().any(|summary| {
-                                        summary.name == self.form.session && summary.attached > 0
+                                        summary.name == self.form.session
+                                            && self.unavailable_sessions.contains(&summary.name)
                                     })
                             );
                         let can_connect = host_ready
@@ -1066,6 +1113,7 @@ impl DesktopUi {
             let busy = matches!(state.discovery, Some(desktop::Discovery::Running));
             if !dest.is_empty()
                 && dest != self.listed_destination
+                && !self.connected_servers.contains(&dest)
                 && self.form.host_ready()
                 && idle
                 && !busy
@@ -1096,20 +1144,32 @@ impl DesktopUi {
             for pane in view.panes().values() {
                 grouped.entry(pane.state.window).or_default().push(pane);
             }
-            // Follow a saved pane if it moved to another window. If it no
-            // longer exists, keep its old window when possible and choose a
-            // real pane there; otherwise fall back to the first live window.
-            let preferred_window = preferred.and_then(|wanted| {
-                grouped.iter().find_map(|(window, panes)| {
-                    panes
-                        .iter()
-                        .any(|pane| pane.state.pane == wanted)
-                        .then_some(*window)
+            // A logical Starcom session is exactly one uniquely named tmux
+            // window. Never follow a saved pane into another window: that
+            // would silently redirect this tab after a remote move.
+            let named = (!self.form.legacy)
+                .then(|| view.window_named(self.session_name()))
+                .flatten();
+            if let (Some(previous), Some(current)) = (self.window, named)
+                && previous != current
+            {
+                self.notice = Some(format!(
+                    "The '{}' logical session was replaced with a new tmux window.",
+                    self.session_name()
+                ));
+                self.notice_until = None;
+            }
+            let id = named.or_else(|| {
+                (self.form.legacy
+                    || state.phase == desktop::Phase::Demo
+                    || self.session_name().is_empty())
+                .then(|| {
+                    self.window
+                        .filter(|window| grouped.contains_key(window))
+                        .or_else(|| grouped.keys().next().copied())
                 })
+                .flatten()
             });
-            let id = preferred_window
-                .or_else(|| self.window.filter(|id| grouped.contains_key(id)))
-                .or_else(|| grouped.keys().next().copied());
             if let Some(id) = id
                 && let Some(panes) = grouped.get(&id)
             {
@@ -1151,7 +1211,7 @@ impl DesktopUi {
         let refresh = state
             .view
             .as_ref()
-            .map(|view| (state.generation, view.display_seq()));
+            .map(|view| (state.generation, self.display_seq(view)));
         if refresh != self.last_refresh || scrolled {
             self.refresh_tick = self.refresh_tick.wrapping_add(1);
             self.last_refresh = refresh;
@@ -1171,6 +1231,10 @@ impl DesktopUi {
         self.note_refresh(state, scrolled);
         let generation_changed = self.generation != state.generation;
         self.rebuild_layout(state);
+        // The shared control stream is interactive when any logical tab on
+        // this server needs input. Preserve each tab's own read-only promise
+        // at the UI boundary.
+        let input_ready = self.form.interactive && state.input_ready();
         if self.restore_focus && self.focused.is_none() {
             self.focused = self.selected;
         }
@@ -1243,17 +1307,24 @@ impl DesktopUi {
                 {
                     action = Action::Disconnect;
                 }
-                if matches!(
+                let logical_missing = !self.form.legacy
+                    && self.window.is_none()
+                    && matches!(
+                        state.phase,
+                        desktop::Phase::Watching | desktop::Phase::Resynchronizing
+                    );
+                if (matches!(
                     state.phase,
                     desktop::Phase::Failed | desktop::Phase::Disconnected
-                ) && ui
+                ) || logical_missing)
+                    && ui
                     .add(
                         egui::Button::new(egui::RichText::new("Reconnect").size(14.0))
                             .min_size(egui::vec2(0.0, 28.0))
                             .corner_radius(5.0)
                             .sense(egui::Sense::CLICK),
                     )
-                    .on_hover_text("Try this saved host and tmux session again.")
+                    .on_hover_text("Reconnect this server and refresh its logical sessions.")
                     .clicked()
                 {
                     match self.form.connection() {
@@ -1280,7 +1351,7 @@ impl DesktopUi {
                     mode_letter(
                         ui,
                         'K',
-                        state.input_ready(),
+                        input_ready,
                         "Keys go to this pane.",
                         "This pane is not taking keys (disconnected or not live).",
                     );
@@ -1407,7 +1478,7 @@ impl DesktopUi {
                         }
                         if ui
                             .add_enabled(
-                                state.input_ready(),
+                                input_ready,
                                 egui::Button::new("Paste").sense(egui::Sense::CLICK),
                             )
                             .clicked()
@@ -1457,7 +1528,7 @@ impl DesktopUi {
                                 notice.as_str()
                             } else if state.phase == desktop::Phase::Demo {
                                 "Local demo — no SSH connection"
-                            } else if state.input_ready() {
+                            } else if input_ready {
                                 "Click a pane to type · Drag to select · Drop files to upload"
                             } else {
                                 "Wheel to scroll · Drag to select"
@@ -1528,10 +1599,28 @@ impl DesktopUi {
                     });
                     return;
                 }
+                if state.phase != desktop::Phase::Demo && self.window.is_none() {
+                    ui.vertical_centered(|ui| {
+                        ui.set_max_width(640.0);
+                        ui.add_space(90.0);
+                        ui.heading("Logical session unavailable");
+                        ui.add_space(8.0);
+                        ui.colored_label(
+                            ui.visuals().error_fg_color,
+                            format!(
+                                "The '{}' window no longer exists in the '{}' tmux session.",
+                                self.session_name(),
+                                sessions::MANAGED_SESSION,
+                            ),
+                        );
+                        ui.label("This tab remains until you choose Exit.");
+                    });
+                    return;
+                }
                 let rect = ui.available_rect_before_wrap();
                 let (cell_width, row_height) = terminal::cell_metrics(ui, self.font_size);
-                let controls = state.access == session::Access::Interactive && state.input_ready();
-                if state.input_ready() {
+                let controls = input_ready;
+                if input_ready {
                     let inner = rect.shrink(4.0);
                     let columns = ((inner.width() / cell_width).floor() as usize).max(1);
                     let rows = ((inner.height() / row_height).floor() as usize).max(1);
@@ -1575,7 +1664,7 @@ impl DesktopUi {
                         self.pending_client_cells = None;
                     }
                 }
-                if state.input_ready()
+                if input_ready
                     && self.terminal_focused(ui.ctx())
                     && let Some(pane_id) = self.focused
                 {
@@ -1613,7 +1702,7 @@ impl DesktopUi {
                         .filter(|pane| pane.state.window == id)
                         .count()
                         > 1;
-                    let can_move_to_session = view.panes().len() > 1;
+                    let can_move_to_session = !self.form.legacy && can_kill;
                     node.draw(
                         ui,
                         rect,
@@ -1674,7 +1763,7 @@ impl DesktopUi {
             self.selected = Some(pane);
         }
 
-        if matches!(action, Action::None) && self.terminal_focused(root.ctx()) {
+        if input_ready && matches!(action, Action::None) && self.terminal_focused(root.ctx()) {
             let (events, modifiers) = root.input(|input| (input.events.clone(), input.modifiers));
             let target = self.focused.and_then(|pane| state.target(pane));
             if let Some(target) = target {
@@ -1724,6 +1813,11 @@ impl DesktopUi {
                 .collect()
         });
         if files.is_empty() {
+            return;
+        }
+        if !self.form.interactive {
+            self.notice = Some("This logical session is read-only.".to_owned());
+            self.notice_until = None;
             return;
         }
         if state.phase == desktop::Phase::Demo {
@@ -2444,7 +2538,7 @@ mod tests {
     }
 
     #[test]
-    fn restored_pane_is_followed_when_it_moved_to_another_window() {
+    fn restored_pane_is_not_followed_into_another_logical_session() {
         let mut ui = DesktopUi::default();
         ui.restore(store::Tab {
             window: Some(0),
@@ -2466,8 +2560,8 @@ mod tests {
         moved.state.left = 0;
         ui.rebuild_layout(&connected);
 
-        assert_eq!(ui.window, Some(tmuxctl::WindowId(7)));
-        assert_eq!(ui.selected, Some(tmuxctl::PaneId(1)));
+        assert_eq!(ui.window, Some(tmuxctl::WindowId(0)));
+        assert_eq!(ui.selected, Some(tmuxctl::PaneId(0)));
     }
 
     #[test]
@@ -2620,14 +2714,14 @@ mod tests {
         let mut state = desktop::State::default();
         state.discovery = Some(desktop::Discovery::Sessions(vec![
             crate::sessions::Summary {
+                id: tmuxctl::WindowId(0),
                 name: "0".into(),
-                windows: 1,
-                attached: 0,
+                panes: 1,
             },
             crate::sessions::Summary {
+                id: tmuxctl::WindowId(1),
                 name: "work".into(),
-                windows: 2,
-                attached: 1,
+                panes: 2,
             },
         ]));
         paint(&mut ui, &mut state);
@@ -2643,14 +2737,14 @@ mod tests {
         let mut state = desktop::State::default();
         state.discovery = Some(desktop::Discovery::Sessions(vec![
             crate::sessions::Summary {
+                id: tmuxctl::WindowId(0),
                 name: "0".into(),
-                windows: 1,
-                attached: 0,
+                panes: 1,
             },
             crate::sessions::Summary {
+                id: tmuxctl::WindowId(1),
                 name: "work".into(),
-                windows: 2,
-                attached: 0,
+                panes: 2,
             },
         ]));
         paint(&mut ui, &mut state);
@@ -2658,28 +2752,29 @@ mod tests {
     }
 
     #[test]
-    fn an_attached_or_locally_open_session_is_unavailable() {
+    fn locally_open_sessions_are_unavailable() {
         let mut ui = DesktopUi::default();
         ui.form.destination = "zork".to_owned();
         ui.form.session = "attached".to_owned();
         ui.listed_destination = "zork".to_owned();
+        ui.unavailable_sessions.insert("attached".to_owned());
         ui.unavailable_sessions.insert("local".to_owned());
         let mut state = desktop::State::default();
         state.discovery = Some(desktop::Discovery::Sessions(vec![
             crate::sessions::Summary {
+                id: tmuxctl::WindowId(0),
                 name: "attached".into(),
-                windows: 1,
-                attached: 1,
+                panes: 1,
             },
             crate::sessions::Summary {
+                id: tmuxctl::WindowId(1),
                 name: "local".into(),
-                windows: 1,
-                attached: 0,
+                panes: 1,
             },
             crate::sessions::Summary {
+                id: tmuxctl::WindowId(2),
                 name: "free".into(),
-                windows: 1,
-                attached: 0,
+                panes: 1,
             },
         ]));
         paint(&mut ui, &mut state);
@@ -2711,9 +2806,9 @@ mod tests {
         let mut state = desktop::State::default();
         state.discovery = Some(desktop::Discovery::Sessions(vec![
             crate::sessions::Summary {
+                id: tmuxctl::WindowId(0),
                 name: "0".into(),
-                windows: 1,
-                attached: 0,
+                panes: 1,
             },
         ]));
         paint(&mut ui, &mut state);

@@ -1,4 +1,4 @@
-//! Explicit session discovery and creation, without changing attach semantics.
+//! Explicit managed-window discovery and first-workspace creation.
 //!
 //! Listing runs `tmux -N`, so asking what exists can never bring a server into
 //! existence. Creating deliberately omits `-N`, because starting a server is the
@@ -6,40 +6,33 @@
 //! pressed. Nothing here is ever used as a fallback after a failed attach: an
 //! attach that cannot find its session still fails, exactly as before.
 
-use std::{io, time};
+use std::{collections, io, time};
 
 use anyhow::Context;
 
 use crate::{command, core, ssh};
 
 const MAX_OUTPUT: usize = 64 * 1024;
-const MAX_SESSIONS: usize = 256;
+const MAX_WINDOWS: usize = 256;
+pub const MANAGED_SESSION: &str = "starcom";
 
-/// What a remote tmux server reports about one session. Names come from the
+/// What the managed tmux session reports about one logical session/window. Names come from the
 /// remote host, so they are data: bounded, control-free, and never a command.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Summary {
+    pub id: tmuxctl::WindowId,
     pub name: String,
-    pub windows: usize,
-    pub attached: usize,
+    pub panes: usize,
 }
 
 impl Summary {
     pub fn describe(&self) -> String {
-        let windows = if self.windows == 1 {
-            "window"
-        } else {
-            "windows"
-        };
-        if self.attached == 0 {
-            format!("{} {windows}", self.windows)
-        } else {
-            format!("{} {windows}, attached", self.windows)
-        }
+        let panes = if self.panes == 1 { "pane" } else { "panes" };
+        format!("{} {panes}", self.panes)
     }
 }
 
-/// List the sessions on the host. `-N` forbids starting a server, so a host
+/// List windows in Starcom's managed session. `-N` forbids starting a server, so a host
 /// with no tmux running reports that instead of gaining one.
 pub fn list(options: &ssh::Options, socket: Option<&str>) -> anyhow::Result<Vec<Summary>> {
     let mut wire = "exec tmux -N".to_owned();
@@ -47,22 +40,46 @@ pub fn list(options: &ssh::Options, socket: Option<&str>) -> anyhow::Result<Vec<
         wire.push_str(" -S ");
         wire.push_str(&command::shell_quote(socket)?);
     }
-    // Tab-separated: a session name may contain spaces but never a tab, because
+    // Tab-separated: a managed window name may contain spaces but never a tab, because
     // tmux rejects control characters in names.
-    wire.push_str(" list-sessions -F '#{session_name}\t#{session_windows}\t#{session_attached}'");
-    let output = run(options, &wire)?;
+    wire.push_str(&format!(
+        " list-windows -t {} -F '#{{window_id}}\t#{{window_name}}\t#{{window_panes}}'",
+        command::shell_quote(&format!("={MANAGED_SESSION}"))?
+    ));
+    let output = match run(options, &wire) {
+        Ok(output) => output,
+        Err(error) => {
+            let detail = format!("{error:#}").to_ascii_lowercase();
+            if detail.contains("can't find session")
+                || detail.contains("no server running")
+                || detail.contains("error connecting to")
+            {
+                return Ok(Vec::new());
+            }
+            return Err(error);
+        }
+    };
     parse(&output)
 }
 
-/// Create a session, then leave. This starts a tmux server when none is running,
-/// which is why it exists only behind an explicit action and never runs itself.
-/// It does not attach: the caller connects afterwards through the normal path.
+/// Create a named window, creating the managed session when it does not exist.
+/// This may start a tmux server, which is why it exists only behind an explicit
+/// action and never runs itself. It does not attach: the caller connects
+/// afterwards through the normal path.
 pub fn create(
     options: &ssh::Options,
     socket: Option<&str>,
-    session: &core::SessionName,
+    window: &core::SessionName,
     size: core::Size,
 ) -> anyhow::Result<()> {
+    let existing = list(options, socket)?;
+    anyhow::ensure!(
+        !existing
+            .iter()
+            .any(|summary| summary.name == window.as_str()),
+        "a logical session named '{}' already exists",
+        window.as_str()
+    );
     let mut wire = "exec tmux".to_owned();
     if let Some(socket) = socket {
         wire.push_str(" -S ");
@@ -70,12 +87,21 @@ pub fn create(
     }
     // -d leaves it detached. No command is supplied, so the user's default shell
     // runs, exactly as it would from their own terminal.
-    wire.push_str(&format!(
-        " new-session -d -s {} -x {} -y {}",
-        command::shell_quote(session.as_str())?,
-        size.columns(),
-        size.rows()
-    ));
+    if existing.is_empty() {
+        wire.push_str(&format!(
+            " new-session -d -s {} -n {} -x {} -y {}",
+            command::shell_quote(MANAGED_SESSION)?,
+            command::shell_quote(window.as_str())?,
+            size.columns(),
+            size.rows()
+        ));
+    } else {
+        wire.push_str(&format!(
+            " new-window -d -t {} -n {}",
+            command::shell_quote(&format!("={MANAGED_SESSION}"))?,
+            command::shell_quote(window.as_str())?,
+        ));
+    }
     run(options, &wire).map(|_| ())
 }
 
@@ -144,32 +170,44 @@ enum Stream {
 }
 
 fn parse(output: &str) -> anyhow::Result<Vec<Summary>> {
-    let mut sessions = Vec::new();
+    let mut windows = Vec::new();
+    let mut ids = collections::BTreeSet::new();
+    let mut names = collections::BTreeSet::new();
     for line in output.lines() {
         if line.is_empty() {
             continue;
         }
         anyhow::ensure!(
-            sessions.len() < MAX_SESSIONS,
-            "host reports more than {MAX_SESSIONS} sessions"
+            windows.len() < MAX_WINDOWS,
+            "managed session reports more than {MAX_WINDOWS} windows"
         );
         let mut fields = line.split('\t');
-        let (Some(name), Some(windows), Some(attached), None) =
+        let (Some(id), Some(name), Some(panes), None) =
             (fields.next(), fields.next(), fields.next(), fields.next())
         else {
-            anyhow::bail!("unexpected session listing from the host");
+            anyhow::bail!("unexpected window listing from the host");
         };
         // Validate the name the same way an attach target is validated, so a
         // listed session is one that can actually be attached.
         let name = core::SessionName::new(name)
             .context("host listed a session name Starcom cannot target")?;
-        sessions.push(Summary {
+        let id = tmuxctl::WindowId(
+            id.strip_prefix('@')
+                .context("invalid managed window id")?
+                .parse()?,
+        );
+        anyhow::ensure!(ids.insert(id), "duplicate managed window id");
+        anyhow::ensure!(
+            names.insert(name.as_str().to_owned()),
+            "duplicate managed window name"
+        );
+        windows.push(Summary {
+            id,
             name: name.as_str().to_owned(),
-            windows: windows.parse().context("invalid window count")?,
-            attached: attached.parse().context("invalid attached count")?,
+            panes: panes.parse().context("invalid pane count")?,
         });
     }
-    Ok(sessions)
+    Ok(windows)
 }
 
 #[cfg(test)]
@@ -178,26 +216,26 @@ mod tests {
 
     #[test]
     fn a_listing_is_parsed_and_bounded() {
-        let sessions = parse("work\t3\t1\nbuild\t1\t0\n").unwrap();
+        let windows = parse("@3\twork\t2\n@4\tbuild\t1\n").unwrap();
         assert_eq!(
-            sessions,
+            windows,
             [
                 Summary {
+                    id: tmuxctl::WindowId(3),
                     name: "work".into(),
-                    windows: 3,
-                    attached: 1
+                    panes: 2,
                 },
                 Summary {
+                    id: tmuxctl::WindowId(4),
                     name: "build".into(),
-                    windows: 1,
-                    attached: 0
+                    panes: 1,
                 }
             ]
         );
-        assert_eq!(sessions[0].describe(), "3 windows, attached");
-        assert_eq!(sessions[1].describe(), "1 window");
+        assert_eq!(windows[0].describe(), "2 panes");
+        assert_eq!(windows[1].describe(), "1 pane");
         assert!(parse("").unwrap().is_empty());
-        let many = "s\t1\t0\n".repeat(MAX_SESSIONS + 1);
+        let many = "@1\ts\t1\n".repeat(MAX_WINDOWS + 1);
         assert!(parse(&many).is_err());
     }
 
@@ -206,15 +244,17 @@ mod tests {
         // Remote text is data. A name Starcom would refuse to target must be
         // refused here too, rather than shown as something the user can pick.
         for line in [
-            "work\u{1b}]0;x\u{7}\t1\t0",
-            "work\t1",
-            "work\t1\t0\textra",
-            "work\tnot-a-number\t0",
-            "\t1\t0",
+            "@1\twork\u{1b}]0;x\u{7}\t1",
+            "@1\twork",
+            "@1\twork\t1\textra",
+            "@1\twork\tnot-a-number",
+            "@1\t\t1",
+            "@1\twork\t1\n@2\twork\t1",
+            "@1\twork\t1\n@1\tbuild\t1",
         ] {
             assert!(parse(line).is_err(), "accepted {line:?}");
         }
         // A space is fine; tmux allows it and so does SessionName.
-        assert_eq!(parse("my work\t1\t0").unwrap()[0].name, "my work");
+        assert_eq!(parse("@1\tmy work\t1").unwrap()[0].name, "my work");
     }
 }

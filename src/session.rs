@@ -5,6 +5,8 @@
 
 use std::{collections, time};
 
+use anyhow::Context;
+
 use crate::{core, input, inspect, snapshot, ssh};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -255,7 +257,9 @@ pub(crate) fn restore(
             "state changed inside snapshot batch"
         );
     }
-    let final_session = &batch.replies[ids.len() * 4 + 1];
+    let final_windows = &batch.replies[ids.len() * 4 + 1];
+    let windows = parse_windows(final_windows)?;
+    let final_session = &batch.replies[ids.len() * 4 + 2];
     anyhow::ensure!(
         final_session.len() == 1 && final_session[0] == session.to_string(),
         "attached session changed during restore"
@@ -272,7 +276,7 @@ pub(crate) fn restore(
         )?;
         restored.push(pane);
     }
-    let mut view = snapshot::View::new(session, restored)?;
+    let mut view = snapshot::View::new_named(session, restored, windows)?;
     for (completed, notification) in batch.notifications {
         if completed < commands.len() {
             // Everything before the enable-output reply is superseded by the
@@ -377,11 +381,40 @@ fn snapshot_commands(panes: &[tmuxctl::PaneId], history: usize) -> Vec<String> {
         commands.push(format!("capture-pane -p -P -C -t {pane}"));
     }
     commands.push(format!("list-panes -s -F '{}'", snapshot::STATE_FORMAT));
+    commands.push("list-windows -F '#{window_id}\t#{window_name}'".to_owned());
     commands.push("display-message -p '#{session_id}'".to_owned());
     // The reply to this LAST command is the snapshot/live cut. tmux queues
     // subsequent pane output behind it, even under a slow SSH reader.
     commands.push("refresh-client -f '!no-output'".to_owned());
     commands
+}
+
+fn parse_windows(
+    lines: &[String],
+) -> anyhow::Result<collections::BTreeMap<tmuxctl::WindowId, String>> {
+    anyhow::ensure!(!lines.is_empty(), "tmux session has no windows");
+    let mut windows = collections::BTreeMap::new();
+    let mut names = collections::BTreeSet::new();
+    for line in lines {
+        let (id, name) = line
+            .split_once('\t')
+            .context("invalid tmux window metadata")?;
+        let id = tmuxctl::WindowId(
+            id.strip_prefix('@')
+                .context("invalid tmux window id")?
+                .parse()?,
+        );
+        let name = core::SessionName::new(name.to_owned())?;
+        anyhow::ensure!(
+            windows.insert(id, name.as_str().to_owned()).is_none(),
+            "duplicate tmux window id"
+        );
+        anyhow::ensure!(
+            names.insert(name.as_str().to_owned()),
+            "duplicate tmux window name"
+        );
+    }
+    Ok(windows)
 }
 
 #[cfg(test)]
@@ -403,11 +436,15 @@ mod tests {
     #[test]
     fn snapshot_commands_form_one_synchronous_bounded_list() {
         let commands = snapshot_commands(&[tmuxctl::PaneId(1), tmuxctl::PaneId(2)], 200);
-        assert_eq!(commands.len(), 11);
+        assert_eq!(commands.len(), 12);
         assert!(commands[0].contains("display-message -p -t %1"));
         assert!(commands[4].contains("display-message -p -t %2"));
         assert!(commands[3].contains("-P"));
-        assert_eq!(commands[9], "display-message -p '#{session_id}'");
+        assert_eq!(
+            commands[9],
+            "list-windows -F '#{window_id}\t#{window_name}'"
+        );
+        assert_eq!(commands[10], "display-message -p '#{session_id}'");
         assert_eq!(commands.last().unwrap(), "refresh-client -f '!no-output'");
         assert!(commands.iter().all(|line| !line.contains('\n')));
         let maximum: Vec<_> = (0..snapshot::MAX_PANES)

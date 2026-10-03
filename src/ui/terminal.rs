@@ -897,7 +897,7 @@ fn chrome_icons(
         && chrome_button(
             ui,
             ChromeIcon::NewSession,
-            "Move this pane to a new session",
+            "Move this pane to a new session tab",
         )
     {
         events.push(input::Action::MoveToNewSession);

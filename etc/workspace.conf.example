@@ -2,9 +2,9 @@
 # Copy to ~/.config/starcom/workspace.conf (or %APPDATA%\starcom\ on Windows)
 # and edit. Destinations and preferences only: no keys, passphrases, host-key
 # material, or terminal contents. A last-used session name is a resume target.
-version 2
+version 3
 active 0
-# Reconnect saved tabs to their existing tmux sessions at startup.
+# Reconnect saved tabs to their managed tmux windows at startup.
 restore-tabs yes
 # Idle remote paint rate, 1..=60. 0 means the default (5). Pointer and key
 # events still paint immediately. After keys or wheel, echo runs at up to
@@ -15,6 +15,7 @@ fps 5
 idle 30
 
 [tab]
+model window
 destination example
 host example.test
 user alice
