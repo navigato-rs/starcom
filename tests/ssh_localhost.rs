@@ -888,10 +888,11 @@ fn jump_route_lists_and_attaches_to_the_existing_session() {
     let mut opts = options();
     opts.jumps.push(options());
     let socket = root().join("tmux.sock");
-    let names = starcom::sessions::discover(&opts, socket.to_str())
+    let windows = starcom::sessions::discover(&opts, socket.to_str())
         .unwrap()
         .managed;
-    assert!(names.iter().any(|entry| entry.name == "starcom"));
+    assert_eq!(windows.len(), 1);
+    assert_eq!(windows[0].panes, 2);
     let session = core::SessionName::new("starcom").unwrap();
     let mut inspector = inspect::Inspector::attach(&opts, &session, socket.to_str()).unwrap();
     let observed = inspector.observe(20).unwrap();
