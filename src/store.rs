@@ -24,10 +24,16 @@ pub const MAX_TABS: usize = 16;
 /// means "use the default" rather than "never paint".
 pub const DEFAULT_FPS: u32 = 5;
 pub const MAX_FPS: u32 = 60;
-/// Seconds a healthy tab may sit without a view change before its chip turns
+/// Seconds a healthy tab may sit without a view change before its row turns
 /// blue. 0 disables the hint.
 pub const DEFAULT_IDLE: u32 = 30;
 pub const MAX_IDLE: u32 = 3600;
+pub const DEFAULT_SIDEBAR_WIDTH: u16 = 184;
+pub const MIN_SIDEBAR_WIDTH: u16 = 120;
+pub const MAX_SIDEBAR_WIDTH: u16 = 320;
+pub const DEFAULT_FONT_SIZE: u16 = 14;
+pub const MIN_FONT_SIZE: u16 = 10;
+pub const MAX_FONT_SIZE: u16 = 28;
 pub const DEFAULT_HISTORY: usize = 1000;
 /// Cumulative seconds the app has been open. Caps so a corrupt file cannot
 /// invent an absurd lifetime.
@@ -39,6 +45,14 @@ pub fn clamp_fps(fps: u32) -> u32 {
     } else {
         fps.min(MAX_FPS)
     }
+}
+
+pub fn clamp_sidebar_width(width: u16) -> u16 {
+    width.clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH)
+}
+
+pub fn clamp_font_size(size: u16) -> u16 {
+    size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE)
 }
 
 /// One saved tab. Every field is a destination or a preference; none of it is
@@ -73,6 +87,8 @@ pub struct Workspace {
     pub restore_tabs: bool,
     pub fps: u32,
     pub idle: u32,
+    pub sidebar_width: u16,
+    pub font_size: u16,
     pub open_secs: u64,
 }
 
@@ -84,6 +100,8 @@ impl Default for Workspace {
             restore_tabs: true,
             fps: DEFAULT_FPS,
             idle: DEFAULT_IDLE,
+            sidebar_width: DEFAULT_SIDEBAR_WIDTH,
+            font_size: DEFAULT_FONT_SIZE,
             open_secs: 0,
         }
     }
@@ -194,6 +212,24 @@ fn parse(text: &str) -> anyhow::Result<Workspace> {
                     where_()
                 );
                 workspace.idle = idle;
+            }
+            None if key == "sidebar-width" => {
+                let width: u16 = value.parse().with_context(where_)?;
+                anyhow::ensure!(
+                    (MIN_SIDEBAR_WIDTH..=MAX_SIDEBAR_WIDTH).contains(&width),
+                    "{}: sidebar-width must be between {MIN_SIDEBAR_WIDTH} and {MAX_SIDEBAR_WIDTH}",
+                    where_()
+                );
+                workspace.sidebar_width = width;
+            }
+            None if key == "font-size" => {
+                let size: u16 = value.parse().with_context(where_)?;
+                anyhow::ensure!(
+                    (MIN_FONT_SIZE..=MAX_FONT_SIZE).contains(&size),
+                    "{}: font-size must be between {MIN_FONT_SIZE} and {MAX_FONT_SIZE}",
+                    where_()
+                );
+                workspace.font_size = size;
             }
             None if key == "open" => {
                 let open: u64 = value.parse().with_context(where_)?;
@@ -320,6 +356,14 @@ pub fn render(workspace: &Workspace) -> String {
     out.push_str(&format!("fps {}\n", clamp_fps(workspace.fps)));
     out.push_str(&format!("idle {}\n", workspace.idle.min(MAX_IDLE)));
     out.push_str(&format!(
+        "sidebar-width {}\n",
+        clamp_sidebar_width(workspace.sidebar_width)
+    ));
+    out.push_str(&format!(
+        "font-size {}\n",
+        clamp_font_size(workspace.font_size)
+    ));
+    out.push_str(&format!(
         "open {}\n",
         workspace.open_secs.min(MAX_OPEN_SECS)
     ));
@@ -427,6 +471,8 @@ mod tests {
             restore_tabs: true,
             fps: DEFAULT_FPS,
             idle: DEFAULT_IDLE,
+            sidebar_width: DEFAULT_SIDEBAR_WIDTH,
+            font_size: DEFAULT_FONT_SIZE,
             open_secs: 0,
         }
     }
@@ -458,6 +504,26 @@ mod tests {
         assert_eq!(parse(&render(&workspace)).unwrap().idle, 12);
         assert_eq!(parse("idle 0\n").unwrap().idle, 0);
         assert!(parse(&format!("idle {}\n", MAX_IDLE + 1)).is_err());
+    }
+
+    #[test]
+    fn sidebar_width_is_bounded_and_round_trips() {
+        let mut workspace = sample();
+        workspace.sidebar_width = 240;
+        assert_eq!(parse(&render(&workspace)).unwrap().sidebar_width, 240);
+        assert_eq!(parse("").unwrap().sidebar_width, DEFAULT_SIDEBAR_WIDTH);
+        assert!(parse("sidebar-width 119\n").is_err());
+        assert!(parse("sidebar-width 321\n").is_err());
+    }
+
+    #[test]
+    fn font_size_is_bounded_and_round_trips() {
+        let mut workspace = sample();
+        workspace.font_size = 18;
+        assert_eq!(parse(&render(&workspace)).unwrap().font_size, 18);
+        assert_eq!(parse("").unwrap().font_size, DEFAULT_FONT_SIZE);
+        assert!(parse("font-size 9\n").is_err());
+        assert!(parse("font-size 29\n").is_err());
     }
 
     #[test]

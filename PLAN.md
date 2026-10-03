@@ -48,7 +48,7 @@ Priorities, in order:
 ```text
 Starcom client (Linux / macOS / Windows)
   winit event loop + Blade renderer
-    egui connection tabs, forms, window tabs, dividers and dialogs
+    egui server/session sidebar, forms, dividers and dialogs
       one Alacritty terminal model per tmux pane
         snapshot/live coordinator and guarded input queue
           bounded tmux control-mode adapter (tmuxctl)
@@ -166,8 +166,12 @@ terminal checkpoint.
 
 ### Desktop
 
-- Independent session tabs; `+` owns the only connection form, and a tab is
-  registered on Connect. Failed first attachments return to `+`.
+- A narrow vertical sidebar groups logical sessions beneath full-width server
+  headers; `+` owns the only connection form, and a tab is registered on
+  Connect. Failed first attachments return to `+`.
+- Normal terminal views have no permanent top or bottom bar. Window options and
+  refresh state live in the sidebar; recovery/exit float above the terminal;
+  messages allocate a temporary local row without changing tmux geometry.
 - Host-first connection: known `Host` aliases, automatic session listing, first
   session selected, Connect without a separate list step.
 - One Starcom tab is one uniquely named window in the managed `starcom` tmux
@@ -296,9 +300,10 @@ is carried as a pinned fork.
 
 ### M4.1 — Host workspaces and logical sessions
 
-- [x] Make top-level tabs session-name-only, move the bold server label beside
-  latency, use browser-tab geometry, focus the new-session field after choosing
-  a host, and prevent opening a session that already has an attached client.
+- [x] Group logical sessions in a narrow vertical server sidebar, show latency
+  and pending input in each server header, focus the new-session field after
+  choosing a host, and prevent opening a session that already has an attached
+  client.
 - [x] Specify the host/window ownership model, identity boundaries, lifecycle,
   migration needs, and safety tests.
 - [x] Capture and validate tmux window names and identities.
