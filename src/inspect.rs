@@ -52,6 +52,11 @@ pub(crate) struct Batch {
     pub notifications: Vec<(usize, tmuxctl::Notification)>,
 }
 
+pub(crate) struct WindowOptionsSnapshot {
+    pub options: collections::BTreeMap<tmuxctl::WindowId, Vec<core::UserOption>>,
+    pub notifications: Vec<tmuxctl::Notification>,
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum ReadPurpose {
     Reply,
@@ -357,6 +362,130 @@ impl Inspector {
                 .into())
             }
         }
+    }
+
+    /// Read the explicitly set user options for several stable windows in one
+    /// control round trip. Each lookup is guarded inside tmux so a window that
+    /// disappeared after the snapshot produces an empty result, not a failed
+    /// control transaction.
+    #[cfg(feature = "gui")]
+    pub(crate) fn window_user_options(
+        &mut self,
+        windows: &[tmuxctl::WindowId],
+    ) -> anyhow::Result<WindowOptionsSnapshot> {
+        anyhow::ensure!(
+            !windows.is_empty() && windows.len() <= 128,
+            "invalid window option request"
+        );
+        let mut wire = String::new();
+        for window in windows {
+            if !wire.is_empty() {
+                wire.push_str(" ; ");
+            }
+            wire.push_str(&format!(
+                "if-shell -F '#{{W:#{{?#{{==:#{{window_id}},{window}}},1,}}}}' {{ show-options -w -t {window} }} {{ display-message -p STARCOM-WINDOW-MISSING }}"
+            ));
+        }
+        wire.push('\n');
+        let batch = self.exchange(&wire, windows.len() * 2)?;
+        let mut found = collections::BTreeMap::new();
+        for (index, window) in windows.iter().enumerate() {
+            let reply = &batch.replies[index * 2 + 1];
+            if reply.as_slice() == ["STARCOM-WINDOW-MISSING"] {
+                continue;
+            }
+            found.insert(*window, parse_user_options(reply));
+        }
+        Ok(WindowOptionsSnapshot {
+            options: found,
+            notifications: batch
+                .notifications
+                .into_iter()
+                .map(|(_, event)| event)
+                .collect(),
+        })
+    }
+
+    #[cfg(feature = "gui")]
+    pub(crate) fn set_window_option(
+        &mut self,
+        window: tmuxctl::WindowId,
+        previous: Option<&core::UserOptionName>,
+        option: &core::UserOption,
+    ) -> anyhow::Result<(bool, Vec<tmuxctl::Notification>)> {
+        let mut commands = vec![
+            command::Command::set_window_option(window, option)
+                .as_str()
+                .to_owned(),
+        ];
+        if previous.is_some_and(|name| name != &option.name) {
+            commands.push(
+                command::Command::unset_window_option(window, previous.expect("checked"))
+                    .as_str()
+                    .to_owned(),
+            );
+        }
+        self.window_option_transaction(window, &commands)
+    }
+
+    #[cfg(feature = "gui")]
+    pub(crate) fn unset_window_option(
+        &mut self,
+        window: tmuxctl::WindowId,
+        name: &core::UserOptionName,
+    ) -> anyhow::Result<(bool, Vec<tmuxctl::Notification>)> {
+        let command = command::Command::unset_window_option(window, name);
+        self.window_option_transaction(window, &[command.as_str().to_owned()])
+    }
+
+    #[cfg(feature = "gui")]
+    fn window_option_transaction(
+        &mut self,
+        window: tmuxctl::WindowId,
+        commands: &[String],
+    ) -> anyhow::Result<(bool, Vec<tmuxctl::Notification>)> {
+        anyhow::ensure!(
+            !commands.is_empty() && commands.len() <= 2,
+            "invalid option edit"
+        );
+        let body = commands
+            .iter()
+            .map(|command| command.trim_end_matches('\n'))
+            .collect::<Vec<_>>()
+            .join(" ; ");
+        let empty = std::iter::repeat_n("display-message -p ''", commands.len())
+            .collect::<Vec<_>>()
+            .join(" ; ");
+        let wire = format!(
+            "if-shell -F '#{{W:#{{?#{{==:#{{window_id}},{window}}},1,}}}}' {{ {body} ; display-message -p STARCOM-APPLIED }} {{ {empty} ; display-message -p STARCOM-WINDOW-MISSING }}\n"
+        );
+        let result =
+            self.exchange_with_timeout(&wire, commands.len() + 2, time::Duration::from_secs(5));
+        if result.is_err() {
+            self.abort();
+        }
+        let batch =
+            result.context("window-option completion was not observed; it was not retried")?;
+        let marker = batch
+            .replies
+            .last()
+            .and_then(|reply| reply.first())
+            .context("missing window-option marker")?;
+        anyhow::ensure!(
+            matches!(
+                marker.as_str(),
+                "STARCOM-APPLIED" | "STARCOM-WINDOW-MISSING"
+            ),
+            "invalid window-option marker"
+        );
+        Ok((
+            marker == "STARCOM-APPLIED",
+            batch
+                .notifications
+                .into_iter()
+                .map(|(_, event)| event)
+                .collect(),
+        ))
     }
 
     /// Create a uniquely named window on the existing control stream. Tmux
@@ -1226,6 +1355,92 @@ impl Inspector {
     }
 }
 
+fn parse_user_options(lines: &[String]) -> Vec<core::UserOption> {
+    let mut options = Vec::new();
+    let mut names = collections::BTreeSet::new();
+    for line in lines {
+        let Some((name, escaped)) = line.split_once(' ') else {
+            continue;
+        };
+        if !name.starts_with('@') {
+            continue;
+        }
+        let Ok(name) = core::UserOptionName::new(name) else {
+            continue;
+        };
+        let Ok(value) = unescape_tmux_argument(escaped) else {
+            continue;
+        };
+        let Ok(option) = core::UserOption::new(name, value) else {
+            continue;
+        };
+        if !names.insert(option.name.clone()) {
+            continue;
+        }
+        if options.len() == core::MAX_USER_OPTIONS {
+            break;
+        }
+        options.push(option);
+    }
+    options.sort_by(|left, right| left.name.cmp(&right.name));
+    options
+}
+
+/// Reverse tmux 3.4's `args_escape`: one quoted command argument with C-style
+/// and three-digit octal escapes. Unsupported/malformed output is rejected
+/// rather than shown as editable data with changed semantics.
+fn unescape_tmux_argument(escaped: &str) -> anyhow::Result<String> {
+    let bytes = escaped.as_bytes();
+    let (body, quote) = match (bytes.first(), bytes.last()) {
+        (Some(b'\''), Some(b'\'')) if bytes.len() >= 2 => (&bytes[1..bytes.len() - 1], b'\''),
+        (Some(b'"'), Some(b'"')) if bytes.len() >= 2 => (&bytes[1..bytes.len() - 1], b'"'),
+        _ => (bytes, 0),
+    };
+    anyhow::ensure!(
+        quote != 0
+            || (!body.iter().any(u8::is_ascii_whitespace)
+                && !body.iter().any(|byte| matches!(byte, b'\'' | b'"'))),
+        "invalid unquoted tmux option"
+    );
+    let mut out = Vec::with_capacity(body.len());
+    let mut index = 0;
+    while index < body.len() {
+        if body[index] != b'\\' {
+            anyhow::ensure!(body[index] != quote, "unescaped quote in tmux option");
+            out.push(body[index]);
+            index += 1;
+            continue;
+        }
+        index += 1;
+        let escaped = *body.get(index).context("trailing tmux option escape")?;
+        if escaped.is_ascii_digit() && escaped < b'8' {
+            anyhow::ensure!(index + 2 < body.len(), "short octal tmux option escape");
+            let second = body[index + 1];
+            let third = body[index + 2];
+            anyhow::ensure!(
+                matches!(second, b'0'..=b'7') && matches!(third, b'0'..=b'7'),
+                "invalid octal tmux option escape"
+            );
+            out.push((escaped - b'0') * 64 + (second - b'0') * 8 + third - b'0');
+            index += 3;
+            continue;
+        }
+        out.push(match escaped {
+            b'a' => 0x07,
+            b'b' => 0x08,
+            b'e' => 0x1b,
+            b'f' => 0x0c,
+            b'n' => b'\n',
+            b'r' => b'\r',
+            b't' => b'\t',
+            b'v' => 0x0b,
+            other => other,
+        });
+        index += 1;
+    }
+    String::from_utf8(out).context("tmux option value is not UTF-8")
+}
+
 #[cfg(feature = "gui")]
 fn notification_output(notification: &tmuxctl::Notification) -> (usize, u64) {
     match *notification {
@@ -1516,5 +1731,36 @@ mod tests {
         let clamped = parse_panes(&["%0 @0 80 24 0 0 120 40 1 0 2000".to_owned()]).unwrap();
         assert_eq!(clamped[0].cursor_x, 80);
         assert_eq!(clamped[0].cursor_y, 23);
+    }
+
+    #[test]
+    fn supported_window_user_options_are_unescaped_and_sorted() {
+        let parsed = parse_user_options(&[
+            "automatic-rename off".into(),
+            "@zeta 'plain value'".into(),
+            "@alpha \"dollar \\$ and quote \\\"\"".into(),
+            "@empty ''".into(),
+            "@unsupported name value".into(),
+            "@multiline line\\nbreak".into(),
+        ]);
+        assert_eq!(
+            parsed
+                .iter()
+                .map(|option| (option.name.as_str(), option.value.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("@alpha", "dollar $ and quote \""),
+                ("@empty", ""),
+                ("@zeta", "plain value"),
+            ]
+        );
+    }
+
+    #[test]
+    fn tmux_argument_unescaping_handles_octal_and_rejects_ambiguity() {
+        assert_eq!(unescape_tmux_argument("one\\040two").unwrap(), "one two");
+        assert_eq!(unescape_tmux_argument("'one two'").unwrap(), "one two");
+        assert!(unescape_tmux_argument("one two").is_err());
+        assert!(unescape_tmux_argument("'unterminated").is_err());
     }
 }

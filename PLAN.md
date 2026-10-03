@@ -170,6 +170,8 @@ terminal checkpoint.
   session selected, Connect without a separate list step.
 - One Starcom tab is one uniquely named window in the managed `starcom` tmux
   session. Tabs on the same resolved server share one control attachment.
+- Selected windows expose bounded tmux user-option key/value rows. The client
+  refreshes them periodically and deliberately uses last-write-wins semantics.
 - Interactive clients report `refresh-client -C` from GUI font metrics so
   tmux cell counts match the painted pane; divider drags send `resize-pane`.
 - Local scrollback, selection, word/line selection, copying, and font sizing.
@@ -303,6 +305,8 @@ is carried as a pinned fork.
 - [x] Restore grouped server workspaces and provide an explicit v0.3 migration
   path that moves arbitrary sessions' windows into the managed session without
   creating legacy runtime attachments.
+- [x] Expose bounded window-scoped tmux user options with periodic, last-write-wins
+  refresh; keep notes and richer metadata presentation as later UI work.
 - [ ] Cover multi-window output, replacement, disconnect, sizing, and ordinary
   tmux fallback in the isolated SSH fixture.
 

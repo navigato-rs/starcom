@@ -298,10 +298,77 @@ pub enum Action {
     Disconnect,
     /// Rename this logical session's tmux window.
     RenameSession(String),
+    SetWindowOption {
+        window: tmuxctl::WindowId,
+        previous: Option<core::UserOptionName>,
+        option: core::UserOption,
+    },
+    DeleteWindowOption {
+        window: tmuxctl::WindowId,
+        name: core::UserOptionName,
+    },
     /// Every terminal step this frame produced, in order. Never a subset: a
     /// frame that cannot deliver all of its steps reports that to the user.
     Frame(Vec<Step>),
     ReloadConfig,
+}
+
+#[derive(Clone)]
+struct OptionDraft {
+    original: Option<core::UserOptionName>,
+    name: String,
+    value: String,
+    dirty: bool,
+}
+
+fn filter_option_name(name: &mut String) {
+    name.retain(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'));
+    name.truncate(name.len().min(core::MAX_USER_OPTION_NAME));
+}
+
+fn filter_option_value(value: &mut String) {
+    value.retain(|ch| !ch.is_control());
+    while value.len() > core::MAX_USER_OPTION_VALUE {
+        value.pop();
+    }
+}
+
+fn draft_options(rows: &[OptionDraft]) -> Option<Vec<core::UserOption>> {
+    let mut options = Vec::new();
+    let mut names = collections::BTreeSet::new();
+    for row in rows.iter().filter(|row| !row.is_empty()) {
+        let name = core::UserOptionName::new(row.name.clone()).ok()?;
+        if !names.insert(name.clone()) {
+            return None;
+        }
+        options.push(core::UserOption::new(name, row.value.clone()).ok()?);
+    }
+    options.sort_by(|left, right| left.name.cmp(&right.name));
+    Some(options)
+}
+
+impl OptionDraft {
+    fn empty() -> Self {
+        Self {
+            original: None,
+            name: String::new(),
+            value: String::new(),
+            dirty: false,
+        }
+    }
+
+    fn from_remote(option: &core::UserOption) -> Self {
+        Self {
+            original: Some(option.name.clone()),
+            name: option.name.suffix().to_owned(),
+            value: option.value.clone(),
+            dirty: false,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.original.is_none() && self.name.is_empty() && self.value.is_empty()
+    }
 }
 
 pub struct DesktopUi {
@@ -315,6 +382,9 @@ pub struct DesktopUi {
     windows: collections::BTreeMap<tmuxctl::WindowId, layout::Node>,
     zoomed_windows: collections::BTreeSet<tmuxctl::WindowId>,
     window: Option<tmuxctl::WindowId>,
+    options_open: bool,
+    options_window: Option<tmuxctl::WindowId>,
+    option_rows: Vec<OptionDraft>,
     /// Last pane the user selected, independent of transient keyboard focus.
     /// It survives tab/window focus changes and is persisted as a resume hint.
     selected: Option<tmuxctl::PaneId>,
@@ -391,6 +461,9 @@ impl DesktopUi {
             windows: collections::BTreeMap::new(),
             zoomed_windows: collections::BTreeSet::new(),
             window: None,
+            options_open: false,
+            options_window: None,
+            option_rows: vec![OptionDraft::empty()],
             selected: None,
             focused: None,
             pane_ui: collections::BTreeMap::new(),
@@ -550,6 +623,15 @@ impl DesktopUi {
 
     pub(crate) fn current_window(&self) -> Option<tmuxctl::WindowId> {
         self.window
+    }
+
+    pub(crate) fn option_names(&self, state: &desktop::State) -> Vec<String> {
+        self.window
+            .and_then(|window| state.window_options.get(&window))
+            .into_iter()
+            .flatten()
+            .map(|option| option.name.as_str().to_owned())
+            .collect()
     }
 
     pub(crate) fn display_seq(&self, view: &snapshot::View) -> u64 {
@@ -1294,6 +1376,161 @@ impl DesktopUi {
         }
     }
 
+    fn sync_option_rows(&mut self, state: &desktop::State) {
+        let remote = self
+            .window
+            .and_then(|window| state.window_options.get(&window))
+            .cloned()
+            .unwrap_or_default();
+        if self.options_window != self.window {
+            self.options_window = self.window;
+            self.option_rows = remote.iter().map(OptionDraft::from_remote).collect();
+            self.option_rows.push(OptionDraft::empty());
+            return;
+        }
+        let dirty = self.option_rows.iter().any(|row| row.dirty);
+        if !dirty || draft_options(&self.option_rows).as_deref() == Some(remote.as_slice()) {
+            self.option_rows = remote.iter().map(OptionDraft::from_remote).collect();
+            self.option_rows.push(OptionDraft::empty());
+        }
+    }
+
+    fn show_option_panel(&mut self, root: &mut egui::Ui, state: &desktop::State) -> Action {
+        self.sync_option_rows(state);
+        let count = self
+            .option_rows
+            .iter()
+            .filter(|row| !row.name.is_empty())
+            .count();
+        let rows = self.option_rows.len().min(6) as f32;
+        let height = if self.options_open {
+            34.0 + rows * 30.0
+        } else {
+            34.0
+        };
+        let editable = self.form.interactive && state.input_ready() && self.window.is_some();
+        let mut submit = None;
+        let mut delete = None;
+        egui::Panel::top("window-options")
+            .resizable(false)
+            .exact_size(height)
+            .frame(
+                egui::Frame::new()
+                    .inner_margin(egui::Margin::symmetric(8, 4))
+                    .fill(root.visuals().panel_fill),
+            )
+            .show_inside(root, |ui| {
+                ui.checkbox(&mut self.options_open, format!("Options ({count})"))
+                    .on_hover_text("Window-scoped tmux user options");
+                if !self.options_open {
+                    return;
+                }
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for index in 0..self.option_rows.len() {
+                            ui.push_id(index, |ui| {
+                                let row = &mut self.option_rows[index];
+                                ui.horizontal(|ui| {
+                                    let row_editable = editable
+                                        && (row.original.is_some()
+                                            || count < core::MAX_USER_OPTIONS);
+                                    ui.label("@");
+                                    let name = ui.add_enabled(
+                                        row_editable,
+                                        egui::TextEdit::singleline(&mut row.name)
+                                            .desired_width(160.0)
+                                            .hint_text("name"),
+                                    );
+                                    if name.changed() {
+                                        filter_option_name(&mut row.name);
+                                        row.dirty = true;
+                                    }
+                                    let value_width = (ui.available_width() - 34.0).max(80.0);
+                                    let value = ui.add_enabled(
+                                        row_editable,
+                                        egui::TextEdit::singleline(&mut row.value)
+                                            .desired_width(value_width)
+                                            .hint_text("value"),
+                                    );
+                                    if value.changed() {
+                                        filter_option_value(&mut row.value);
+                                        row.dirty = true;
+                                    }
+                                    if ui
+                                        .add_enabled(
+                                            editable && !row.is_empty(),
+                                            egui::Button::new("×").sense(egui::Sense::CLICK),
+                                        )
+                                        .on_hover_text("Delete this option")
+                                        .clicked()
+                                    {
+                                        delete = Some(index);
+                                    }
+                                    let enter = ui.input(|input| {
+                                        input.key_pressed(egui::Key::Enter)
+                                            && (name.has_focus()
+                                                || value.has_focus()
+                                                || name.lost_focus()
+                                                || value.lost_focus())
+                                    });
+                                    let row_lost_focus = (name.lost_focus() || value.lost_focus())
+                                        && !name.has_focus()
+                                        && !value.has_focus();
+                                    if row.dirty && (enter || row_lost_focus) {
+                                        submit = Some(index);
+                                    }
+                                });
+                            });
+                        }
+                    });
+            });
+
+        if let Some(index) = delete {
+            let removed = self.option_rows.remove(index);
+            if self.option_rows.last().is_none_or(|row| !row.is_empty()) {
+                self.option_rows.push(OptionDraft::empty());
+            }
+            if let (Some(window), Some(name)) = (self.window, removed.original) {
+                return Action::DeleteWindowOption { window, name };
+            }
+            return Action::None;
+        }
+        if self.option_rows.last().is_none_or(|row| !row.is_empty()) {
+            self.option_rows.push(OptionDraft::empty());
+        }
+        let Some(index) = submit else {
+            return Action::None;
+        };
+        let Some(window) = self.window else {
+            return Action::None;
+        };
+        let row = self.option_rows[index].clone();
+        let Ok(name) = core::UserOptionName::new(row.name) else {
+            return Action::None;
+        };
+        if self.option_rows.iter().enumerate().any(|(other, row)| {
+            other != index
+                && !row.name.is_empty()
+                && core::UserOptionName::new(row.name.clone()).ok().as_ref() == Some(&name)
+        }) {
+            self.notice = Some(format!("Option '{}' already exists.", name.as_str()));
+            return Action::None;
+        }
+        match core::UserOption::new(name, row.value) {
+            Ok(option) => Action::SetWindowOption {
+                window,
+                previous: row.original,
+                option,
+            },
+            Err(error) => {
+                self.notice = Some(error.to_string());
+                Action::None
+            }
+        }
+    }
+
     fn show_terminal(
         &mut self,
         root: &mut egui::Ui,
@@ -1656,6 +1893,11 @@ impl DesktopUi {
                 );
             });
         });
+
+        let option_action = self.show_option_panel(root, state);
+        if matches!(action, Action::None) && !matches!(option_action, Action::None) {
+            action = option_action;
+        }
 
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
@@ -3287,5 +3529,27 @@ mod tests {
                 .contains("proxycommand")
         );
         assert!(ui.resume().is_err());
+    }
+
+    #[test]
+    fn option_editor_filters_names_and_preserves_value_text() {
+        let mut name = " @pro ject/[id]-☃ ".to_owned();
+        filter_option_name(&mut name);
+        assert_eq!(name, "projectid-");
+
+        let mut value = "free form = $(fine)\nnext".to_owned();
+        filter_option_value(&mut value);
+        assert_eq!(value, "free form = $(fine)next");
+    }
+
+    #[test]
+    fn option_editor_keeps_one_empty_row_out_of_remote_data() {
+        let remote = core::UserOption::new(
+            core::UserOptionName::new("project").unwrap(),
+            "starcom".into(),
+        )
+        .unwrap();
+        let rows = vec![OptionDraft::from_remote(&remote), OptionDraft::empty()];
+        assert_eq!(draft_options(&rows).unwrap(), [remote]);
     }
 }

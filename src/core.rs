@@ -2,6 +2,9 @@ use std::fmt;
 
 /// Initial safety budget, not a terminal-protocol limit.
 pub const MAX_VISIBLE_CELLS: usize = 65_536;
+pub const MAX_USER_OPTIONS: usize = 64;
+pub const MAX_USER_OPTION_NAME: usize = 64;
+pub const MAX_USER_OPTION_VALUE: usize = 4096;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Size {
@@ -63,10 +66,60 @@ impl SessionName {
     }
 }
 
+/// A deliberately conservative tmux user-option name. Tmux itself accepts
+/// any name beginning with `@`; Starcom keeps names easy to type, display, and
+/// target by limiting the suffix to common key characters.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct UserOptionName(String);
+
+impl UserOptionName {
+    pub fn new(name: impl Into<String>) -> Result<Self, InvalidValue> {
+        let mut name = name.into();
+        if !name.starts_with('@') {
+            name.insert(0, '@');
+        }
+        let suffix = &name[1..];
+        if suffix.is_empty()
+            || suffix.len() > MAX_USER_OPTION_NAME
+            || !suffix
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        {
+            return Err(InvalidValue::UserOptionName);
+        }
+        Ok(Self(name))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn suffix(&self) -> &str {
+        &self.0[1..]
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UserOption {
+    pub name: UserOptionName,
+    pub value: String,
+}
+
+impl UserOption {
+    pub fn new(name: UserOptionName, value: String) -> Result<Self, InvalidValue> {
+        if value.len() > MAX_USER_OPTION_VALUE || value.chars().any(char::is_control) {
+            return Err(InvalidValue::UserOptionValue);
+        }
+        Ok(Self { name, value })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InvalidValue {
     Size,
     SessionName,
+    UserOptionName,
+    UserOptionValue,
 }
 
 impl fmt::Display for InvalidValue {
@@ -74,6 +127,12 @@ impl fmt::Display for InvalidValue {
         formatter.write_str(match *self {
             Self::Size => "terminal dimensions are zero or exceed the cell budget",
             Self::SessionName => "session name is empty, too long, or contains control characters",
+            Self::UserOptionName => {
+                "option name must use 1–64 ASCII letters, digits, '.', '_', or '-'"
+            }
+            Self::UserOptionValue => {
+                "option value exceeds 4096 bytes or contains control characters"
+            }
         })
     }
 }
@@ -102,5 +161,37 @@ mod tests {
         }
         assert!(SessionName::new("a".repeat(1025)).is_err());
         assert!(SessionName::new("work with spaces; $(not-a-command)").is_ok());
+    }
+
+    #[test]
+    fn user_option_names_have_a_small_predictable_alphabet() {
+        assert_eq!(
+            UserOptionName::new("project.id").unwrap().as_str(),
+            "@project.id"
+        );
+        assert_eq!(
+            UserOptionName::new("@build-kind").unwrap().suffix(),
+            "build-kind"
+        );
+        for name in [
+            "",
+            "@",
+            "has space",
+            "semi;colon",
+            "bracket[0]",
+            "snowman-☃",
+        ] {
+            assert!(UserOptionName::new(name).is_err(), "accepted {name:?}");
+        }
+        assert!(UserOptionName::new("x".repeat(MAX_USER_OPTION_NAME)).is_ok());
+        assert!(UserOptionName::new("x".repeat(MAX_USER_OPTION_NAME + 1)).is_err());
+    }
+
+    #[test]
+    fn user_option_values_are_single_line_and_bounded() {
+        let name = UserOptionName::new("note").unwrap();
+        assert!(UserOption::new(name.clone(), "spaces and symbols: $()".into()).is_ok());
+        assert!(UserOption::new(name.clone(), "line\nbreak".into()).is_err());
+        assert!(UserOption::new(name, "x".repeat(MAX_USER_OPTION_VALUE + 1)).is_err());
     }
 }

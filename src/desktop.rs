@@ -115,6 +115,8 @@ impl Retry {
 
 const MAX_PENDING_ACTIONS: usize = 64;
 const MAX_PENDING_BYTES: usize = 128 * 1024;
+const MAX_PENDING_OPTION_EDITS: usize = 64;
+const OPTION_REFRESH_INTERVAL: time::Duration = time::Duration::from_secs(15);
 
 /// A UI action is bound to the exact connection and reconstructed view in which
 /// it originated. Pane IDs alone are unsafe across a new tmux server/connection.
@@ -140,6 +142,26 @@ struct Pending {
 struct PendingConfirmation {
     actions: usize,
     started_at: time::Instant,
+}
+
+enum OptionEdit {
+    Set {
+        window: tmuxctl::WindowId,
+        previous: Option<core::UserOptionName>,
+        option: core::UserOption,
+    },
+    Delete {
+        window: tmuxctl::WindowId,
+        name: core::UserOptionName,
+    },
+}
+
+impl OptionEdit {
+    fn window(&self) -> tmuxctl::WindowId {
+        match self {
+            Self::Set { window, .. } | Self::Delete { window, .. } => *window,
+        }
+    }
 }
 
 /// What the worker has been asked to do next. Discovery and creation are
@@ -212,6 +234,9 @@ pub(crate) struct State {
     pub last_rtt: Option<time::Duration>,
     /// Breakdown for the last acknowledged ordinary-input transaction.
     pub input_latency: Option<inspect::InputLatency>,
+    /// Last periodically observed, explicitly set window user options.
+    pub window_options: collections::BTreeMap<tmuxctl::WindowId, Vec<core::UserOption>>,
+    option_edits: collections::VecDeque<OptionEdit>,
     /// Pending in-band `rename-window` (window, new name, previous name).
     rename: Option<(tmuxctl::WindowId, core::SessionName, String)>,
     /// Explicit in-band creation of another logical session/window.
@@ -253,6 +278,8 @@ impl Default for State {
             discovery: None,
             last_rtt: None,
             input_latency: None,
+            window_options: collections::BTreeMap::new(),
+            option_edits: collections::VecDeque::new(),
             rename: None,
             create_window: None,
             renaming: false,
@@ -280,6 +307,8 @@ impl State {
         self.continuity = None;
         self.failure = None;
         self.input_latency = None;
+        self.window_options.clear();
+        self.option_edits.clear();
         self.rename = None;
         self.create_window = None;
         self.renaming = false;
@@ -432,6 +461,7 @@ impl State {
             .checked_add(1)
             .expect("connection epoch exhausted");
         self.discard_actions();
+        self.option_edits.clear();
         self.retry = None;
         Some(self.epoch)
     }
@@ -712,6 +742,84 @@ impl Client {
             name.as_str()
         );
         state.create_window = Some(name);
+        if let Some(ref wake) = state.io_wake {
+            wake.notify();
+        }
+        drop(state);
+        self.shared.1.notify_one();
+        Ok(())
+    }
+
+    pub(crate) fn set_window_option(
+        &self,
+        window: tmuxctl::WindowId,
+        previous: Option<core::UserOptionName>,
+        option: core::UserOption,
+    ) -> anyhow::Result<()> {
+        let mut state = self.lock();
+        anyhow::ensure!(
+            state.input_ready(),
+            "connect interactively before editing options"
+        );
+        anyhow::ensure!(
+            state
+                .view
+                .as_ref()
+                .is_some_and(|view| view.windows().contains_key(&window)),
+            "the option's window is unavailable"
+        );
+        anyhow::ensure!(
+            state.option_edits.len() < MAX_PENDING_OPTION_EDITS,
+            "too many option edits are pending"
+        );
+        let options = state
+            .window_options
+            .get(&window)
+            .map_or(&[][..], Vec::as_slice);
+        let adds_option =
+            previous.is_none() && !options.iter().any(|existing| existing.name == option.name);
+        anyhow::ensure!(
+            !adds_option || options.len() < core::MAX_USER_OPTIONS,
+            "a window can expose at most {} options",
+            core::MAX_USER_OPTIONS
+        );
+        state.option_edits.push_back(OptionEdit::Set {
+            window,
+            previous,
+            option,
+        });
+        if let Some(ref wake) = state.io_wake {
+            wake.notify();
+        }
+        drop(state);
+        self.shared.1.notify_one();
+        Ok(())
+    }
+
+    pub(crate) fn delete_window_option(
+        &self,
+        window: tmuxctl::WindowId,
+        name: core::UserOptionName,
+    ) -> anyhow::Result<()> {
+        let mut state = self.lock();
+        anyhow::ensure!(
+            state.input_ready(),
+            "connect interactively before editing options"
+        );
+        anyhow::ensure!(
+            state
+                .view
+                .as_ref()
+                .is_some_and(|view| view.windows().contains_key(&window)),
+            "the option's window is unavailable"
+        );
+        anyhow::ensure!(
+            state.option_edits.len() < MAX_PENDING_OPTION_EDITS,
+            "too many option edits are pending"
+        );
+        state
+            .option_edits
+            .push_back(OptionEdit::Delete { window, name });
         if let Some(ref wake) = state.io_wake {
             wake.notify();
         }
@@ -1034,6 +1142,7 @@ fn report_session_closed(shared: &Shared, wake: &Wake, epoch: u64) {
         state.error = None;
         state.io_wake = None;
         state.discard_actions();
+        state.option_edits.clear();
     }
     drop(state);
     wake();
@@ -1071,6 +1180,7 @@ fn report_failure(
     }
     // Nothing typed against the lost attachment is kept for later delivery.
     state.discard_actions();
+    state.option_edits.clear();
     state.io_wake = None;
     let scheduled = retry.map(|(attempt, delay)| {
         let resume_at = time::Instant::now() + delay;
@@ -1306,6 +1416,7 @@ fn watch(
     // from the short delay again instead of inheriting an old backoff.
     backoff.reset();
     let mut last_alive = reconnect::AliveClock::now();
+    let mut next_option_refresh = time::Instant::now();
     wake();
     loop {
         let create = {
@@ -1645,6 +1756,7 @@ fn watch(
                 // and guarded-action errors from the stale view.
                 state.error = None;
                 drop(state);
+                next_option_refresh = time::Instant::now();
                 last_alive = reconnect::AliveClock::now();
                 wake();
             }
@@ -1813,6 +1925,124 @@ fn watch(
                     wake();
                     continue;
                 }
+                let option_edit = {
+                    let mut state = shared
+                        .0
+                        .lock()
+                        .unwrap_or_else(sync::PoisonError::into_inner);
+                    if !state.accepts(epoch) {
+                        return Ok(Outcome::Cancelled);
+                    }
+                    state.option_edits.pop_front()
+                };
+                if let Some(edit) = option_edit {
+                    let window = edit.window();
+                    let result = match &edit {
+                        OptionEdit::Set {
+                            previous, option, ..
+                        } => inspector.set_window_option(window, previous.as_ref(), option),
+                        OptionEdit::Delete { name, .. } => {
+                            inspector.unset_window_option(window, name)
+                        }
+                    }?;
+                    let (applied, notifications) = result;
+                    let mut state = shared
+                        .0
+                        .lock()
+                        .unwrap_or_else(sync::PoisonError::into_inner);
+                    if !state.accepts(epoch) {
+                        return Ok(Outcome::Cancelled);
+                    }
+                    if let Some(ref mut view) = state.view {
+                        for event in notifications {
+                            view.apply(event);
+                        }
+                        if !applied {
+                            view.invalidate();
+                            state.phase = Phase::Resynchronizing;
+                        }
+                    }
+                    if applied {
+                        let options = state.window_options.entry(window).or_default();
+                        match edit {
+                            OptionEdit::Set {
+                                previous, option, ..
+                            } => {
+                                if let Some(previous) = previous
+                                    && previous != option.name
+                                {
+                                    options.retain(|existing| existing.name != previous);
+                                }
+                                if let Some(existing) = options
+                                    .iter_mut()
+                                    .find(|existing| existing.name == option.name)
+                                {
+                                    *existing = option;
+                                } else {
+                                    options.push(option);
+                                    options.sort_by(|left, right| left.name.cmp(&right.name));
+                                }
+                            }
+                            OptionEdit::Delete { name, .. } => {
+                                options.retain(|option| option.name != name);
+                            }
+                        }
+                        state.error = None;
+                    } else {
+                        state.window_options.remove(&window);
+                    }
+                    state.last_rtt = inspector.last_rtt;
+                    drop(state);
+                    next_option_refresh = time::Instant::now() + OPTION_REFRESH_INTERVAL;
+                    last_alive = reconnect::AliveClock::now();
+                    wake();
+                    continue;
+                }
+                if time::Instant::now() >= next_option_refresh {
+                    let windows: Vec<_> = {
+                        let state = shared
+                            .0
+                            .lock()
+                            .unwrap_or_else(sync::PoisonError::into_inner);
+                        if !state.accepts(epoch) {
+                            return Ok(Outcome::Cancelled);
+                        }
+                        state
+                            .view
+                            .as_ref()
+                            .expect("view published")
+                            .windows()
+                            .keys()
+                            .copied()
+                            .collect()
+                    };
+                    if !windows.is_empty() {
+                        let options_snapshot = inspector.window_user_options(&windows)?;
+                        let mut state = shared
+                            .0
+                            .lock()
+                            .unwrap_or_else(sync::PoisonError::into_inner);
+                        if !state.accepts(epoch) {
+                            return Ok(Outcome::Cancelled);
+                        }
+                        let changed = state.window_options != options_snapshot.options;
+                        let had_notifications = !options_snapshot.notifications.is_empty();
+                        state.window_options = options_snapshot.options;
+                        if let Some(ref mut view) = state.view {
+                            for event in options_snapshot.notifications {
+                                view.apply(event);
+                            }
+                        }
+                        state.last_rtt = inspector.last_rtt;
+                        drop(state);
+                        last_alive = reconnect::AliveClock::now();
+                        if changed || had_notifications {
+                            wake();
+                        }
+                    }
+                    next_option_refresh = time::Instant::now() + OPTION_REFRESH_INTERVAL;
+                    continue;
+                }
                 // Socket readiness wait, not a repaint timer. Idle reads do not
                 // wake the UI. All network I/O is outside the model mutex.
                 // A pending DECSET 2026 update must expire in 150ms even with
@@ -1830,6 +2060,7 @@ fn watch(
                         .as_ref()
                         .and_then(snapshot::View::sync_deadline)
                         .unwrap_or_else(|| time::Instant::now() + time::Duration::from_secs(30))
+                        .min(next_option_refresh)
                 };
                 let notifications = inspector.poll(wait_until)?;
                 let mut state = shared
