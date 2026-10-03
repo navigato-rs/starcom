@@ -54,9 +54,9 @@ If tmux applies the rename but its completion reply is lost, Starcom discards
 that stream and reconnects once without retrying the non-idempotent command.
 
 Workspace v3 records whether a tab is a managed window. Tabs loaded from v0.3
-workspace files remain explicit compatibility attachments to their original
-arbitrary tmux sessions, so migration never silently redirects or deletes them.
-Those legacy tabs retain their old independent attachment behavior. See
+workspace files remain saved migration candidates and are shown in the
+connection form for their host. They do not start independent SSH/tmux clients.
+Only the explicit **Migrate** action changes the remote session. See
 [SESSION-MODEL.md](SESSION-MODEL.md).
 
 ## SSH configuration
@@ -159,9 +159,22 @@ and opens its tab. The first creation may start tmux and the managed `starcom`
 session; later creations issue `new-window` through the live control client. No
 failure path creates either one implicitly.
 
-Before a server workspace is attached, listing and first creation use bounded
-short-lived connections. Once attached, listing comes from the shared view and
-creation stays on the existing control stream.
+Below the managed windows, **Other tmux sessions** lists sessions whose name is
+not `starcom`. **Migrate** assigns deterministic non-conflicting logical names,
+links and verifies all of the source windows in the managed session, and then
+unlinks them from the source. Removing the final link closes the old tmux
+session without killing its panes or programs. Grouped sessions are shown but
+cannot be migrated, and attached ordinary tmux clients are called out because
+they will lose that source session. Per-session tmux options and environment are
+not transferred; they are not window state.
+
+Saved v0.3 candidates are never removed merely because their remote session is
+missing. Their **Exit** button forgets only the saved Starcom tab and does not
+run a tmux command.
+
+Listing and migration use bounded short-lived connections even when the managed
+workspace is already attached, because discovery also needs the server's other
+sessions. Later creation stays on the existing control stream.
 
 ## Terminal input
 

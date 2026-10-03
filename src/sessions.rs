@@ -1,10 +1,8 @@
-//! Explicit managed-window discovery and first-workspace creation.
+//! Managed-window discovery, explicit migration, and first-workspace creation.
 //!
-//! Listing runs `tmux -N`, so asking what exists can never bring a server into
-//! existence. Creating deliberately omits `-N`, because starting a server is the
-//! whole point of that action — but it is reachable only from a button the user
-//! pressed. Nothing here is ever used as a fallback after a failed attach: an
-//! attach that cannot find its session still fails, exactly as before.
+//! Discovery runs `tmux -N`, so asking what exists can never bring a server
+//! into existence. Migration is the only compatibility path: it moves windows
+//! from a user-selected non-managed session into Starcom's managed session.
 
 use std::{collections, io, time};
 
@@ -14,10 +12,10 @@ use crate::{command, core, ssh};
 
 const MAX_OUTPUT: usize = 64 * 1024;
 const MAX_WINDOWS: usize = 256;
+const MAX_SESSIONS: usize = 256;
 pub const MANAGED_SESSION: &str = "starcom";
 
-/// What the managed tmux session reports about one logical session/window. Names come from the
-/// remote host, so they are data: bounded, control-free, and never a command.
+/// One logical Starcom session: a named window in the managed tmux session.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Summary {
     pub id: tmuxctl::WindowId,
@@ -32,29 +30,54 @@ impl Summary {
     }
 }
 
-/// List windows in Starcom's managed session. `-N` forbids starting a server, so a host
-/// with no tmux running reports that instead of gaining one.
-pub fn list(options: &ssh::Options, socket: Option<&str>) -> anyhow::Result<Vec<Summary>> {
-    let mut wire = "exec tmux -N".to_owned();
-    if let Some(socket) = socket {
-        wire.push_str(" -S ");
-        wire.push_str(&command::shell_quote(socket)?);
-    }
-    // Tab-separated: a managed window name may contain spaces but never a tab, because
-    // tmux rejects control characters in names.
-    wire.push_str(&format!(
-        " list-windows -t {} -F '#{{window_id}}\t#{{window_name}}\t#{{window_panes}}'",
-        command::shell_quote(&format!("={MANAGED_SESSION}"))?
-    ));
+/// One window in a non-managed tmux session. Its index is retained so a
+/// partially completed migration derives the same destination name on retry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OtherWindow {
+    pub id: tmuxctl::WindowId,
+    pub index: u32,
+    pub name: String,
+    pub panes: usize,
+}
+
+/// A tmux session Starcom does not own. It is shown as an explicit migration
+/// source; discovery alone never changes or attaches to it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OtherSession {
+    pub id: tmuxctl::SessionId,
+    pub name: String,
+    pub windows: Vec<OtherWindow>,
+    pub attached: usize,
+    pub grouped: bool,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Listing {
+    pub managed: Vec<Summary>,
+    pub other: Vec<OtherSession>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Migration {
+    pub source: String,
+    pub windows: Vec<Summary>,
+    pub listing: Listing,
+}
+
+/// List every session/window on the selected tmux server. `-N` forbids
+/// starting a server, so a host with no tmux reports an empty listing.
+pub fn discover(options: &ssh::Options, socket: Option<&str>) -> anyhow::Result<Listing> {
+    let mut wire = tmux(socket, true)?;
+    wire.push_str(
+        " list-windows -a -F '#{session_id}\t#{session_name}\t#{session_group}\t\
+         #{session_attached}\t#{window_index}\t#{window_id}\t#{window_name}\t#{window_panes}'",
+    );
     let output = match run(options, &wire) {
         Ok(output) => output,
         Err(error) => {
             let detail = format!("{error:#}").to_ascii_lowercase();
-            if detail.contains("can't find session")
-                || detail.contains("no server running")
-                || detail.contains("error connecting to")
-            {
-                return Ok(Vec::new());
+            if detail.contains("no server running") || detail.contains("error connecting to") {
+                return Ok(Listing::default());
             }
             return Err(error);
         }
@@ -64,15 +87,14 @@ pub fn list(options: &ssh::Options, socket: Option<&str>) -> anyhow::Result<Vec<
 
 /// Create a named window, creating the managed session when it does not exist.
 /// This may start a tmux server, which is why it exists only behind an explicit
-/// action and never runs itself. It does not attach: the caller connects
-/// afterwards through the normal path.
+/// action and never runs itself.
 pub fn create(
     options: &ssh::Options,
     socket: Option<&str>,
     window: &core::SessionName,
     size: core::Size,
 ) -> anyhow::Result<()> {
-    let existing = list(options, socket)?;
+    let existing = discover(options, socket)?.managed;
     anyhow::ensure!(
         !existing
             .iter()
@@ -80,13 +102,7 @@ pub fn create(
         "a logical session named '{}' already exists",
         window.as_str()
     );
-    let mut wire = "exec tmux".to_owned();
-    if let Some(socket) = socket {
-        wire.push_str(" -S ");
-        wire.push_str(&command::shell_quote(socket)?);
-    }
-    // -d leaves it detached. No command is supplied, so the user's default shell
-    // runs, exactly as it would from their own terminal.
+    let mut wire = tmux(socket, false)?;
     if existing.is_empty() {
         wire.push_str(&format!(
             " new-session -d -s {} -n {} -x {} -y {}",
@@ -103,6 +119,196 @@ pub fn create(
         ));
     }
     run(options, &wire).map(|_| ())
+}
+
+/// Move every window from a deliberately selected session into the managed
+/// session. Linking and verification happen before the source links are
+/// removed, so an interrupted first stage leaves the original session usable.
+pub fn migrate(
+    options: &ssh::Options,
+    socket: Option<&str>,
+    selected: &OtherSession,
+) -> anyhow::Result<Migration> {
+    let before = discover(options, socket)?;
+    let source = before
+        .other
+        .iter()
+        .find(|session| session.id == selected.id && session.name == selected.name)
+        .context("the selected tmux session changed; refresh and try again")?;
+    anyhow::ensure!(
+        !source.grouped,
+        "grouped tmux sessions cannot be migrated safely"
+    );
+    anyhow::ensure!(
+        !source.windows.is_empty(),
+        "the selected session has no windows"
+    );
+
+    let targets = migration_names(source, &before.managed)?;
+    if before.managed.is_empty() {
+        // Rename windows first and the session last. If an earlier command
+        // fails, the source remains discoverable and the operation is safe to
+        // retry; the names are derived from stable source indexes.
+        let mut commands = targets
+            .iter()
+            .map(|(window, name)| rename_window(*window, name))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        commands.push(format!(
+            "rename-session -t {} {}",
+            command::shell_quote(&source.id.to_string())?,
+            command::shell_quote(MANAGED_SESSION)?
+        ));
+        run(options, &command_list(socket, &commands)?)?;
+    } else {
+        let managed_ids: collections::BTreeSet<_> =
+            before.managed.iter().map(|window| window.id).collect();
+        // Tmux permits duplicate window names, while the managed session does
+        // not. Assign the already validated destination names before linking
+        // so the temporary shared-link state also satisfies that invariant.
+        // This is retryable because names depend on stable source indexes.
+        let renames = targets
+            .iter()
+            .filter(|(id, name)| {
+                source
+                    .windows
+                    .iter()
+                    .find(|window| window.id == *id)
+                    .is_some_and(|window| window.name != name.as_str())
+            })
+            .map(|(window, name)| rename_window(*window, name))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        if !renames.is_empty() {
+            run(options, &command_list(socket, &renames)?)?;
+        }
+        let links = source
+            .windows
+            .iter()
+            .filter(|window| !managed_ids.contains(&window.id))
+            .map(|window| {
+                Ok(format!(
+                    "link-window -d -s {} -t {}",
+                    command::shell_quote(&window.id.to_string())?,
+                    command::shell_quote(&format!("={MANAGED_SESSION}:"))?
+                ))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        if !links.is_empty() {
+            run(options, &command_list(socket, &links)?)?;
+        }
+
+        let linked = discover(options, socket)?;
+        let linked_ids: collections::BTreeSet<_> =
+            linked.managed.iter().map(|window| window.id).collect();
+        anyhow::ensure!(
+            source
+                .windows
+                .iter()
+                .all(|window| linked_ids.contains(&window.id)),
+            "tmux did not link every source window; the original session was left intact"
+        );
+
+        let finish = source
+            .windows
+            .iter()
+            .map(|window| {
+                let target = format!("{}:{}", source.id, window.id);
+                Ok(format!(
+                    "unlink-window -t {}",
+                    command::shell_quote(&target)?
+                ))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        run(options, &command_list(socket, &finish)?)?;
+    }
+
+    let listing = discover(options, socket)?;
+    let migrated_ids: collections::BTreeSet<_> =
+        source.windows.iter().map(|window| window.id).collect();
+    anyhow::ensure!(
+        !listing.other.iter().any(|session| session.id == source.id),
+        "the source session still has windows; refresh and migrate it again"
+    );
+    let windows: Vec<_> = listing
+        .managed
+        .iter()
+        .filter(|window| migrated_ids.contains(&window.id))
+        .cloned()
+        .collect();
+    anyhow::ensure!(
+        windows.len() == migrated_ids.len(),
+        "a migrated window is missing from the managed session"
+    );
+    Ok(Migration {
+        source: source.name.clone(),
+        windows,
+        listing,
+    })
+}
+
+fn migration_names(
+    source: &OtherSession,
+    managed: &[Summary],
+) -> anyhow::Result<Vec<(tmuxctl::WindowId, core::SessionName)>> {
+    let managed_by_id: collections::BTreeMap<_, _> = managed
+        .iter()
+        .map(|window| (window.id, window.name.as_str()))
+        .collect();
+    let mut used: collections::BTreeSet<String> =
+        managed.iter().map(|window| window.name.clone()).collect();
+    let many = source.windows.len() > 1;
+    let mut targets = Vec::with_capacity(source.windows.len());
+    for window in &source.windows {
+        if let Some(name) = managed_by_id.get(&window.id) {
+            targets.push((window.id, core::SessionName::new((*name).to_owned())?));
+            continue;
+        }
+        let base = if many {
+            format!("{}/{}", source.name, window.index)
+        } else {
+            source.name.clone()
+        };
+        let mut name = base.clone();
+        let mut suffix = 2_u32;
+        while used.contains(&name) {
+            name = format!("{base} ({suffix})");
+            suffix = suffix
+                .checked_add(1)
+                .context("session-name suffix exhausted")?;
+        }
+        let name = core::SessionName::new(name)?;
+        used.insert(name.as_str().to_owned());
+        targets.push((window.id, name));
+    }
+    Ok(targets)
+}
+
+fn rename_window(window: tmuxctl::WindowId, name: &core::SessionName) -> anyhow::Result<String> {
+    Ok(format!(
+        "rename-window -t {} {}",
+        command::shell_quote(&window.to_string())?,
+        command::shell_quote(name.as_str())?
+    ))
+}
+
+fn tmux(socket: Option<&str>, no_start: bool) -> anyhow::Result<String> {
+    let mut wire = if no_start {
+        "exec tmux -N".to_owned()
+    } else {
+        "exec tmux".to_owned()
+    };
+    if let Some(socket) = socket {
+        wire.push_str(" -S ");
+        wire.push_str(&command::shell_quote(socket)?);
+    }
+    Ok(wire)
+}
+
+fn command_list(socket: Option<&str>, commands: &[String]) -> anyhow::Result<String> {
+    anyhow::ensure!(!commands.is_empty(), "empty tmux command list");
+    let mut wire = tmux(socket, true)?;
+    wire.push(' ');
+    wire.push_str(&commands.join(" \\; "));
+    Ok(wire)
 }
 
 /// One bounded, non-PTY command. Separate from the control-mode attachment: it
@@ -151,8 +357,6 @@ fn run(options: &ssh::Options, wire: &str) -> anyhow::Result<String> {
         }
     }
     if stdout.is_empty() && !stderr.is_empty() {
-        // tmux says "no server running on ..." here. Escape it: this is remote
-        // text on its way to a GUI label, not to a terminal.
         let detail: String = String::from_utf8_lossy(&stderr)
             .chars()
             .take(512)
@@ -169,92 +373,179 @@ enum Stream {
     Stderr,
 }
 
-fn parse(output: &str) -> anyhow::Result<Vec<Summary>> {
-    let mut windows = Vec::new();
-    let mut ids = collections::BTreeSet::new();
-    let mut names = collections::BTreeSet::new();
+fn parse(output: &str) -> anyhow::Result<Listing> {
+    let mut managed = Vec::new();
+    let mut other = collections::BTreeMap::<u32, OtherSession>::new();
+    let mut managed_ids = collections::BTreeSet::new();
+    let mut managed_names = collections::BTreeSet::new();
+    let mut rows = 0_usize;
     for line in output.lines() {
         if line.is_empty() {
             continue;
         }
+        rows += 1;
         anyhow::ensure!(
-            windows.len() < MAX_WINDOWS,
-            "managed session reports more than {MAX_WINDOWS} windows"
+            rows <= MAX_WINDOWS,
+            "tmux reports more than {MAX_WINDOWS} windows"
         );
         let mut fields = line.split('\t');
-        let (Some(id), Some(name), Some(panes), None) =
-            (fields.next(), fields.next(), fields.next(), fields.next())
+        let (
+            Some(session_id),
+            Some(session_name),
+            Some(session_group),
+            Some(attached),
+            Some(index),
+            Some(window_id),
+            Some(window_name),
+            Some(panes),
+            None,
+        ) = (
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+        )
         else {
-            anyhow::bail!("unexpected window listing from the host");
+            anyhow::bail!("unexpected tmux session listing");
         };
-        // Validate the name the same way an attach target is validated, so a
-        // listed session is one that can actually be attached.
-        let name = core::SessionName::new(name)
+        let session_name = core::SessionName::new(session_name)
             .context("host listed a session name Starcom cannot target")?;
-        let id = tmuxctl::WindowId(
-            id.strip_prefix('@')
-                .context("invalid managed window id")?
+        let window_name = core::SessionName::new(window_name)
+            .context("host listed a window name Starcom cannot target")?;
+        let session = session_id
+            .strip_prefix('$')
+            .context("invalid tmux session id")?
+            .parse::<u32>()
+            .context("invalid tmux session id")?;
+        let window = tmuxctl::WindowId(
+            window_id
+                .strip_prefix('@')
+                .context("invalid tmux window id")?
                 .parse()?,
         );
-        anyhow::ensure!(ids.insert(id), "duplicate managed window id");
-        anyhow::ensure!(
-            names.insert(name.as_str().to_owned()),
-            "duplicate managed window name"
-        );
-        windows.push(Summary {
-            id,
-            name: name.as_str().to_owned(),
-            panes: panes.parse().context("invalid pane count")?,
-        });
+        let index = index.parse().context("invalid tmux window index")?;
+        let panes = panes.parse().context("invalid pane count")?;
+        let attached = attached.parse().context("invalid attached-client count")?;
+        if session_name.as_str() == MANAGED_SESSION {
+            anyhow::ensure!(managed_ids.insert(window), "duplicate managed window id");
+            anyhow::ensure!(
+                managed_names.insert(window_name.as_str().to_owned()),
+                "duplicate managed window name"
+            );
+            managed.push(Summary {
+                id: window,
+                name: window_name.as_str().to_owned(),
+                panes,
+            });
+        } else {
+            let entry = other.entry(session).or_insert_with(|| OtherSession {
+                id: tmuxctl::SessionId(session),
+                name: session_name.as_str().to_owned(),
+                windows: Vec::new(),
+                attached,
+                grouped: !session_group.is_empty(),
+            });
+            anyhow::ensure!(
+                entry.name == session_name.as_str()
+                    && entry.attached == attached
+                    && entry.grouped != session_group.is_empty(),
+                "inconsistent tmux session listing"
+            );
+            anyhow::ensure!(
+                !entry.windows.iter().any(|existing| existing.id == window),
+                "duplicate window in tmux session"
+            );
+            entry.windows.push(OtherWindow {
+                id: window,
+                index,
+                name: window_name.as_str().to_owned(),
+                panes,
+            });
+        }
     }
-    Ok(windows)
+    anyhow::ensure!(
+        other.len() <= MAX_SESSIONS,
+        "tmux reports more than {MAX_SESSIONS} sessions"
+    );
+    Ok(Listing {
+        managed,
+        other: other.into_values().collect(),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const LISTING: &str = "$0\tstarcom\t\t1\t0\t@3\twork\t2\n\
+                           $1\tzork/0\t\t0\t0\t@4\tbash\t1\n\
+                           $1\tzork/0\t\t0\t2\t@5\tlogs\t1\n";
+
     #[test]
-    fn a_listing_is_parsed_and_bounded() {
-        let windows = parse("@3\twork\t2\n@4\tbuild\t1\n").unwrap();
+    fn all_sessions_are_parsed_and_partitioned() {
+        let listing = parse(LISTING).unwrap();
         assert_eq!(
-            windows,
-            [
-                Summary {
-                    id: tmuxctl::WindowId(3),
-                    name: "work".into(),
-                    panes: 2,
-                },
-                Summary {
-                    id: tmuxctl::WindowId(4),
-                    name: "build".into(),
-                    panes: 1,
-                }
-            ]
+            listing.managed,
+            [Summary {
+                id: tmuxctl::WindowId(3),
+                name: "work".into(),
+                panes: 2,
+            }]
         );
-        assert_eq!(windows[0].describe(), "2 panes");
-        assert_eq!(windows[1].describe(), "1 pane");
-        assert!(parse("").unwrap().is_empty());
-        let many = "@1\ts\t1\n".repeat(MAX_WINDOWS + 1);
-        assert!(parse(&many).is_err());
+        assert_eq!(listing.managed[0].describe(), "2 panes");
+        assert_eq!(listing.other.len(), 1);
+        assert_eq!(listing.other[0].name, "zork/0");
+        assert_eq!(listing.other[0].windows.len(), 2);
+        assert_eq!(listing.other[0].windows[1].index, 2);
+        assert_eq!(parse("").unwrap(), Listing::default());
     }
 
     #[test]
-    fn a_hostile_listing_cannot_produce_an_untargetable_session() {
-        // Remote text is data. A name Starcom would refuse to target must be
-        // refused here too, rather than shown as something the user can pick.
+    fn migration_names_are_stable_and_non_conflicting() {
+        let listing = parse(LISTING).unwrap();
+        let mut single = listing.other[0].clone();
+        single.windows.truncate(1);
+        assert_eq!(
+            migration_names(&single, &[]).unwrap()[0].1.as_str(),
+            "zork/0"
+        );
+        let targets = migration_names(
+            &listing.other[0],
+            &[
+                Summary {
+                    id: tmuxctl::WindowId(9),
+                    name: "zork/0/0".into(),
+                    panes: 1,
+                },
+                Summary {
+                    id: tmuxctl::WindowId(5),
+                    name: "already linked".into(),
+                    panes: 1,
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(targets[0].1.as_str(), "zork/0/0 (2)");
+        assert_eq!(targets[1].1.as_str(), "already linked");
+    }
+
+    #[test]
+    fn hostile_or_ambiguous_listings_are_rejected() {
         for line in [
-            "@1\twork\u{1b}]0;x\u{7}\t1",
-            "@1\twork",
-            "@1\twork\t1\textra",
-            "@1\twork\tnot-a-number",
-            "@1\t\t1",
-            "@1\twork\t1\n@2\twork\t1",
-            "@1\twork\t1\n@1\tbuild\t1",
+            "$0\tstarcom\t\t0\t0\t@1\twork\u{1b}]0;x\u{7}\t1",
+            "$0\tstarcom\t\t0\t0\t@1\twork",
+            "$0\tstarcom\t\t0\t0\t@1\twork\t1\textra",
+            "$0\tstarcom\t\t0\t0\t@1\twork\tnot-a-number",
+            "$0\tstarcom\t\t0\t0\t@1\t\t1",
+            "$0\tstarcom\t\t0\t0\t@1\twork\t1\n$0\tstarcom\t\t0\t1\t@2\twork\t1",
+            "$0\tstarcom\t\t0\t0\t@1\twork\t1\n$0\tstarcom\t\t0\t1\t@1\tbuild\t1",
         ] {
             assert!(parse(line).is_err(), "accepted {line:?}");
         }
-        // A space is fine; tmux allows it and so does SessionName.
-        assert_eq!(parse("@1\tmy work\t1").unwrap()[0].name, "my work");
     }
 }

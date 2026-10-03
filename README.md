@@ -84,9 +84,10 @@ reopening their named windows; this can be disabled in **About**. Startup uses t
 authentication and host-key checks as **Connect**, while the saved file holds
 destinations, never credentials.
 **Create** is the one action that may start a tmux server. Later creates use
-`new-window` on the existing control stream. Saved v0.3 tabs remain explicit
-compatibility attachments to their original arbitrary tmux sessions; they are
-not silently reinterpreted or deleted.
+`new-window` on the existing control stream. The same host view lists other tmux
+sessions with an explicit **Migrate** action that moves their windows into the
+managed session. Saved v0.3 tabs are retained as migration candidates; they no
+longer create independent runtime attachments and are never silently deleted.
 
 The desktop currently supports local scrollback, selection and copying, pane
 split/move/zoom/close controls, moving a pane into an automatically named new

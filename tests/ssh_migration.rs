@@ -65,7 +65,6 @@ fn desktop_worker_publishes_live_view_and_rejects_cancelled_requests() {
         options: options(),
         session: core::SessionName::new("starcom").unwrap(),
         window: core::SessionName::new("0").unwrap(),
-        managed: false,
         socket: Some(root().join("tmux.sock").to_str().unwrap().to_owned()),
         history: 20,
         access: session::Access::Interactive,
@@ -214,7 +213,6 @@ exec sleep 600
         options: options(),
         session: core::SessionName::new("starcom-input").unwrap(),
         window: core::SessionName::new("0").unwrap(),
-        managed: false,
         socket: Some(socket.to_str().unwrap().to_owned()),
         history: 50,
         access: session::Access::Interactive,
@@ -407,7 +405,6 @@ fn desktop_worker_moves_a_pane_to_a_fresh_window() {
             options: options(),
             session: core::SessionName::new(source).unwrap(),
             window: core::SessionName::new("0").unwrap(),
-            managed: true,
             socket: Some(root().join("tmux.sock").to_str().unwrap().to_owned()),
             history: 20,
             access: session::Access::Interactive,
@@ -498,7 +495,6 @@ fn transport_loss_reattaches_without_replaying_input_or_creating_a_session() {
             options: options(),
             session: core::SessionName::new(session_name).unwrap(),
             window: core::SessionName::new("0").unwrap(),
-            managed: false,
             socket: Some(socket.to_str().unwrap().to_owned()),
             history: 20,
             access: session::Access::Interactive,
@@ -649,7 +645,6 @@ fn a_destroyed_session_stops_instead_of_reattaching() {
             options: options(),
             session: core::SessionName::new(session_name).unwrap(),
             window: core::SessionName::new("0").unwrap(),
-            managed: false,
             socket: Some(root().join("tmux.sock").to_str().unwrap().to_owned()),
             history: 20,
             access: session::Access::ReadOnly,
@@ -727,7 +722,6 @@ fn loss_during_a_paste_never_delivers_it_twice() {
             options: options(),
             session: core::SessionName::new(session_name).unwrap(),
             window: core::SessionName::new("0").unwrap(),
-            managed: false,
             socket: Some(root().join("tmux.sock").to_str().unwrap().to_owned()),
             history: 40,
             access: session::Access::Interactive,
@@ -785,7 +779,6 @@ fn loss_during_a_remote_layout_change_reconstructs_the_new_layout() {
             options: options(),
             session: core::SessionName::new(session_name).unwrap(),
             window: core::SessionName::new("0").unwrap(),
-            managed: false,
             socket: Some(root().join("tmux.sock").to_str().unwrap().to_owned()),
             history: 20,
             access: session::Access::ReadOnly,
@@ -912,7 +905,6 @@ fn a_restarted_server_is_reported_as_a_replacement() {
             options: options(),
             session: core::SessionName::new("restarted").unwrap(),
             window: core::SessionName::new("0").unwrap(),
-            managed: false,
             socket: Some(socket.to_str().unwrap().to_owned()),
             history: 20,
             access: session::Access::ReadOnly,
@@ -1038,7 +1030,6 @@ fn a_missing_session_lists_what_the_host_does_have() {
             options: options(),
             session: core::SessionName::new("starcom-does-not-exist").unwrap(),
             window: core::SessionName::new("0").unwrap(),
-            managed: false,
             socket: Some(root().join("tmux.sock").to_str().unwrap().to_owned()),
             history: 20,
             access: session::Access::ReadOnly,
@@ -1069,7 +1060,7 @@ fn a_missing_session_lists_what_the_host_does_have() {
         panic!("expected a session listing, got {:?}", client.discovery())
     };
     assert!(
-        found.iter().any(|summary| summary.name == "starcom"),
+        !found.managed.is_empty(),
         "the listing did not include the fixture session: {found:?}"
     );
 

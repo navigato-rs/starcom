@@ -92,16 +92,6 @@ impl Command {
         ))
     }
 
-    /// Rename the attached session. Target by session id so control mode does
-    /// not depend on a current-session default. The name is single-quoted so
-    /// spaces and shell metacharacters cannot become extra tmux syntax.
-    pub fn rename_session(session: tmuxctl::SessionId, name: &crate::core::SessionName) -> Self {
-        let quoted = shell_quote(name.as_str()).expect("SessionName is shell-quotable");
-        // `$` in `$0` is tmux format/env expansion unless quoted.
-        let target = shell_quote(&session.to_string()).expect("session ids are quotable");
-        Self(format!("rename-session -t {target} {quoted}\n"))
-    }
-
     pub fn rename_window(window: tmuxctl::WindowId, name: &crate::core::SessionName) -> Self {
         let quoted = shell_quote(name.as_str()).expect("SessionName is shell-quotable");
         Self(format!("rename-window -t {window} {quoted}\n"))
@@ -215,22 +205,6 @@ mod tests {
         assert_eq!(
             Command::swap_pane(tmuxctl::PaneId(3), tmuxctl::PaneId(5)).as_str(),
             "swap-pane -s %3 -t %5\n"
-        );
-        assert_eq!(
-            Command::rename_session(
-                tmuxctl::SessionId(3),
-                &crate::core::SessionName::new("work").unwrap()
-            )
-            .as_str(),
-            "rename-session -t '$3' 'work'\n"
-        );
-        assert_eq!(
-            Command::rename_session(
-                tmuxctl::SessionId(0),
-                &crate::core::SessionName::new("work's; $(false)").unwrap()
-            )
-            .as_str(),
-            "rename-session -t '$0' 'work'\"'\"'s; $(false)'\n"
         );
         assert_eq!(
             command.as_bytes().iter().filter(|&&b| b == b'\n').count(),
