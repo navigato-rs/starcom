@@ -53,6 +53,22 @@ existing control attachment waits for tmux's reply, for at most five seconds.
 If tmux applies the rename but its completion reply is lost, Starcom discards
 that stream and reconnects once without retrying the non-idempotent command.
 
+The **Options (N)** checkbox below the tabs exposes user options attached to the
+selected tmux window. Each row has a name, value, and delete button; the final
+empty row creates another option. The `@` prefix is implicit. Starcom accepts a
+nonempty name of up to 64 ASCII letters, digits, dots, underscores, and hyphens;
+spaces and other characters are dropped while typing. Values are single-line,
+control-free text up to 4096 bytes, including the empty string. The collapsed
+checkbox retains the option count, and hovering a tab lists that window's option
+names.
+
+Options are server-side tmux state, not part of the saved Starcom workspace.
+Starcom refreshes its copy on attachment and periodically while idle. It does
+not version or merge concurrent edits: another tmux client may overwrite a
+value, and the next refresh adopts the server's current value. Unsupported or
+ambiguous pre-existing option names and multiline values are left untouched and
+are not shown as editable rows.
+
 Workspace v3 records whether a tab is a managed window. Tabs loaded from v0.3
 workspace files remain saved migration candidates and are shown in the
 connection form for their host. They do not start independent SSH/tmux clients.

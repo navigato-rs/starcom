@@ -1263,6 +1263,10 @@ impl Workspace {
                                 let label = self.tabs[index].label.clone();
                                 let server = self.tabs[index].ui.server_name().to_owned();
                                 let phase = tab_phase(&self.tabs[index]);
+                                let option_names = {
+                                    let state = self.tabs[index].client.lock();
+                                    self.tabs[index].ui.option_names(&state)
+                                };
                                 ui.push_id(id, |ui| {
                                     if self.renaming.as_ref().is_some_and(|rename| rename.id == id)
                                     {
@@ -1362,12 +1366,23 @@ impl Workspace {
                                     } else {
                                         "Click to switch · drag to reorder"
                                     };
-                                    let response =
-                                        ui.add(button).on_hover_text(if server.is_empty() {
-                                            hint.to_owned()
-                                        } else {
-                                            format!("{server}\n{hint}")
-                                        });
+                                    let response = ui.add(button).on_hover_ui(|ui| {
+                                        if !server.is_empty() {
+                                            ui.label(egui::RichText::new(&server).strong());
+                                        }
+                                        if !option_names.is_empty() {
+                                            ui.separator();
+                                            ui.weak(format!(
+                                                "{} window options",
+                                                option_names.len()
+                                            ));
+                                            for name in &option_names {
+                                                ui.label(name);
+                                            }
+                                        }
+                                        ui.separator();
+                                        ui.weak(hint);
+                                    });
                                     tab_chrome.push((
                                         id,
                                         response.rect,
@@ -1734,6 +1749,14 @@ impl Workspace {
                                     })?;
                                     tab.client.rename_window(window, parsed, previous)
                                 }
+                            }
+                            ui::Action::SetWindowOption {
+                                window,
+                                previous,
+                                option,
+                            } => tab.client.set_window_option(window, previous, option),
+                            ui::Action::DeleteWindowOption { window, name } => {
+                                tab.client.delete_window_option(window, name)
                             }
                             ui::Action::Disconnect => {
                                 // Exit is the only way a session tab is removed.

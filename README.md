@@ -91,8 +91,9 @@ longer create independent runtime attachments and are never silently deleted.
 
 The desktop currently supports local scrollback, selection and copying, pane
 split/move/zoom/close controls, moving a pane into an automatically named new
-logical session/window on the same server, session rename, and opt-in shared tmux pane
-resizing. Wheel events go to the application when it asked for mouse reports or
+logical session/window on the same server, session rename, per-window tmux user
+options, and opt-in shared tmux pane resizing. Wheel events go to the application
+when it asked for mouse reports or
 uses the alternate screen; unmodified clicks go only when requested, while
 drags stay local selection. Focus a connected pane, then drop up to eight files
 onto the window to upload them over SFTP into `/tmp`. Large drops ask before

@@ -97,6 +97,20 @@ impl Command {
         Self(format!("rename-window -t {window} {quoted}\n"))
     }
 
+    pub fn set_window_option(window: tmuxctl::WindowId, option: &crate::core::UserOption) -> Self {
+        let name = tmux_quote(option.name.as_str()).expect("UserOptionName is tmux-quotable");
+        let value = tmux_quote(&option.value).expect("UserOption is tmux-quotable");
+        Self(format!("set-option -w -t {window} -- {name} {value}\n"))
+    }
+
+    pub fn unset_window_option(
+        window: tmuxctl::WindowId,
+        name: &crate::core::UserOptionName,
+    ) -> Self {
+        let name = tmux_quote(name.as_str()).expect("UserOptionName is tmux-quotable");
+        Self(format!("set-option -wu -t {window} -- {name}\n"))
+    }
+
     /// One axis only. The window's total size comes from `client_size`.
     pub fn resize_axis(pane: tmuxctl::PaneId, resize: input::Resize) -> Result<Self, input::Error> {
         input::Action::Resize(resize).validate()?;
@@ -156,6 +170,14 @@ pub(crate) fn shell_quote(value: &str) -> anyhow::Result<String> {
         !value.is_empty() && value.len() <= 4096 && !value.chars().any(char::is_control),
         "value cannot be placed in a remote command"
     );
+    tmux_quote(value)
+}
+
+fn tmux_quote(value: &str) -> anyhow::Result<String> {
+    anyhow::ensure!(
+        value.len() <= crate::core::MAX_USER_OPTION_VALUE && !value.chars().any(char::is_control),
+        "value cannot be placed in a tmux command"
+    );
     Ok(format!("'{}'", value.replace('\'', "'\"'\"'")))
 }
 
@@ -205,6 +227,19 @@ mod tests {
         assert_eq!(
             Command::swap_pane(tmuxctl::PaneId(3), tmuxctl::PaneId(5)).as_str(),
             "swap-pane -s %3 -t %5\n"
+        );
+        let option = crate::core::UserOption::new(
+            crate::core::UserOptionName::new("project").unwrap(),
+            "it's active; $(false)".into(),
+        )
+        .unwrap();
+        assert_eq!(
+            Command::set_window_option(tmuxctl::WindowId(5), &option).as_str(),
+            "set-option -w -t @5 -- '@project' 'it'\"'\"'s active; $(false)'\n"
+        );
+        assert_eq!(
+            Command::unset_window_option(tmuxctl::WindowId(5), &option.name).as_str(),
+            "set-option -wu -t @5 -- '@project'\n"
         );
         assert_eq!(
             command.as_bytes().iter().filter(|&&b| b == b'\n').count(),
