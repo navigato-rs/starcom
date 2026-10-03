@@ -329,28 +329,25 @@ fn visible_tab_range(widths: &[f32], anchor: usize, budget: f32) -> std::ops::Ra
     start..end
 }
 
-fn paint_dashed_rect(ui: &egui::Ui, rect: egui::Rect, stroke: egui::Stroke) {
+fn paint_animated_dashed_rect(ui: &egui::Ui, rect: egui::Rect, stroke: egui::Stroke) {
     const DASH: f32 = 4.0;
     const GAP: f32 = 3.0;
-    let paint = |from: egui::Pos2, to: egui::Pos2| {
-        let delta = to - from;
-        let length = delta.length();
-        if length == 0.0 {
-            return;
-        }
-        let direction = delta / length;
-        let mut offset = 0.0;
-        while offset < length {
-            let end = (offset + DASH).min(length);
-            ui.painter()
-                .line_segment([from + direction * offset, from + direction * end], stroke);
-            offset += DASH + GAP;
-        }
-    };
-    paint(rect.left_top(), rect.right_top());
-    paint(rect.right_top(), rect.right_bottom());
-    paint(rect.right_bottom(), rect.left_bottom());
-    paint(rect.left_bottom(), rect.left_top());
+    const SPEED: f32 = 14.0;
+    let dash_offset = (ui.ctx().time() as f32 * SPEED) % (DASH + GAP);
+    let path = [
+        rect.left_top(),
+        rect.right_top(),
+        rect.right_bottom(),
+        rect.left_bottom(),
+        rect.left_top(),
+    ];
+    ui.painter().extend(egui::Shape::dashed_line_with_offset(
+        &path,
+        stroke,
+        &[DASH],
+        &[GAP],
+        dash_offset,
+    ));
 }
 
 impl Workspace {
@@ -1405,10 +1402,16 @@ impl Workspace {
                                 tab_chrome.iter().find(|(_, _, _, hovered)| *hovered)
                             {
                                 let stroke = egui::Stroke::new(1.0_f32, selection_stroke);
+                                let mut animated = false;
                                 for (id, rect, sibling, _) in &tab_chrome {
                                     if id != hovered && same_endpoint(endpoint, sibling) {
-                                        paint_dashed_rect(ui, rect.shrink(1.0), stroke);
+                                        paint_animated_dashed_rect(ui, rect.shrink(1.0), stroke);
+                                        animated = true;
                                     }
+                                }
+                                if animated {
+                                    ui.ctx()
+                                        .request_repaint_after(time::Duration::from_millis(33));
                                 }
                             }
                             let hidden_right = self.tabs.len().saturating_sub(range.end);
