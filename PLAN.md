@@ -60,9 +60,9 @@ Linux host: stock sshd -> stock tmux -C -> existing tmux server -> PTYs/apps
 
 One registered Starcom tab owns one client worker and one tmux-session view. The
 `+` composer owns the only connection form; pressing Connect promotes it to a
-registered tab while the attachment starts. A failed first attachment moves the
-form back to `+` for repair instead of leaving an empty tab. Panes are never
-mixed with another tab's connection state.
+registered tab while the attachment starts. A failed attachment becomes a red
+tab with an explicit reconnect control; only Exit removes a registered tab.
+Panes are never mixed with another tab's connection state.
 
 The SSH channel is opened without a PTY and executes `tmux -N -C attach-session`
 against an existing session. `-N` prevents accidental server creation. Control

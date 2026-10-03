@@ -67,12 +67,13 @@ Use **+** to open the connection screen. Pick a `Host` from `~/.ssh/config` or t
 another destination; Starcom resolves supported user/host/port/key settings and
 resolves ProxyJump through Sunset’s shared client and reports unsupported policy
 instead of bypassing it.
-Choosing a known host lists its tmux sessions and selects the first available one
-so **Connect** is the next click. Attached sessions are red and unavailable, and
-Host buttons already connected in this workspace are green. Typing is focused
+Choosing a host lists its tmux sessions and their window counts, then selects the
+first available one so **Connect** is the next click. Attached sessions are red and unavailable, and
+hosts already connected in this workspace appear first and in green, including
+destinations absent from SSH config. Typing is focused
 in the new-session field after the host choice. A tab is
-registered for that session while it connects; failed first attachments return
-to **+** for repair instead of leaving an empty tab. Tabs show session names only;
+registered for that session while it connects and remains available for an
+explicit retry after failure. Tabs show session names only;
 the active server is shown in bold beside its latency. Each tab currently shows
 one window of one tmux session.
 
