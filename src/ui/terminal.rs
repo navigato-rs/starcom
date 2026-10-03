@@ -819,29 +819,40 @@ impl PaneUi {
                 let selected = *focused == Some(pane_id);
                 let show_icons = controls && selected;
                 if show_icons {
+                    let size = pane.terminal.size();
+                    let alternate = pane.terminal.is_alternate_screen();
+                    let mouse = pane.terminal.reports_mouse();
                     let buttons = 2
                         + usize::from(can_move_to_session)
                         + usize::from(can_kill) * 2
                         + neighbors.count();
                     // Pin the first-frame size: egui Area otherwise starts at
                     // Spacing::default_area_size (600px).
-                    let bar_width = (8.0 + buttons as f32 * 24.0).min(rect.width() - 8.0);
+                    let bar_width = (8.0 + buttons as f32 * 24.0)
+                        .max(104.0)
+                        .min((rect.width() - 8.0).max(24.0));
+                    let bar_size = egui::vec2(bar_width, 44.0);
                     egui::Area::new(id.with("chrome"))
                         .order(egui::Order::Foreground)
                         .pivot(egui::Align2::RIGHT_TOP)
                         .fixed_pos(egui::pos2(rect.max.x - 4.0, rect.min.y + 4.0))
-                        .default_size(egui::vec2(bar_width, 24.0))
+                        .default_size(bar_size)
                         .constrain_to(rect)
                         .show(ui.ctx(), |ui| {
-                            ui.set_min_width(bar_width);
-                            ui.set_max_width(bar_width);
+                            // Area state remembers its previous measured size. Explicitly
+                            // constrain both axes so changing from one row to two cannot
+                            // inherit the surrounding pane's full available height.
+                            ui.set_min_size(bar_size);
+                            ui.set_max_size(bar_size);
                             egui::Frame::NONE
                                 .fill(egui::Color32::from_rgba_unmultiplied(16, 18, 22, 220))
                                 .corner_radius(5.0)
                                 .inner_margin(egui::Margin::symmetric(4, 2))
                                 .show(ui, |ui| {
                                     ui.spacing_mut().item_spacing.x = 2.0;
-                                    ui.with_layout(
+                                    let row_size = egui::vec2(ui.available_width(), 20.0);
+                                    ui.allocate_ui_with_layout(
+                                        row_size,
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
                                             chrome_icons(
@@ -855,6 +866,46 @@ impl PaneUi {
                                             );
                                         },
                                     );
+                                    ui.allocate_ui_with_layout(
+                                        row_size,
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            // Right-to-left insertion keeps the visible order
+                                            // as size, A, K, M beneath the pane controls.
+                                            mode_letter(
+                                                ui,
+                                                'M',
+                                                mouse,
+                                                "App enabled mouse reporting: wheel and clicks go to it.",
+                                                "App did not enable mouse: wheel is local history, drags select.",
+                                            );
+                                            mode_letter(
+                                                ui,
+                                                'K',
+                                                controls,
+                                                "Keys go to this pane.",
+                                                "This pane is not taking keys.",
+                                            );
+                                            mode_letter(
+                                                ui,
+                                                'A',
+                                                alternate,
+                                                "Alternate screen: the app owns a fullscreen canvas.",
+                                                "Primary screen: output accumulates in terminal history.",
+                                            );
+                                            ui.label(
+                                                egui::RichText::new(format!(
+                                                    "{}×{}",
+                                                    size.columns(),
+                                                    size.rows()
+                                                ))
+                                                .monospace()
+                                                .size(11.0)
+                                                .color(egui::Color32::from_gray(168)),
+                                            )
+                                            .on_hover_text("Pane size in terminal cells");
+                                        },
+                                    );
                                 });
                         });
                 }
@@ -862,6 +913,22 @@ impl PaneUi {
         );
         events
     }
+}
+
+fn mode_letter(ui: &mut egui::Ui, letter: char, on: bool, on_tip: &str, off_tip: &str) {
+    let color = if on {
+        egui::Color32::from_rgb(72, 196, 112)
+    } else {
+        egui::Color32::from_rgb(220, 88, 88)
+    };
+    ui.label(
+        egui::RichText::new(letter.to_string())
+            .monospace()
+            .strong()
+            .size(11.0)
+            .color(color),
+    )
+    .on_hover_text(if on { on_tip } else { off_tip });
 }
 
 #[derive(Clone, Copy)]

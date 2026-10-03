@@ -1139,12 +1139,25 @@ impl Workspace {
                     }
                 }
 
+                paint_tab_fills(ui, idle_fill, idle_hover);
+                let add = ui
+                    .add_enabled(
+                        self.tabs.len() < MAX_TABS || self.composer_open,
+                        egui::Button::new(egui::RichText::new("+ New session").size(14.0).strong())
+                            .selected(self.composer_open)
+                            .min_size(egui::vec2(ui.available_width(), 28.0)),
+                    )
+                    .on_hover_text("New connection");
+                if add.clicked() {
+                    navigation = Action::New;
+                }
+
                 let controls_height = if self.composer_open || self.tabs.is_empty() {
                     0.0
                 } else {
                     32.0
                 };
-                let footer_height = if self.notice.is_some() { 92.0 } else { 66.0 }
+                let footer_height = if self.notice.is_some() { 60.0 } else { 34.0 }
                     + controls_height;
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
@@ -1264,10 +1277,11 @@ impl Workspace {
                                         session_row(ui, text, selected, color, lift(color, 32))
                                             .on_hover_ui(|ui| {
                                                 if !option_names.is_empty() {
-                                                    ui.weak(format!(
-                                                        "{} window options",
-                                                        option_names.len()
-                                                    ));
+                                                    ui.weak(if option_names.len() == 1 {
+                                                        "1 note".to_owned()
+                                                    } else {
+                                                        format!("{} notes", option_names.len())
+                                                    });
                                                     for name in &option_names {
                                                         ui.label(name);
                                                     }
@@ -1360,21 +1374,9 @@ impl Workspace {
                     )
                     .on_hover_text(notice);
                 }
-                paint_tab_fills(ui, idle_fill, idle_hover);
-                let add = ui
-                    .add_enabled(
-                        self.tabs.len() < MAX_TABS || self.composer_open,
-                        egui::Button::new(egui::RichText::new("+ New session").size(14.0).strong())
-                            .selected(self.composer_open)
-                            .min_size(egui::vec2(ui.available_width(), 28.0)),
-                    )
-                    .on_hover_text("New connection");
-                if add.clicked() {
-                    navigation = Action::New;
-                }
                 if ui
                     .add(
-                        egui::Button::new(egui::RichText::new("About").size(14.0))
+                        egui::Button::new(egui::RichText::new("About/Config").size(14.0))
                             .min_size(egui::vec2(ui.available_width(), 28.0)),
                     )
                     .clicked()

@@ -451,6 +451,8 @@ pub struct DesktopUi {
     /// The status marker advances once per visible terminal refresh, not with
     /// wall time. An idle tab therefore cannot animate itself.
     refresh_tick: u64,
+    refresh_animation_tick: u64,
+    refresh_started: Option<time::Instant>,
     last_refresh: Option<(u64, u64)>,
 }
 
@@ -504,6 +506,8 @@ impl DesktopUi {
             client_cells: None,
             pending_client_cells: None,
             refresh_tick: 0,
+            refresh_animation_tick: 0,
+            refresh_started: None,
             last_refresh: None,
         }
     }
@@ -634,43 +638,27 @@ impl DesktopUi {
         self.sync_option_rows(state);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
-            let refresh = egui::Frame::NONE
-                .fill(ui.visuals().code_bg_color)
-                .corner_radius(4.0)
-                .inner_margin(egui::Margin::symmetric(6, 5))
-                .show(ui, |ui| {
-                    let (rect, _) =
-                        ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
-                    paint_refresh_indicator(ui, rect, self.refresh_tick);
-                })
-                .response;
-            refresh.on_hover_ui(|ui| {
-                ui.strong("Selected pane");
-                if let Some(pane) = self
-                    .focused
-                    .and_then(|id| state.view.as_ref().and_then(|view| view.panes().get(&id)))
-                {
-                    let size = pane.terminal.size();
-                    ui.label(format!("{}×{} cells", size.columns(), size.rows()));
-                    ui.label(if pane.terminal.is_alternate_screen() {
-                        "Alternate screen"
-                    } else {
-                        "Primary screen"
-                    });
-                    ui.label(if self.form.interactive && state.input_ready() {
-                        "Keyboard input enabled"
-                    } else {
-                        "Keyboard input disabled"
-                    });
-                    ui.label(if pane.terminal.reports_mouse() {
-                        "Application mouse reporting enabled"
-                    } else {
-                        "Local scrolling and selection"
-                    });
-                } else {
-                    ui.weak("No pane selected");
-                }
-            });
+            let now = time::Instant::now();
+            let animation_age = self
+                .refresh_started
+                .map(|started| now.saturating_duration_since(started));
+            let animating = animation_age.is_some_and(|age| age < REFRESH_ANIMATION_DURATION);
+            if animating {
+                ui.ctx()
+                    .request_repaint_after(time::Duration::from_millis(33));
+            }
+            let (refresh_rect, refresh) =
+                ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::hover());
+            ui.painter()
+                .rect_filled(refresh_rect, 4.0, ui.visuals().code_bg_color);
+            paint_refresh_indicator(
+                ui,
+                refresh_rect.shrink(5.0),
+                self.refresh_tick,
+                self.refresh_animation_tick,
+                animation_age.filter(|_| animating),
+            );
+            refresh.on_hover_text("Terminal refresh activity");
 
             let option_count = self
                 .option_rows
@@ -683,16 +671,20 @@ impl DesktopUi {
             let options = ui.add_enabled(
                 options_loaded,
                 egui::Button::new(if options_loaded {
-                    format!("Options[{option_count}]")
+                    if option_count == 0 {
+                        "Notes".to_owned()
+                    } else {
+                        format!("Notes({option_count})")
+                    }
                 } else {
-                    "Options[…]".to_owned()
+                    "Notes".to_owned()
                 })
                 .selected(self.options_open)
                 .min_size(egui::vec2(ui.available_width(), 28.0)),
             );
             if options
-                .on_disabled_hover_text("Window options are not available yet")
-                .on_hover_text("Show window-scoped tmux user options")
+                .on_disabled_hover_text("Notes are not available yet")
+                .on_hover_text("Show notes attached to this session")
                 .clicked()
             {
                 self.options_open = !self.options_open;
@@ -1527,14 +1519,25 @@ impl DesktopUi {
         self.generation = state.generation;
     }
 
-    fn note_refresh(&mut self, state: &desktop::State, scrolled: bool) {
+    fn note_refresh(&mut self, state: &desktop::State, scrolled: bool) -> bool {
         let refresh = state
             .view
             .as_ref()
             .map(|view| (state.generation, self.display_seq(view)));
         if refresh != self.last_refresh || scrolled {
             self.refresh_tick = self.refresh_tick.wrapping_add(1);
+            let now = time::Instant::now();
+            let animation_finished = self.refresh_started.is_none_or(|started| {
+                now.saturating_duration_since(started) >= REFRESH_ANIMATION_DURATION
+            });
+            if animation_finished {
+                self.refresh_animation_tick = self.refresh_tick;
+                self.refresh_started = Some(now);
+            }
             self.last_refresh = refresh;
+            true
+        } else {
+            false
         }
     }
 
@@ -1572,8 +1575,14 @@ impl DesktopUi {
             .iter()
             .filter(|row| !row.name.is_empty())
             .count();
-        let desired_height = 8.0 + self.option_rows.len() as f32 * 30.0;
-        let height = desired_height.min((root.available_height() - 120.0).max(38.0));
+        const FRAME_MARGIN: f32 = 8.0;
+        const ROW_GAP: f32 = 2.0;
+        let rows = self.option_rows.len();
+        let row_height = root.spacing().interact_size.y;
+        let desired_height =
+            FRAME_MARGIN + rows as f32 * row_height + rows.saturating_sub(1) as f32 * ROW_GAP;
+        let minimum_height = FRAME_MARGIN + row_height;
+        let height = desired_height.min((root.available_height() - 120.0).max(minimum_height));
         self.option_panel_height = height;
         let editable = self.form.interactive && state.input_ready() && self.window.is_some();
         let mut submit = None;
@@ -1590,6 +1599,7 @@ impl DesktopUi {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = ROW_GAP;
                         for index in 0..self.option_rows.len() {
                             ui.push_id(index, |ui| {
                                 let row = &mut self.option_rows[index];
@@ -1635,7 +1645,7 @@ impl DesktopUi {
                                             editable && !row.is_empty(),
                                             egui::Button::new("×").sense(egui::Sense::CLICK),
                                         )
-                                        .on_hover_text("Delete this option")
+                                        .on_hover_text("Delete this note")
                                         .clicked()
                                     {
                                         delete = Some(index);
@@ -1684,7 +1694,7 @@ impl DesktopUi {
                 && !row.name.is_empty()
                 && core::UserOptionName::new(row.name.clone()).ok().as_ref() == Some(&name)
         }) {
-            self.notice = Some(format!("Option '{}' already exists.", name.as_str()));
+            self.notice = Some(format!("Note '{}' already exists.", name.as_str()));
             ensure_new_option_row(&mut self.option_rows);
             return Action::None;
         }
@@ -1712,7 +1722,11 @@ impl DesktopUi {
             view.flush_expired_sync();
         }
         let scrolled = root.input(|input| input.smooth_scroll_delta != egui::Vec2::ZERO);
-        self.note_refresh(state, scrolled);
+        if self.note_refresh(state, scrolled) {
+            // The sidebar was already painted this frame. Wake it once so its
+            // activity marker can enter the timed repaint loop on the next frame.
+            root.ctx().request_repaint();
+        }
         let generation_changed = self.generation != state.generation;
         self.rebuild_layout(state);
         // The shared control stream is interactive when any logical tab on
@@ -1785,74 +1799,6 @@ impl DesktopUi {
                 desktop::Phase::Watching | desktop::Phase::Resynchronizing
             );
         let recreate = can_recreate_missing_session(state, logical_missing);
-        egui::Area::new(root.id().with("session-actions"))
-            .order(egui::Order::Foreground)
-            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-8.0, 8.0))
-            .show(root.ctx(), |ui| {
-                egui::Frame::new()
-                    .fill(ui.visuals().panel_fill)
-                    .corner_radius(5.0)
-                    .inner_margin(egui::Margin::same(3))
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            if (matches!(
-                                state.phase,
-                                desktop::Phase::Failed | desktop::Phase::Disconnected
-                            ) || logical_missing)
-                                && ui
-                                    .add_enabled(
-                                        !state.changing_sessions,
-                                        egui::Button::new(if recreate {
-                                            if state.changing_sessions {
-                                                "Recreating…"
-                                            } else {
-                                                "Recreate"
-                                            }
-                                        } else {
-                                            "Reconnect"
-                                        })
-                                        .min_size(egui::vec2(0.0, 28.0)),
-                                    )
-                                    .on_hover_text(if recreate {
-                                        "Create a new empty window with this session name on the same server."
-                                    } else {
-                                        "Attempt to reconnect to this server."
-                                    })
-                                    .clicked()
-                            {
-                                match self.form.connection() {
-                                    Ok(connection) => {
-                                        self.notice = None;
-                                        if recreate {
-                                            self.creating = Some(self.session_name().to_owned());
-                                            action = Action::CreateSession(connection);
-                                        } else {
-                                            action = Action::Connect(connection);
-                                        }
-                                    }
-                                    Err(error) => self.notice = Some(error.to_string()),
-                                }
-                            }
-                            if ui
-                                .add(
-                                    egui::Button::new(
-                                        egui::RichText::new("Exit")
-                                            .color(egui::Color32::WHITE)
-                                            .strong(),
-                                    )
-                                    .fill(egui::Color32::from_rgb(150, 38, 38))
-                                    .min_size(egui::vec2(0.0, 28.0)),
-                                )
-                                .on_hover_text(
-                                    "Close this session locally. Remote jobs keep running.",
-                                )
-                                .clicked()
-                            {
-                                action = Action::Disconnect;
-                            }
-                        });
-                    });
-            });
 
         if state.renaming {
             root.ctx()
@@ -1988,6 +1934,79 @@ impl DesktopUi {
         if matches!(action, Action::None) && !matches!(option_action, Action::None) {
             action = option_action;
         }
+
+        let bottom_offset = 8.0 + self.option_panel_height + self.status_panel_height;
+        egui::Area::new(root.id().with("session-actions"))
+            .order(egui::Order::Foreground)
+            .anchor(
+                egui::Align2::RIGHT_BOTTOM,
+                egui::vec2(-8.0, -bottom_offset),
+            )
+            .show(root.ctx(), |ui| {
+                egui::Frame::new()
+                    .fill(ui.visuals().panel_fill)
+                    .corner_radius(5.0)
+                    .inner_margin(egui::Margin::same(3))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            if (matches!(
+                                state.phase,
+                                desktop::Phase::Failed | desktop::Phase::Disconnected
+                            ) || logical_missing)
+                                && ui
+                                    .add_enabled(
+                                        !state.changing_sessions,
+                                        egui::Button::new(if recreate {
+                                            if state.changing_sessions {
+                                                "Recreating…"
+                                            } else {
+                                                "Recreate"
+                                            }
+                                        } else {
+                                            "Reconnect"
+                                        })
+                                        .min_size(egui::vec2(0.0, 28.0)),
+                                    )
+                                    .on_hover_text(if recreate {
+                                        "Create a new empty window with this session name on the same server."
+                                    } else {
+                                        "Attempt to reconnect to this server."
+                                    })
+                                    .clicked()
+                            {
+                                match self.form.connection() {
+                                    Ok(connection) => {
+                                        self.notice = None;
+                                        if recreate {
+                                            self.creating = Some(self.session_name().to_owned());
+                                            action = Action::CreateSession(connection);
+                                        } else {
+                                            action = Action::Connect(connection);
+                                        }
+                                    }
+                                    Err(error) => self.notice = Some(error.to_string()),
+                                }
+                            }
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new("Exit")
+                                            .color(egui::Color32::WHITE)
+                                            .strong(),
+                                    )
+                                    .fill(egui::Color32::from_rgb(150, 38, 38))
+                                    .min_size(egui::vec2(0.0, 28.0)),
+                                )
+                                .on_hover_text(
+                                    "Close this session locally. Remote jobs keep running.",
+                                )
+                                .clicked()
+                            {
+                                action = Action::Disconnect;
+                            }
+                        });
+                    });
+            });
 
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
@@ -2495,10 +2514,47 @@ pub(crate) fn paint_activity_indicator(ui: &egui::Ui, rect: egui::Rect, time: f6
     paint_activity_dots(ui, rect, step);
 }
 
-/// A refresh mark driven by visible changes rather than a timer. Its bright
-/// dot advances with content/scroll activity and stays still when idle.
-fn paint_refresh_indicator(ui: &egui::Ui, rect: egui::Rect, tick: u64) {
-    paint_activity_dots(ui, rect, tick);
+/// A refresh mark driven by visible changes rather than a permanent timer.
+/// Fresh activity sends a bright comet around the ring, then leaves it parked.
+const REFRESH_ANIMATION_DURATION: time::Duration = time::Duration::from_secs(1);
+
+fn paint_refresh_indicator(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    tick: u64,
+    animation_tick: u64,
+    animation_age: Option<time::Duration>,
+) {
+    const DOTS: usize = 8;
+    let phase = animation_age
+        .map(|age| {
+            animation_tick as f32
+                + age.as_secs_f32() / REFRESH_ANIMATION_DURATION.as_secs_f32() * DOTS as f32
+        })
+        .unwrap_or(tick as f32);
+    let head = phase.floor() as usize % DOTS;
+    let center = rect.center();
+    let radius = rect.width().min(rect.height()) * 0.36;
+    let color = ui.visuals().strong_text_color();
+    for index in 0..DOTS {
+        let trail = (head + DOTS - index) % DOTS;
+        let strength = match trail {
+            0 => 1.0,
+            1 => 0.68,
+            2 => 0.42,
+            _ => 0.16,
+        };
+        let angle =
+            index as f32 / DOTS as f32 * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
+        let position = center + egui::vec2(angle.cos(), angle.sin()) * radius;
+        ui.painter()
+            .circle_filled(position, 1.55, color.gamma_multiply(strength));
+    }
+    let pulse = animation_age
+        .map(|age| 0.35 + 0.35 * (age.as_secs_f32() * 18.0).sin().abs())
+        .unwrap_or(0.24);
+    ui.painter()
+        .circle_filled(center, 1.2, color.gamma_multiply(pulse));
 }
 
 fn paint_activity_dots(ui: &egui::Ui, rect: egui::Rect, step: u64) {
@@ -2917,10 +2973,11 @@ mod tests {
     fn refresh_marker_tracks_visible_changes_and_scrolling_not_time() {
         let mut ui = DesktopUi::default();
         let mut state = desktop::State::interactive_demo().unwrap();
-        ui.note_refresh(&state, false);
+        assert!(ui.note_refresh(&state, false));
         let initial = ui.refresh_tick;
+        let animation_started = ui.refresh_started;
 
-        ui.note_refresh(&state, false);
+        assert!(!ui.note_refresh(&state, false));
         assert_eq!(ui.refresh_tick, initial, "an idle frame is not activity");
 
         let pane = state
@@ -2936,11 +2993,13 @@ mod tests {
                 pane,
                 bytes: b"changed".to_vec(),
             });
-        ui.note_refresh(&state, false);
+        assert!(ui.note_refresh(&state, false));
         assert_eq!(ui.refresh_tick, initial + 1);
+        assert_eq!(ui.refresh_started, animation_started);
 
-        ui.note_refresh(&state, true);
+        assert!(ui.note_refresh(&state, true));
         assert_eq!(ui.refresh_tick, initial + 2);
+        assert_eq!(ui.refresh_started, animation_started);
     }
 
     #[test]
