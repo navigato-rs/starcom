@@ -350,6 +350,12 @@ fn draft_options(rows: &[OptionDraft]) -> Option<Vec<core::UserOption>> {
     Some(options)
 }
 
+fn ensure_new_option_row(rows: &mut Vec<OptionDraft>) {
+    if rows.first().is_none_or(|row| !row.is_empty()) {
+        rows.insert(0, OptionDraft::empty());
+    }
+}
+
 impl OptionDraft {
     fn empty() -> Self {
         Self {
@@ -548,8 +554,11 @@ impl DesktopUi {
         Ok(connection)
     }
 
-    pub(crate) fn connection(&self) -> anyhow::Result<desktop::Connection> {
-        self.form.connection()
+    /// Resolve the selected server independently of either kind of session
+    /// selection. Picking a legacy session deliberately clears the managed
+    /// window name, but must not make already-open windows look available.
+    pub(crate) fn server_connection(&self) -> anyhow::Result<desktop::Connection> {
+        self.form.listing()
     }
 
     pub(crate) fn saved(&self) -> store::Tab {
@@ -911,10 +920,12 @@ impl DesktopUi {
                         ui.weak(format!("Via {route}"));
                     }
 
+                    let previous_font = ui.style().override_font_id.clone();
+                    ui.style_mut().override_font_id = Some(egui::FontId::proportional(18.0));
                     ui.add_space(12.0);
                     ui.vertical(|ui| {
                         ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new("Sessions").strong());
+                            ui.label(egui::RichText::new("Sessions").size(20.0).strong());
                             if ui
                                 .add_enabled(
                                     host_ready && idle && !busy_here,
@@ -1011,7 +1022,7 @@ impl DesktopUi {
                                         }
                                         let text = if unavailable {
                                             egui::RichText::new(text)
-                                                .color(egui::Color32::from_rgb(255, 128, 128))
+                                                .color(egui::Color32::from_rgb(102, 210, 132))
                                         } else {
                                             egui::RichText::new(text)
                                         };
@@ -1050,11 +1061,10 @@ impl DesktopUi {
                                 }
                                 for source in &found.other {
                                     let mut label = source.name.clone();
-                                    if source.windows.len() > 1 {
-                                        label.push_str(&format!(
-                                            " · {} windows",
-                                            source.windows.len()
-                                        ));
+                                    let panes = source.describe_panes();
+                                    if !panes.is_empty() {
+                                        label.push_str(" · ");
+                                        label.push_str(&panes);
                                     }
                                     if source.attached > 0 {
                                         label.push_str(&format!(" · {} attached", source.attached));
@@ -1065,7 +1075,10 @@ impl DesktopUi {
                                     let selected = self.selected_other == Some(source.id);
                                     if ui
                                         .add(
-                                            egui::Button::new(label)
+                                            egui::Button::new(
+                                                egui::RichText::new(label)
+                                                    .color(ui.visuals().warn_fg_color),
+                                            )
                                                 .selected(selected)
                                                 .sense(egui::Sense::CLICK),
                                         )
@@ -1258,6 +1271,7 @@ impl DesktopUi {
                         ui.add_space(6.0);
                         ui.colored_label(ui.visuals().error_fg_color, error);
                     }
+                    ui.style_mut().override_font_id = previous_font;
 
                     ui.add_space(10.0);
                     ui.checkbox(&mut self.form.interactive, "Allow terminal input");
@@ -1453,14 +1467,18 @@ impl DesktopUi {
         if self.options_window != self.window {
             self.options_window = self.window;
             self.options_open = false;
-            self.option_rows = remote.iter().map(OptionDraft::from_remote).collect();
+            self.option_rows = Vec::with_capacity(remote.len() + 1);
             self.option_rows.push(OptionDraft::empty());
+            self.option_rows
+                .extend(remote.iter().map(OptionDraft::from_remote));
             return;
         }
         let dirty = self.option_rows.iter().any(|row| row.dirty);
         if !dirty || draft_options(&self.option_rows).as_deref() == Some(remote.as_slice()) {
-            self.option_rows = remote.iter().map(OptionDraft::from_remote).collect();
+            self.option_rows = Vec::with_capacity(remote.len() + 1);
             self.option_rows.push(OptionDraft::empty());
+            self.option_rows
+                .extend(remote.iter().map(OptionDraft::from_remote));
         }
     }
 
@@ -1491,7 +1509,6 @@ impl DesktopUi {
             .show_inside(root, |ui| {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
-                    .stick_to_bottom(true)
                     .show(ui, |ui| {
                         for index in 0..self.option_rows.len() {
                             ui.push_id(index, |ui| {
@@ -1563,25 +1580,23 @@ impl DesktopUi {
 
         if let Some(index) = delete {
             let removed = self.option_rows.remove(index);
-            if self.option_rows.last().is_none_or(|row| !row.is_empty()) {
-                self.option_rows.push(OptionDraft::empty());
-            }
+            ensure_new_option_row(&mut self.option_rows);
             if let (Some(window), Some(name)) = (self.window, removed.original) {
                 return Action::DeleteWindowOption { window, name };
             }
             return Action::None;
         }
-        if self.option_rows.last().is_none_or(|row| !row.is_empty()) {
-            self.option_rows.push(OptionDraft::empty());
-        }
         let Some(index) = submit else {
+            ensure_new_option_row(&mut self.option_rows);
             return Action::None;
         };
         let Some(window) = self.window else {
+            ensure_new_option_row(&mut self.option_rows);
             return Action::None;
         };
         let row = self.option_rows[index].clone();
         let Ok(name) = core::UserOptionName::new(row.name) else {
+            ensure_new_option_row(&mut self.option_rows);
             return Action::None;
         };
         if self.option_rows.iter().enumerate().any(|(other, row)| {
@@ -1590,8 +1605,10 @@ impl DesktopUi {
                 && core::UserOptionName::new(row.name.clone()).ok().as_ref() == Some(&name)
         }) {
             self.notice = Some(format!("Option '{}' already exists.", name.as_str()));
+            ensure_new_option_row(&mut self.option_rows);
             return Action::None;
         }
+        ensure_new_option_row(&mut self.option_rows);
         match core::UserOption::new(name, row.value) {
             Ok(option) => Action::SetWindowOption {
                 window,
@@ -1912,18 +1929,21 @@ impl DesktopUi {
                         let options_loaded = self.window.is_some_and(|window| {
                             state.window_options.contains_key(&window)
                         });
-                        ui.add_enabled(
+                        let options = ui.add_enabled(
                             options_loaded,
-                            egui::Checkbox::new(
-                                &mut self.options_open,
-                                if options_loaded {
-                                    format!("Options ({option_count})")
-                                } else {
-                                    "Options (…)".to_owned()
-                                },
-                            ),
-                        )
-                        .on_hover_text("Show window-scoped tmux user options");
+                            egui::Button::new(if options_loaded {
+                                format!("Options[{option_count}]")
+                            } else {
+                                "Options[…]".to_owned()
+                            })
+                            .selected(self.options_open),
+                        );
+                        if options
+                            .on_hover_text("Show window-scoped tmux user options")
+                            .clicked()
+                        {
+                            self.options_open = !self.options_open;
+                        }
                         ui.separator();
                         if let Some((ref name, done, total)) = self.upload_progress {
                             let frac = if total == 0 {
@@ -3157,6 +3177,16 @@ mod tests {
     }
 
     #[test]
+    fn server_identity_does_not_require_a_managed_session_selection() {
+        let mut ui = DesktopUi::default();
+        ui.form.destination = "zork".to_owned();
+        ui.form.host = "10.0.0.2".to_owned();
+        ui.form.session.clear();
+        assert_eq!(ui.server_connection().unwrap().options.host, "10.0.0.2");
+        assert!(ui.form.connection().is_err());
+    }
+
+    #[test]
     fn choosing_a_host_focuses_the_new_session_field() {
         let mut ui = DesktopUi::default();
         ui.form.destination = "zork".to_owned();
@@ -3753,5 +3783,20 @@ mod tests {
             terminal_client_size(full, 0.0, 8.0, 16.0).unwrap(),
             terminal_client_size(reduced, option_height, 8.0, 16.0).unwrap(),
         );
+    }
+
+    #[test]
+    fn the_new_option_row_stays_at_the_top() {
+        let option = core::UserOption::new(
+            core::UserOptionName::new("existing").unwrap(),
+            "value".into(),
+        )
+        .unwrap();
+        let mut rows = vec![OptionDraft::from_remote(&option)];
+        ensure_new_option_row(&mut rows);
+        assert!(rows[0].is_empty());
+        assert_eq!(rows[1].name, "existing");
+        ensure_new_option_row(&mut rows);
+        assert_eq!(rows.len(), 2);
     }
 }

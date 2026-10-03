@@ -1056,7 +1056,7 @@ impl Workspace {
         let composer_server = self
             .composer
             .ui
-            .connection()
+            .server_connection()
             .ok()
             .map(|connection| connection.server_key());
         let connected_servers = self

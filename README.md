@@ -69,9 +69,9 @@ resolves ProxyJump through Sunset’s shared client and reports unsupported poli
 instead of bypassing it.
 Choosing a host lists the named windows in Starcom's managed `starcom` tmux
 session, then selects the
-first available one so **Connect** is the next click. Attached sessions are red and unavailable, and
-hosts already connected in this workspace appear first and in green, including
-destinations absent from SSH config. Typing is focused
+first available one so **Connect** is the next click. Attached sessions are green
+and unavailable, and hosts already connected in this workspace appear first and
+in green, including destinations absent from SSH config. Typing is focused
 in the new-session field after the host choice. A tab is
 registered for that session while it connects and remains available for an
 explicit retry after failure. Tabs show session names only;
@@ -89,7 +89,8 @@ sessions in the same one-row-per-session list. Selecting one replaces
 **Connect** with explicit **Migrate** and **Terminate** actions; migration moves
 its windows into the managed session and connects to the first one. All
 non-managed tmux sessions use this same path, regardless of which tool created
-them. Obsolete v0.3 saved-tab records no longer create independent runtime
+them; they are yellow and show the pane count of each source window. Obsolete
+v0.3 saved-tab records no longer create independent runtime
 attachments or preselect a host. Switching hosts supersedes an in-flight lookup
 immediately, and a late answer cannot replace the new host's result.
 

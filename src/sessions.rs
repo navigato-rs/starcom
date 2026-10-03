@@ -51,6 +51,19 @@ pub struct OtherSession {
     pub grouped: bool,
 }
 
+impl OtherSession {
+    pub(crate) fn describe_panes(&self) -> String {
+        self.windows
+            .iter()
+            .map(|window| {
+                let noun = if window.panes == 1 { "pane" } else { "panes" };
+                format!("{} {noun}", window.panes)
+            })
+            .collect::<Vec<_>>()
+            .join(" + ")
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Listing {
     pub managed: Vec<Summary>,
@@ -529,6 +542,7 @@ mod tests {
         assert_eq!(listing.other[0].name, "zork/0");
         assert_eq!(listing.other[0].windows.len(), 2);
         assert_eq!(listing.other[0].windows[1].index, 2);
+        assert_eq!(listing.other[0].describe_panes(), "1 pane + 1 pane");
         assert_eq!(parse("").unwrap(), Listing::default());
     }
 
