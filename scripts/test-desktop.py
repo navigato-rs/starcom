@@ -62,10 +62,11 @@ def find_demo_word(window):
     """Locate the first cyan terminal word without assuming sidebar geometry."""
     width, height, data = pixels(window)
     rows = []
-    # Cyan "Starcom" is the demo title, on the row under the selected pane's
-    # cwd chrome. After dropping extra window chrome it sits just below the
-    # toolbar; a later cyan sentence must not win.
-    for y in range(40, min(height, 500)):
+    # Cyan "Starcom" is the short demo title near the pane's top edge. The
+    # sidebar redesign removed the row that used to sit above it, so do not
+    # impose a fixed top inset. Shape checks below reject pane/sidebar borders;
+    # the width cap keeps a later cyan instruction sentence from winning.
+    for y in range(0, min(height, 500)):
         matches = []
         for x in range(width // 2):
             i = (y * width + x) * 4
@@ -81,7 +82,16 @@ def find_demo_word(window):
             bands.append([row])
         else:
             bands[-1].append(row)
-    band = next((band for band in bands if sum(row[3] for row in band) >= 16), None)
+    band = next(
+        (
+            band
+            for band in bands
+            if 4 <= len(band) <= 24
+            and sum(row[3] for row in band) >= 16
+            and 24 <= max(row[2] for row in band) - min(row[1] for row in band) <= 160
+        ),
+        None,
+    )
     if band is None:
         raise RuntimeError("could not locate cyan demo text")
     x0 = min(row[1] for row in band)
