@@ -56,8 +56,12 @@ pub(crate) enum Action {
     Select(u64),
     Close(u64),
     Reorder { id: u64, target: u64, after: bool },
+    ReorderServer { id: u64, target: u64, after: bool },
     Tab(u64, Box<ui::Action>),
 }
+
+#[derive(Clone, Copy)]
+struct ServerDrag(u64);
 
 pub(crate) struct Workspace {
     tabs: Vec<Tab>,
@@ -774,6 +778,46 @@ impl Workspace {
         }
     }
 
+    fn reorder_server(&mut self, id: u64, target: u64, after: bool) {
+        let active_id = self.tabs.get(self.active).map(|tab| tab.id);
+        let Some(source) = self.tabs.iter().find(|tab| tab.id == id) else {
+            return;
+        };
+        let Some(target) = self.tabs.iter().find(|tab| tab.id == target) else {
+            return;
+        };
+        if source.server == target.server {
+            return;
+        }
+        let source_server = source.server.clone();
+        let target_server = target.server.clone();
+        let mut order: Vec<_> = server_groups(&self.tabs)
+            .into_iter()
+            .map(|group| self.tabs[group[0]].server.clone())
+            .collect();
+        let Some(source_index) = order.iter().position(|server| *server == source_server) else {
+            return;
+        };
+        let moved = order.remove(source_index);
+        let Some(target_index) = order.iter().position(|server| *server == target_server) else {
+            return;
+        };
+        order.insert(target_index + usize::from(after), moved);
+        self.tabs.sort_by_key(|tab| {
+            order
+                .iter()
+                .position(|server| *server == tab.server)
+                .expect("every tab server came from the group order")
+        });
+        if let Some(active_id) = active_id {
+            self.active = self
+                .tabs
+                .iter()
+                .position(|tab| tab.id == active_id)
+                .unwrap_or(0);
+        }
+    }
+
     fn open_composer(&mut self) {
         self.cancel_transient();
         // Re-read ~/.ssh/config for this form only. Open sessions keep the
@@ -1139,18 +1183,28 @@ impl Workspace {
                     }
                 }
 
-                paint_tab_fills(ui, idle_fill, idle_hover);
                 let add = ui
                     .add_enabled(
                         self.tabs.len() < MAX_TABS || self.composer_open,
-                        egui::Button::new(egui::RichText::new("+ New session").size(14.0).strong())
+                        egui::Button::new(
+                            egui::RichText::new("+ New session")
+                                .size(14.0)
+                                .strong()
+                                .color(ui.visuals().selection.stroke.color),
+                        )
                             .selected(self.composer_open)
+                            .stroke(egui::Stroke::new(
+                                1.0_f32,
+                                ui.visuals().selection.stroke.color,
+                            ))
+                            .corner_radius(6.0)
                             .min_size(egui::vec2(ui.available_width(), 28.0)),
                     )
                     .on_hover_text("New connection");
                 if add.clicked() {
                     navigation = Action::New;
                 }
+                paint_tab_fills(ui, idle_fill, idle_hover);
 
                 let controls_height = if self.composer_open || self.tabs.is_empty() {
                     0.0
@@ -1164,11 +1218,13 @@ impl Workspace {
                     .max_height((ui.available_height() - footer_height).max(1.0))
                     .show(ui, |ui| {
                         ui.set_min_width(ui.available_width());
+                        let mut server_reorder = None;
                         for group in server_groups(&self.tabs) {
                             let first = group[0];
+                            let first_id = self.tabs[first].id;
                             let server = self.tabs[first].ui.server_name().trim();
                             let server = if server.is_empty() { "Demo" } else { server };
-                            egui::Frame::new()
+                            let header = egui::Frame::new()
                                 .fill(ui.visuals().code_bg_color)
                                 .stroke(egui::Stroke::new(
                                     1.0_f32,
@@ -1181,7 +1237,7 @@ impl Workspace {
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
                                             let state = self.tabs[first].client.lock();
-                                            ui::paint_server_status(ui, &state);
+                                            ui::paint_server_latency(ui, &state);
                                             ui.with_layout(
                                                 egui::Layout::left_to_right(egui::Align::Center),
                                                 |ui| {
@@ -1197,7 +1253,28 @@ impl Workspace {
                                             );
                                         },
                                     );
-                                });
+                                })
+                                .response
+                                .interact(egui::Sense::drag())
+                                .on_hover_text("Drag to reorder servers");
+                            header.dnd_set_drag_payload(ServerDrag(first_id));
+                            if header.dragged() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                                ui.ctx().request_repaint();
+                            }
+                            if let Some(dragged) = header.dnd_hover_payload::<ServerDrag>()
+                                && dragged.0 != first_id
+                            {
+                                let after = ui
+                                    .input(|input| input.pointer.interact_pos())
+                                    .is_some_and(|pointer| pointer.y >= header.rect.center().y);
+                                paint_drop_marker(ui, header.rect, after);
+                                if let Some(dragged) =
+                                    header.dnd_release_payload::<ServerDrag>()
+                                {
+                                    server_reorder = Some((dragged.0, first_id, after));
+                                }
+                            }
 
                             for index in group {
                                 let id = self.tabs[index].id;
@@ -1363,6 +1440,9 @@ impl Workspace {
                             }
                             ui.add_space(4.0);
                         }
+                        if let Some((id, target, after)) = server_reorder {
+                            navigation = Action::ReorderServer { id, target, after };
+                        }
                     });
 
                 if let Some(ref notice) = self.notice {
@@ -1376,7 +1456,7 @@ impl Workspace {
                 }
                 if ui
                     .add(
-                        egui::Button::new(egui::RichText::new("About/Config").size(14.0))
+                        egui::Button::new(egui::RichText::new("Settings").size(14.0))
                             .min_size(egui::vec2(ui.available_width(), 28.0)),
                     )
                     .clicked()
@@ -1496,6 +1576,10 @@ impl Workspace {
                 }
                 Action::Reorder { id, target, after } => {
                     self.reorder_within_server(id, target, after);
+                    self.persist();
+                }
+                Action::ReorderServer { id, target, after } => {
+                    self.reorder_server(id, target, after);
                     self.persist();
                 }
                 Action::Close(id) => {
@@ -1753,6 +1837,29 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_server(host: &str) -> desktop::ServerKey {
+        desktop::Connection {
+            options: crate::ssh::Options {
+                host: host.into(),
+                port: 22,
+                user: "tester".into(),
+                known_hosts: path::PathBuf::from("known_hosts"),
+                authentication: crate::ssh::Authentication::agent(),
+                host_key_alias: None,
+                strict_host_key_checking: crate::ssh::StrictHostKeyChecking::Yes,
+                timeout: time::Duration::from_secs(1),
+                jumps: Vec::new(),
+            },
+            session: core::SessionName::new("starcom").unwrap(),
+            window: core::SessionName::new("window").unwrap(),
+            socket: None,
+            history: 1,
+            access: crate::session::Access::Interactive,
+            reconnect: true,
+        }
+        .server_key()
+    }
 
     #[test]
     fn enter_confirms_rename_even_when_the_field_also_loses_focus() {
@@ -2035,6 +2142,35 @@ mod tests {
         assert_eq!(workspace.tabs[0].id, second);
         assert_eq!(workspace.tabs[1].id, first);
         assert_eq!(workspace.tabs[workspace.active].id, first);
+    }
+
+    #[test]
+    fn server_reordering_moves_the_whole_group_and_keeps_the_active_session() {
+        let mut workspace = Workspace::new(sync::Arc::new(|| {}), desktop::Startup::Demo).unwrap();
+        workspace.push_idle_tab().unwrap();
+        workspace.push_idle_tab().unwrap();
+        let first_a = workspace.tabs[0].id;
+        let only_b = workspace.tabs[1].id;
+        let second_a = workspace.tabs[2].id;
+        workspace.tabs[0].server = Some(test_server("a.example.test"));
+        workspace.tabs[1].server = Some(test_server("b.example.test"));
+        workspace.tabs[2].server = Some(test_server("a.example.test"));
+        workspace.active = 2;
+
+        workspace.apply(
+            Action::ReorderServer {
+                id: first_a,
+                target: only_b,
+                after: true,
+            },
+            || None,
+        );
+
+        assert_eq!(
+            workspace.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>(),
+            vec![only_b, first_a, second_a]
+        );
+        assert_eq!(workspace.tabs[workspace.active].id, second_a);
     }
 
     #[test]

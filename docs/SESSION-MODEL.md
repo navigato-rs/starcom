@@ -96,7 +96,7 @@ Further **Create** actions issue `new-window` through the existing control clien
 Rename issues `rename-window`. Closing a Starcom tab removes only that local view;
 it does not kill the tmux window or its jobs. Closing the last local tab detaches
 the host control client. A separate, confirmed action may eventually delete a
-remote session/window; **Exit** must not acquire that meaning.
+remote session/window; the local leave action must not acquire that meaning.
 
 The composer lists all managed windows and marks names already open in this local
 workspace green and unavailable, preventing duplicate logical tabs. An ordinary

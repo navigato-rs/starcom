@@ -171,7 +171,7 @@ terminal checkpoint.
   Connect. Failed first attachments return to `+`.
 - Normal terminal views have no permanent top or bottom bar. Window notes and
   refresh state live in the sidebar; recovery/exit float above the terminal;
-  messages allocate a temporary local row without changing tmux geometry.
+  messages share their bottom overlay line without changing tmux geometry.
 - Host-first connection: known `Host` aliases, automatic session listing, first
   session selected, Connect without a separate list step.
 - One Starcom tab is one uniquely named window in the managed `starcom` tmux
@@ -195,7 +195,7 @@ terminal checkpoint.
   or its scrollback is not continuous with what was on screen.
 - Saved connection tabs reattach to their previous host/session automatically by
   default, using normal host-key and authentication policy, with an opt-out
-  setting in About/Config.
+  setting in Settings.
 - Explicit session listing (`tmux -N`, which cannot start a server) and confirmed
   session creation, which is the one path allowed to start one.
 - Ordered shutdown and a native Linux/X11 close-path test.

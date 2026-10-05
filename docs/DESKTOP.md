@@ -23,32 +23,34 @@ attach to a tmux server.
 
 A registered managed tab owns its logical-window UI state. Tabs on the same
 resolved server share one SSH connection, tmux control client, reconstructed
-view, input pipeline, and reconnect epoch. **+ New session** is the first item
-in the sidebar; Ctrl-Shift-T (Cmd-T on macOS) opens the same connection form.
+view, input pipeline, and reconnect epoch. The visually distinct
+**+ New session** is the first item in the sidebar; Ctrl-Shift-T (Cmd-T on macOS)
+opens the same connection form.
 Pressing **Connect** promotes that composer to a registered tab
 while the attachment starts.
 
-A narrow, independently scrolling left sidebar groups sessions under full-width
-server headers. Server and session names share the same left edge; the header's
-contrasting band and stronger text provide the hierarchy without spending width
-on indentation. Each server header shows that shared control stream's pending
-input and latency. Long session lists scroll vertically while the selected
+A narrow, independently scrolling left sidebar groups sessions under draggable
+full-width server headers. Server and session names share the same left edge;
+the header's contrasting band and stronger text provide the hierarchy without
+spending width on indentation. Each server header shows that shared control
+stream's latency. Long session lists scroll vertically while the selected
 session is kept visible. Drag the sidebar divider between 120 and 320 pixels;
-its width is restored on the next launch. Drag a session row to reorder it
-within its server group. **About/Config** at the bottom opens a modal with the
+its width is restored on the next launch. Drag a server header to persistently
+reorder server groups, or drag a session row to reorder it within its server
+group. **Settings** at the bottom opens a modal with the
 icon, version, GitHub URL, total time Starcom has been open, and the workspace
 `fps` / `idle` / terminal-font settings.
 
 Session rows show only the tmux window name. A session row shows connection
 progress and then the terminal workspace. A failed attachment remains registered
-and turns red. An unreachable server offers **Reconnect** beside **Exit**. A
+and turns red. An unreachable server offers **Reconnect** beside the leave button. A
 reachable server whose named window is missing offers **Recreate**, which creates
 an empty managed window with that same name and attaches to it. Selecting either
 action never deletes the tab.
-The recovery action and red **Exit** button float at the main area's bottom-right
-without changing terminal geometry. **Exit** or Ctrl-Shift-W/Cmd-W closes the
-registered tab; the shared control client detaches only after its last local tab
-closes. The tmux server, windows, and remote jobs continue running. Tabs are
+The recovery action and red leave icon float at the main area's bottom-right
+without changing terminal geometry. The leave icon or Ctrl-Shift-W/Cmd-W closes
+the registered tab; the shared control client detaches only after its last local
+tab closes. The tmux server, windows, and remote jobs continue running. Tabs are
 green while connected,
 including while a pane layout is rebuilt, and yellow while connecting or
 reconnecting.
@@ -59,12 +61,12 @@ or clicking away cancels. The new
 name is written to the saved workspace after tmux accepts it, so a restart
 reconnects to the real remote name. A name already in use is reported without
 dropping the attachment, and
-the previous name is restored. A temporary message row shows **Renaming…** while the
+the previous name is restored. A temporary bottom overlay shows **Renaming…** while the
 existing control attachment waits for tmux's reply, for at most five seconds.
 If tmux applies the rename but its completion reply is lost, Starcom discards
 that stream and reconnects once without retrying the non-idempotent command.
 
-The **Notes** toggle beneath **About/Config** in the sidebar exposes key/value notes
+The **Notes** toggle beneath **Settings** in the sidebar exposes key/value notes
 attached to the selected tmux window. A nonzero count is shown as **Notes(N)**;
 the empty state has no redundant zero. The editor grows upward from the bottom by
 exactly the rows it needs, up to the space needed to
@@ -148,7 +150,7 @@ identity path if you typed one, the global redraw cap (`fps`, default 5), the
 sidebar width (`sidebar-width`, default 184), terminal font size (`font-size`,
 default 14), and how long a quiet connected tab waits before its row turns blue
 (`idle`, default 30 seconds, 0 off; see `etc/workspace.conf.example`). The
-redraw, font, and idle settings are also on the **About/Config** panel. The
+redraw, font, and idle settings are also on the **Settings** panel. The
 last-used session is the target used to resume that tab on startup.
 Nothing that would let a reader of that file connect is written: no keys, no
 passphrases, no host-key material, and no terminal contents. An identity entry
@@ -157,7 +159,7 @@ is the path you already chose, never the key behind it.
 Saved tabs resume automatically by default: each reconnects to its previous host
 and existing tmux session, and the active tab shows connection progress until
 its terminal view is rebuilt. Disable **Resume open tabs on startup** in
-**About/Config** to begin future launches with an empty workspace instead. Identity
+**Settings** to begin future launches with an empty workspace instead. Identity
 files, `IdentitiesOnly`, and unsupported-policy blockers are re-read from
 `~/.ssh/config`, and normal host-key and authentication checks still apply. If
 the active saved tab is incomplete or no longer allowed, its populated form and
@@ -243,7 +245,7 @@ Local clipboard shortcuts are:
 - Ctrl-Shift-C / Ctrl-Shift-V on Linux and Windows;
 - Cmd-C / Cmd-V on macOS;
 - finishing a drag, double-click, or triple-click selection, which copies
-  immediately, clears the highlight, and shows **Copied!** in a temporary row
+  immediately, clears the highlight, and shows **Copied!** in the bottom overlay
   for a second.
 
 Paste is sent as soon as it is requested. It still rejects escape/C1 and other
@@ -271,11 +273,12 @@ crosses 100 ms in any latency component is logged without recording the input
 or remote output itself.
 
 While ordinary input is waiting, narrow full-height strokes appear between the
-server name and latency. Each three-point stroke is one coalesced terminal
-action: dim strokes are still in Starcom's local queue and bright strokes have
-been dispatched to the control stream but not acknowledged by tmux. Space for
-four strokes is always reserved so normal interaction does not shift the status
-bar; larger backlogs grow to a 40-point cap. Hover it for exact counts.
+sidebar footer's refresh indicator and **Notes** button. Each three-point stroke
+is one coalesced terminal action for the selected server: dim strokes are still
+in Starcom's local queue and bright strokes have been dispatched to the control
+stream but not acknowledged by tmux. Space for four strokes is always reserved
+so normal interaction does not shift the footer; larger backlogs grow to a
+40-point cap. Hover it for exact counts.
 
 The latency field changes to red **WAIT** when the oldest dispatched input has
 not received its tmux acknowledgment within the greater of five times the last
@@ -333,12 +336,14 @@ Starcom binds
 runs off the event thread.
 
 The renderer paints only visible history rows. The workspace-wide terminal font
-size in **About/Config** changes the cell metrics used both to paint and to tell tmux
+size in **Settings** changes the cell metrics used both to paint and to tell tmux
 this client's size, so the remote grid matches the glyphs on screen.
 
 The sidebar footer's circular activity mark briefly sends a bright comet around
 its ring when the selected terminal refreshes or the user scrolls it, then stays
-still while idle. The selected pane shows its dimensions and compact A/K/M
+still while idle. Fixed-width bars between that mark and **Notes** show input
+actions the selected server has not confirmed yet. The selected pane shows its
+dimensions and compact A/K/M
 alternate-screen, keyboard-input, and mouse-reporting state directly beneath its
 split controls.
 A fixed-size activity mark appears in a yellow connecting session row without
@@ -408,14 +413,15 @@ block the resize transaction.
 
 ## Disconnect and exit behavior
 
-**Exit** is the only way a session tab is removed: it drops the local tab and
-detaches only when it was the server workspace's final tab; remote jobs keep running. To connect somewhere else, use **+**,
-which is the only connection form. Failed sessions stay in the sidebar when selected.
+The red leave button is the only way a session tab is removed: it drops the local
+tab and detaches only when it was the server workspace's final tab; remote jobs
+keep running. To connect somewhere else, use **+**, which is the only connection
+form. Failed sessions stay in the sidebar when selected.
 If the managed tmux session ends, the shared connection fails and its tabs keep
 their last frozen view. If one managed window disappears, only its logical tab
 becomes unavailable. In both cases the affected row stays red so you can still
 copy from it. A missing window offers **Recreate**; an inaccessible server offers
-**Reconnect**; and **Exit** remains the only action that removes the tab.
+**Reconnect**; and the leave button remains the only action that removes the tab.
 
 **Reconnect automatically after connection loss** is on by default in the
 connection form. Only transport loss is retried. That includes a TCP drop, a
@@ -428,7 +434,7 @@ retry is waiting, the last view stays on screen in gray so it reads as frozen,
 not live, and the tab is yellow with an animated three-dot pulse.
 
 Each retry waits a little longer, up to 30 seconds, with jitter so several tabs
-that drop together do not reconnect in lockstep. A temporary message row shows
+that drop together do not reconnect in lockstep. A temporary bottom overlay shows
 the attempt number and remaining wait. A successful attachment resets the
 schedule.
 
