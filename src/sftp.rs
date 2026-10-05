@@ -12,7 +12,7 @@ use anyhow::Context;
 use crate::ssh;
 
 const MAX_FILES: usize = 8;
-/// Files larger than this need an explicit Yes in the transient status row.
+/// Files larger than this need an explicit Yes in the transient status overlay.
 pub const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_NAME: usize = 255;
 
@@ -147,7 +147,7 @@ fn ensure_file_size(len: u64, max_bytes: Option<u64>, name: &str) -> anyhow::Res
     Ok(())
 }
 
-/// Status-bar copy when at least one dropped file is over `MAX_FILE_BYTES`.
+/// Status-overlay copy when at least one dropped file is over `MAX_FILE_BYTES`.
 pub(crate) fn oversize_notice(files: &[(String, u64)]) -> Option<String> {
     if !files.iter().any(|(_, n)| *n > MAX_FILE_BYTES) {
         return None;

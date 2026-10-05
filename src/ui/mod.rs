@@ -395,7 +395,6 @@ pub struct DesktopUi {
     /// Local chrome height reserved below the terminal. Added back when
     /// deriving tmux's client size so toggling metadata does not resize panes.
     option_panel_height: f32,
-    status_panel_height: f32,
     options_window: Option<tmuxctl::WindowId>,
     option_rows: Vec<OptionDraft>,
     /// Last pane the user selected, independent of transient keyboard focus.
@@ -480,7 +479,6 @@ impl DesktopUi {
             window: None,
             options_open: false,
             option_panel_height: 0.0,
-            status_panel_height: 0.0,
             options_window: None,
             option_rows: vec![OptionDraft::empty()],
             selected: None,
@@ -660,6 +658,8 @@ impl DesktopUi {
             );
             refresh.on_hover_text("Terminal refresh activity");
 
+            paint_input_backlog_status(ui, state);
+
             let option_count = self
                 .option_rows
                 .iter()
@@ -688,6 +688,106 @@ impl DesktopUi {
                 .clicked()
             {
                 self.options_open = !self.options_open;
+            }
+        });
+    }
+
+    fn show_status_contents(&mut self, ui: &mut egui::Ui, state: &mut desktop::State) {
+        ui.horizontal(|ui| {
+            let mut has_content = false;
+            if let Some((ref name, done, total)) = self.upload_progress {
+                let frac = if total == 0 {
+                    1.0
+                } else {
+                    done as f32 / total as f32
+                };
+                ui.add(
+                    egui::ProgressBar::new(frac.clamp(0.0, 1.0))
+                        .desired_width(ui.available_width().min(200.0))
+                        .desired_height(16.0)
+                        .text(upload_label(name, done, total)),
+                );
+                if click_button(ui, "Cancel")
+                    .on_hover_text("Stop this upload. Partial remote files are removed.")
+                    .clicked()
+                {
+                    self.upload = None;
+                    self.upload_progress = None;
+                    self.notice = Some("Upload cancelled.".to_owned());
+                    self.notice_until = None;
+                }
+                has_content = true;
+            } else if let Some(prompt) = self.drop_prompt.as_ref() {
+                ui.add(egui::Label::new(egui::RichText::new(&prompt.label).small()).truncate());
+                if click_button(ui, "Yes").clicked() {
+                    if let Some(pending) = self.drop_prompt.take() {
+                        self.start_upload(state, pending);
+                    }
+                } else if click_button(ui, "No").clicked() {
+                    self.drop_prompt = None;
+                }
+                has_content = true;
+            } else if let Some(ref notice) = self.notice {
+                ui.add(egui::Label::new(notice).truncate())
+                    .on_hover_text(notice);
+                has_content = true;
+            }
+            if state.renaming {
+                if has_content {
+                    ui.separator();
+                }
+                ui.label(egui::RichText::new("Renaming…").color(ui.visuals().warn_fg_color));
+                has_content = true;
+            }
+            if let Some(retry) = state.retry {
+                ui.ctx()
+                    .request_repaint_after(retry.remaining().min(time::Duration::from_millis(250)));
+                if has_content {
+                    ui.separator();
+                }
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(format!(
+                            "Reconnecting: attempt {} in {:.0}s. Nothing you type now is queued.",
+                            retry.attempt,
+                            retry.remaining().as_secs_f32().ceil()
+                        ))
+                        .color(ui.visuals().warn_fg_color)
+                        .small(),
+                    )
+                    .truncate(),
+                );
+                has_content = true;
+            }
+            if let Some(ref continuity) = state.continuity {
+                if has_content {
+                    ui.separator();
+                }
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(continuity.as_str())
+                            .color(ui.visuals().warn_fg_color)
+                            .small(),
+                    )
+                    .truncate(),
+                );
+                has_content = true;
+            }
+            if let Some(ref error) = state.error
+                && self.notice.as_deref() != Some(error.as_str())
+            {
+                if has_content {
+                    ui.separator();
+                }
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(error.as_str())
+                            .color(ui.visuals().error_fg_color)
+                            .small(),
+                    )
+                    .truncate(),
+                )
+                .on_hover_text(error);
             }
         });
     }
@@ -1820,123 +1920,14 @@ impl DesktopUi {
             || state.retry.is_some()
             || state.continuity.is_some()
             || state.error.is_some();
-        self.status_panel_height = if show_status { 36.0 } else { 0.0 };
-        if show_status {
-            egui::Panel::bottom("status-message")
-                .resizable(false)
-                .exact_size(self.status_panel_height)
-                .show_inside(root, |ui| {
-                    ui.horizontal(|ui| {
-                        let mut has_content = false;
-                        if let Some((ref name, done, total)) = self.upload_progress {
-                            let frac = if total == 0 {
-                                1.0
-                            } else {
-                                done as f32 / total as f32
-                            };
-                            ui.add(
-                                egui::ProgressBar::new(frac.clamp(0.0, 1.0))
-                                    .desired_width(200.0)
-                                    .desired_height(16.0)
-                                    .text(upload_label(name, done, total)),
-                            );
-                            if click_button(ui, "Cancel")
-                                .on_hover_text("Stop this upload. Partial remote files are removed.")
-                                .clicked()
-                            {
-                                self.upload = None;
-                                self.upload_progress = None;
-                                self.notice = Some("Upload cancelled.".to_owned());
-                                self.notice_until = None;
-                            }
-                            has_content = true;
-                        } else if let Some(prompt) = self.drop_prompt.as_ref() {
-                            ui.small(&prompt.label);
-                            if click_button(ui, "Yes").clicked() {
-                                if let Some(pending) = self.drop_prompt.take() {
-                                    self.start_upload(state, pending);
-                                }
-                            } else if click_button(ui, "No").clicked() {
-                                self.drop_prompt = None;
-                            }
-                            has_content = true;
-                        } else if let Some(ref notice) = self.notice {
-                            ui.add(egui::Label::new(notice).truncate())
-                                .on_hover_text(notice);
-                            has_content = true;
-                        }
-                        if state.renaming {
-                            if has_content {
-                                ui.separator();
-                            }
-                            ui.label(
-                                egui::RichText::new("Renaming…")
-                                    .color(ui.visuals().warn_fg_color),
-                            );
-                            has_content = true;
-                        }
-                        if let Some(retry) = state.retry {
-                            ui.ctx().request_repaint_after(
-                                retry.remaining().min(time::Duration::from_millis(250)),
-                            );
-                            if has_content {
-                                ui.separator();
-                            }
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(format!(
-                                        "Reconnecting: attempt {} in {:.0}s. Nothing you type now is queued.",
-                                        retry.attempt,
-                                        retry.remaining().as_secs_f32().ceil()
-                                    ))
-                                    .color(ui.visuals().warn_fg_color)
-                                    .small(),
-                                )
-                                .truncate(),
-                            );
-                            has_content = true;
-                        }
-                        if let Some(ref continuity) = state.continuity {
-                            if has_content {
-                                ui.separator();
-                            }
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(continuity.as_str())
-                                        .color(ui.visuals().warn_fg_color)
-                                        .small(),
-                                )
-                                .truncate(),
-                            );
-                            has_content = true;
-                        }
-                        if let Some(ref error) = state.error
-                            && self.notice.as_deref() != Some(error.as_str())
-                        {
-                            if has_content {
-                                ui.separator();
-                            }
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(error.as_str())
-                                        .color(ui.visuals().error_fg_color)
-                                        .small(),
-                                )
-                                .truncate(),
-                            )
-                            .on_hover_text(error);
-                        }
-                    });
-                });
-        }
 
         let option_action = self.show_option_panel(root, state);
         if matches!(action, Action::None) && !matches!(option_action, Action::None) {
             action = option_action;
         }
 
-        let bottom_offset = 8.0 + self.option_panel_height + self.status_panel_height;
-        egui::Area::new(root.id().with("session-actions"))
+        let bottom_offset = 8.0 + self.option_panel_height;
+        let actions_overlay = egui::Area::new(root.id().with("session-actions"))
             .order(egui::Order::Foreground)
             .anchor(
                 egui::Align2::RIGHT_BOTTOM,
@@ -1987,16 +1978,20 @@ impl DesktopUi {
                                     Err(error) => self.notice = Some(error.to_string()),
                                 }
                             }
-                            if ui
-                                .add(
-                                    egui::Button::new(
-                                        egui::RichText::new("Exit")
-                                            .color(egui::Color32::WHITE)
-                                            .strong(),
-                                    )
+                            let leave = ui.add(
+                                egui::Button::new("")
                                     .fill(egui::Color32::from_rgb(150, 38, 38))
-                                    .min_size(egui::vec2(0.0, 28.0)),
+                                    .min_size(egui::vec2(30.0, 28.0)),
+                            );
+                            leave.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::WidgetType::Button,
+                                    true,
+                                    "Leave session",
                                 )
+                            });
+                            paint_leave_icon(ui, leave.rect);
+                            if leave
                                 .on_hover_text(
                                     "Close this session locally. Remote jobs keep running.",
                                 )
@@ -2007,6 +2002,22 @@ impl DesktopUi {
                         });
                     });
             });
+
+        if show_status {
+            let max_width =
+                (root.available_width() - actions_overlay.response.rect.width() - 24.0).max(80.0);
+            egui::Area::new(root.id().with("status-message"))
+                .order(egui::Order::Foreground)
+                .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(8.0, -bottom_offset))
+                .show(root.ctx(), |ui| {
+                    ui.set_max_width(max_width);
+                    egui::Frame::new()
+                        .fill(ui.visuals().panel_fill)
+                        .corner_radius(5.0)
+                        .inner_margin(egui::Margin::symmetric(6, 5))
+                        .show(ui, |ui| self.show_status_contents(ui, state));
+                });
+        }
 
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
@@ -2049,12 +2060,9 @@ impl DesktopUi {
                 if input_ready {
                     // The option editor is local chrome, not a request to
                     // shrink the remote tmux client and rebuild every pane.
-                    if let Ok(size) = terminal_client_size(
-                        rect,
-                        self.option_panel_height + self.status_panel_height,
-                        cell_width,
-                        row_height,
-                    ) && self.client_cells != Some(size)
+                    if let Ok(size) =
+                        terminal_client_size(rect, self.option_panel_height, cell_width, row_height)
+                        && self.client_cells != Some(size)
                     {
                         let stable = match self.pending_client_cells {
                             Some((pending, at)) if pending == size => {
@@ -2639,10 +2647,8 @@ fn latency_warning(
         .map(|waiting| (waiting, threshold))
 }
 
-/// Paint the compact server-wide feedback shown beside a sidebar server name.
-/// Input backlog and latency belong to the shared control stream, not to an
-/// individual logical window.
-pub(crate) fn paint_server_status(ui: &mut egui::Ui, state: &desktop::State) {
+/// Paint the compact server-wide latency shown beside a sidebar server name.
+pub(crate) fn paint_server_latency(ui: &mut egui::Ui, state: &desktop::State) {
     let waiting = state.input_wait();
     let warning = latency_warning(state.last_rtt, waiting);
     if let (Some(waiting), None) = (waiting, warning) {
@@ -2671,7 +2677,10 @@ pub(crate) fn paint_server_status(ui: &mut egui::Ui, state: &desktop::State) {
             latency.max_output_lag_ms,
         ));
     }
+}
 
+/// Paint the active server's fixed-width input queue in the sidebar footer.
+fn paint_input_backlog_status(ui: &mut egui::Ui, state: &desktop::State) {
     let backlog = state.input_backlog();
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(input_backlog_width(backlog.total()), 12.0),
@@ -2686,6 +2695,28 @@ pub(crate) fn paint_server_status(ui: &mut egui::Ui, state: &desktop::State) {
             backlog.in_flight,
         ));
     }
+}
+
+fn paint_leave_icon(ui: &egui::Ui, rect: egui::Rect) {
+    let stroke = egui::Stroke::new(1.6_f32, egui::Color32::WHITE);
+    let center = rect.center();
+    let frame = egui::Rect::from_center_size(center - egui::vec2(2.0, 0.0), egui::vec2(11.0, 15.0));
+    ui.painter()
+        .line_segment([frame.left_top(), frame.right_top()], stroke);
+    ui.painter()
+        .line_segment([frame.left_top(), frame.left_bottom()], stroke);
+    ui.painter()
+        .line_segment([frame.left_bottom(), frame.right_bottom()], stroke);
+    let door = [
+        frame.right_top(),
+        center + egui::vec2(5.0, -5.5),
+        center + egui::vec2(5.0, 5.5),
+        frame.right_bottom(),
+    ];
+    ui.painter()
+        .add(egui::Shape::closed_line(door.to_vec(), stroke));
+    ui.painter()
+        .circle_filled(center + egui::vec2(3.0, 0.0), 1.0, egui::Color32::WHITE);
 }
 
 fn can_recreate_missing_session(state: &desktop::State, logical_missing: bool) -> bool {
@@ -3824,29 +3855,34 @@ mod tests {
     }
 
     #[test]
-    fn status_row_exists_only_while_there_is_a_message() {
+    fn status_overlay_exists_only_while_there_is_a_message() {
         let ctx = egui::Context::default();
         crate::window::configure(&ctx);
         let mut state = desktop::State::interactive_demo().unwrap();
         let mut ui = DesktopUi::default();
         ui.open_terminal();
+        let mut root_id = None;
         let _ = ctx.run_ui(screen_input(), |root| {
+            root_id = Some(root.id());
             ui.show(root, &mut state);
         });
+        let status_id = root_id.unwrap().with("status-message");
         assert!(
-            egui::containers::panel::PanelState::load(&ctx, egui::Id::new("status-message"))
-                .is_none()
+            egui::containers::AreaState::load(&ctx, status_id).is_none(),
+            "an idle terminal must not have a status overlay"
         );
 
         ui.notice = Some("Something happened".to_owned());
         let _ = ctx.run_ui(screen_input(), |root| {
             ui.show(root, &mut state);
         });
-        let height =
-            egui::containers::panel::PanelState::load(&ctx, egui::Id::new("status-message"))
-                .map(|panel| panel.rect.height())
-                .unwrap_or_default();
-        assert!((30.0..42.0).contains(&height));
+        assert!(
+            egui::containers::panel::PanelState::load(&ctx, status_id).is_none(),
+            "status must not reserve a bottom panel"
+        );
+        let overlay = egui::containers::AreaState::load(&ctx, status_id)
+            .expect("a notice should create the status overlay");
+        assert!((20.0..42.0).contains(&overlay.rect().height()));
     }
 
     #[test]

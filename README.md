@@ -81,7 +81,7 @@ share one SSH connection, one tmux control client, one reconstructed view, and
 one reconnect schedule.
 
 Tabs are saved and resumed automatically by reconnecting once per server and
-reopening their named windows; this can be disabled in **About/Config**. Startup
+reopening their named windows; this can be disabled in **Settings**. Startup
 uses the same SSH authentication and host-key checks as **Connect**, while the
 saved file holds destinations, never credentials.
 **Create** is the one action that may start a tmux server. Later creates use
