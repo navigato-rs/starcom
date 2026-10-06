@@ -30,6 +30,7 @@ struct Runtime {
     last_sync: Option<bg::SyncPoint>,
     pending_view: Option<bg::TextureView>,
     painter: be::GuiPainter,
+    grid: ui::grid::Renderer,
     input: egui_winit::State,
     size: winit::dpi::PhysicalSize<u32>,
     #[cfg(target_os = "linux")]
@@ -97,6 +98,7 @@ impl Runtime {
             .map_err(|error| anyhow::anyhow!("GPU surface creation failed: {error:?}"))?;
         let surface_info = surface.info();
         let painter = be::GuiPainter::new(surface_info, &context);
+        let grid = ui::grid::Renderer::new(surface_info, &context);
         let encoder = context.create_command_encoder(bg::CommandEncoderDesc {
             name: "starcom",
             buffer_count: 1,
@@ -119,6 +121,7 @@ impl Runtime {
             last_sync: None,
             pending_view: None,
             painter,
+            grid,
             input,
             size,
             #[cfg(target_os = "linux")]
@@ -173,6 +176,8 @@ impl Runtime {
         self.encoder.start();
         self.painter
             .update_textures(&mut self.encoder, &output.textures_delta, &self.context);
+        self.grid
+            .update_atlas(&mut self.encoder, &output.textures_delta, &self.context);
         let frame = self.surface.acquire_frame();
         self.encoder.init_texture(frame.texture());
         let view = self.context.create_texture_view(
@@ -196,11 +201,13 @@ impl Runtime {
                     depth_stencil: None,
                 },
             );
-            self.painter.paint(&mut pass, &jobs, &screen, &self.context);
+            self.grid
+                .paint(&mut pass, &mut self.painter, &jobs, &screen, &self.context);
         }
         self.encoder.present(frame);
         let sync = self.context.submit(&mut self.encoder);
         self.painter.after_submit(&sync);
+        self.grid.after_submit(&sync);
         self.last_sync = Some(sync);
         self.pending_view = Some(view);
         Ok(())
@@ -217,6 +224,7 @@ impl Drop for Runtime {
         self.context.destroy_surface(&mut self.surface);
         self.context.destroy_command_encoder(&mut self.encoder);
         self.painter.destroy(&self.context);
+        self.grid.destroy(&self.context);
     }
 }
 
@@ -581,6 +589,13 @@ pub fn save_snapshot(
         },
         &context,
     );
+    let mut grid = ui::grid::Renderer::new(
+        bg::SurfaceInfo {
+            format,
+            alpha: bg::AlphaMode::PreMultiplied,
+        },
+        &context,
+    );
     let mut encoder = context.create_command_encoder(bg::CommandEncoderDesc {
         name: "desktop snapshot",
         buffer_count: 1,
@@ -648,6 +663,7 @@ pub fn save_snapshot(
         encoder.start();
         encoder.init_texture(texture);
         painter.update_textures(&mut encoder, &textures, &context);
+        grid.update_atlas(&mut encoder, &textures, &context);
         {
             let mut pass = encoder.render(
                 "desktop snapshot",
@@ -660,8 +676,9 @@ pub fn save_snapshot(
                     depth_stencil: None,
                 },
             );
-            painter.paint(
+            grid.paint(
                 &mut pass,
+                &mut painter,
                 &jobs,
                 &be::ScreenDescriptor {
                     physical_size: (size.width, size.height),
@@ -686,6 +703,7 @@ pub fn save_snapshot(
         }
         let sync = context.submit(&mut encoder);
         painter.after_submit(&sync);
+        grid.after_submit(&sync);
         context
             .wait_for(&sync, !0)
             .map_err(|error| anyhow::anyhow!("snapshot GPU wait failed: {error:?}"))?;
@@ -721,6 +739,7 @@ pub fn save_snapshot(
     context.destroy_texture(texture);
     context.destroy_buffer(buffer);
     painter.destroy(&context);
+    grid.destroy(&context);
     context.destroy_command_encoder(&mut encoder);
     result
 }

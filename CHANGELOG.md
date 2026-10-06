@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Terminal cells are painted by a small Blade pipeline instead of one egui
+  galley, mesh, and draw call per run of same-styled cells. Glyphs still come
+  from egui's font atlas, so text looks the same; each column is now placed at
+  its exact position instead of snapping every run's start to a whole pixel.
+  In the demo workspace this takes egui's tessellated output from 175
+  primitives and 6,668 vertices to 10 primitives and 972 vertices, and the UI
+  pass plus tessellation from about 235 µs to 190 µs per frame (x86-64 Linux,
+  release build, egui only; GPU time and native-window behavior not yet
+  measured).
 - Ordinary key and byte input now uses a bounded pipeline of guarded tmux
   transactions instead of waiting for every earlier acknowledgment before
   sending the next one. Paste, resize, layout changes, pane moves, and rename
