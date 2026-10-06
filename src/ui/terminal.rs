@@ -5,7 +5,7 @@ use alacritty_terminal::{grid::Dimensions, index, selection, term, vte::ansi};
 
 use crate::{input, snapshot};
 
-use super::{gesture, layout};
+use super::{gesture, grid, layout};
 
 const BACKGROUND: egui::Color32 = egui::Color32::from_rgb(18, 21, 26);
 const FOREGROUND: egui::Color32 = egui::Color32::from_rgb(214, 220, 229);
@@ -39,6 +39,8 @@ pub struct PaneUi {
     /// Pointer gesture state machine: turns per-frame egui signals into one
     /// link-copy / app-click / local-selection decision.
     pointer: gesture::Pointer,
+    /// Glyph quads for this pane's cells, kept across frames.
+    glyphs: grid::Glyphs,
 }
 
 impl Default for PaneUi {
@@ -50,6 +52,7 @@ impl Default for PaneUi {
             scroll_frac: 0.0,
             stuck: true,
             pointer: gesture::Pointer::default(),
+            glyphs: grid::Glyphs::default(),
         }
     }
 }
@@ -310,6 +313,7 @@ impl PaneUi {
                 let rows = &mut self.painted_rows;
                 let remainder = &mut self.remainder;
                 let pointer = &mut self.pointer;
+                let glyphs = &mut self.glyphs;
                 let mouse = pane.reports_mouse();
                 let wants_wheel = pane.wants_wheel();
                 let sgr_mouse = pane.sgr_mouse();
@@ -619,6 +623,8 @@ impl PaneUi {
                     let selection_range = pane.terminal.selection_range();
                     let grid = model.grid();
                     let clip = ui.clip_rect();
+                    let mut cells = grid::Builder::new(ui, glyphs, font.clone(), clip);
+                    let mut cluster = String::new();
                     for row in range.clone() {
                         let line = index::Line(row as i32 - history as i32);
                         let y = content.top() + (row - range.start) as f32 * row_height;
@@ -647,102 +653,54 @@ impl PaneUi {
                                 }
                             };
                             if background != BACKGROUND {
-                                let cell_rect = egui::Rect::from_min_size(
-                                    egui::pos2(content.left() + column as f32 * cell_width, y),
-                                    egui::vec2(cell_width, row_height),
+                                cells.fill(
+                                    egui::Rect::from_min_size(
+                                        egui::pos2(content.left() + column as f32 * cell_width, y),
+                                        egui::vec2(cell_width, row_height),
+                                    ),
+                                    background,
                                 );
-                                ui.painter().rect_filled(cell_rect, 0.0, background);
                             }
                         }
-                        let mut column = 0;
-                        while column < columns {
+                        for column in 0..columns {
                             let cell = &grid[line][index::Column(column)];
-                            let foreground = {
-                                let color = cell_colors(cell, model.colors()).0;
-                                if frozen { freeze(color) } else { color }
-                            };
                             if cell.flags.intersects(
                                 term::cell::Flags::WIDE_CHAR_SPACER
                                     | term::cell::Flags::LEADING_WIDE_CHAR_SPACER
                                     | term::cell::Flags::HIDDEN,
                             ) {
-                                column += 1;
                                 continue;
                             }
-                            // Batch ordinary ASCII into fixed-width runs. A wide or
-                            // combining glyph gets its own positioned cell cluster,
-                            // so fallback font metrics cannot move the next column.
-                            let start = column;
-                            let mut text = String::new();
-                            if cell.c.is_ascii() && cell.zerowidth().is_none_or(<[char]>::is_empty)
-                            {
-                                while column < columns {
-                                    let next = &grid[line][index::Column(column)];
-                                    if !next.c.is_ascii()
-                                        || next.zerowidth().is_some_and(|chars| !chars.is_empty())
-                                        || next.flags != cell.flags
-                                        || next.fg != cell.fg
-                                        || next.bg != cell.bg
-                                    {
-                                        break;
-                                    }
-                                    text.push(if next.c.is_control() { ' ' } else { next.c });
-                                    column += 1;
-                                }
-                            } else {
-                                text.push(cell.c);
-                                if let Some(chars) = cell.zerowidth() {
-                                    text.extend(chars);
-                                }
-                                column += 1;
-                            }
-                            if text.trim().is_empty()
-                                && !cell.flags.intersects(
-                                    term::cell::Flags::ALL_UNDERLINES
-                                        | term::cell::Flags::STRIKEOUT,
-                                )
-                            {
-                                continue;
-                            }
-                            let format = egui::TextFormat {
-                                font_id: font.clone(),
-                                color: foreground,
+                            let style = grid::Style {
                                 italics: cell.flags.contains(term::cell::Flags::ITALIC),
-                                underline: if cell
-                                    .flags
-                                    .intersects(term::cell::Flags::ALL_UNDERLINES)
-                                {
-                                    egui::Stroke::new(1.0_f32, foreground)
-                                } else {
-                                    egui::Stroke::NONE
-                                },
-                                strikethrough: if cell.flags.contains(term::cell::Flags::STRIKEOUT)
-                                {
-                                    egui::Stroke::new(1.0_f32, foreground)
-                                } else {
-                                    egui::Stroke::NONE
-                                },
-                                ..Default::default()
+                                underline: cell.flags.intersects(term::cell::Flags::ALL_UNDERLINES),
+                                strikethrough: cell.flags.contains(term::cell::Flags::STRIKEOUT),
                             };
-                            let job = egui::text::LayoutJob::simple_format(text, format);
-                            let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
-                            let x = content.left() + start as f32 * cell_width;
+                            let blank = cell.c.is_control() || cell.c == ' ';
+                            let zerowidth = cell.zerowidth().unwrap_or_default();
+                            if blank && zerowidth.is_empty() && !style.underline && !style.strikethrough
+                            {
+                                continue;
+                            }
+                            cluster.clear();
+                            cluster.push(if cell.c.is_control() { ' ' } else { cell.c });
+                            cluster.extend(zerowidth);
+                            let foreground = {
+                                let color = cell_colors(cell, model.colors()).0;
+                                if frozen { freeze(color) } else { color }
+                            };
                             let width = if cell.flags.contains(term::cell::Flags::WIDE_CHAR) {
-                                2
+                                2.0
                             } else {
-                                column - start
+                                1.0
                             };
-                            let glyph_clip = egui::Rect::from_min_size(
-                                egui::pos2(x, y),
-                                egui::vec2(width as f32 * cell_width, row_height),
+                            // Each cell is positioned on its own column, so a
+                            // fallback font's advance cannot move the next one.
+                            let span = egui::Rect::from_min_size(
+                                egui::pos2(content.left() + column as f32 * cell_width, y),
+                                egui::vec2(width * cell_width, row_height),
                             );
-                            ui.painter()
-                                .with_clip_rect(clip.intersect(glyph_clip))
-                                .galley(
-                                    egui::pos2(x, y + (row_height - galley.size().y) * 0.5),
-                                    galley,
-                                    foreground,
-                                );
+                            cells.text(ui, &cluster, span, span, style, foreground);
                         }
                     }
                     let cursor = model.renderable_content().cursor;
@@ -759,49 +717,35 @@ impl PaneUi {
                         let stroke = egui::Stroke::new(1.0_f32, FOREGROUND);
                         match cursor.shape {
                             ansi::CursorShape::Beam => {
-                                ui.painter()
-                                    .line_segment([rect.left_top(), rect.left_bottom()], stroke);
+                                cells.line(rect.left_top(), rect.left_bottom(), stroke);
                             }
                             ansi::CursorShape::Underline => {
-                                ui.painter().line_segment(
-                                    [rect.left_bottom(), rect.right_bottom()],
-                                    stroke,
-                                );
+                                cells.line(rect.left_bottom(), rect.right_bottom(), stroke);
                             }
                             _ if active => {
-                                ui.painter().rect_filled(rect.shrink(0.5), 0.0, FOREGROUND);
+                                cells.fill(rect.shrink(0.5), FOREGROUND);
                                 let cell = &grid[cursor.point.line][cursor.point.column];
                                 if !cell.c.is_control() && cell.c != ' ' {
-                                    let mut text = String::from(cell.c);
+                                    cluster.clear();
+                                    cluster.push(cell.c);
                                     if let Some(chars) = cell.zerowidth() {
-                                        text.extend(chars);
+                                        cluster.extend(chars);
                                     }
-                                    let format = egui::TextFormat {
-                                        font_id: font.clone(),
-                                        color: BACKGROUND,
-                                        ..Default::default()
-                                    };
-                                    let job = egui::text::LayoutJob::simple_format(text, format);
-                                    let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
-                                    ui.painter().galley(
-                                        egui::pos2(
-                                            rect.left(),
-                                            rect.top() + (row_height - galley.size().y) * 0.5,
-                                        ),
-                                        galley,
+                                    cells.text(
+                                        ui,
+                                        &cluster,
+                                        rect,
+                                        clip,
+                                        grid::Style::default(),
                                         BACKGROUND,
                                     );
                                 }
                             }
-                            _ => {
-                                ui.painter().rect_stroke(
-                                    rect.shrink(0.5),
-                                    0.0,
-                                    stroke,
-                                    egui::StrokeKind::Inside,
-                                );
-                            }
+                            _ => cells.outline(rect.shrink(0.5), stroke),
                         }
+                    }
+                    if let Some(batch) = cells.finish() {
+                        ui.painter().add(batch);
                     }
                 });
                 let viewport = history_viewport(

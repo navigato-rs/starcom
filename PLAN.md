@@ -186,6 +186,11 @@ terminal checkpoint.
   and clipboard paste. Unmodified clicks are forwarded when the pane asked for
   mouse reports; drags stay local selection. File drops upload over SFTP.
 - Divider dragging that resizes tmux on release.
+- Terminal cells are one batch of textured quads per pane, drawn by Starcom's
+  own Blade pipeline at the pane's place in egui's paint order (an egui paint
+  callback). Glyph quads and UVs are egui's, from a mirrored copy of its font
+  atlas; the cache is dropped whenever egui rebuilds its fonts. Cells are still
+  rebuilt every painted frame.
 - Event-driven redraw and a worker thread that does no network I/O under the UI
   model lock. Hidden-tab output updates its activity timer without repainting an
   unchanged selected terminal.
@@ -330,6 +335,13 @@ is carried as a pinned fork.
 - [x] Add bounded ordinary-input pipelining and safe latency diagnostics for
   queue time, control acknowledgment, competing output, and tmux flow-control
   lag. Keep paste, layout, resize, move, and rename as ordering barriers.
+- [x] Paint terminal cells as one quad batch per pane instead of a galley,
+  mesh, and draw call per run. Demo workspace, x86-64 Linux, release: egui
+  output 175 → 10 primitives, 6,668 → 972 vertices; UI pass plus tessellation
+  about 235 → 190 µs per frame. Not yet measured: GPU time, native windows on
+  macOS/Windows/Wayland, wide-character and IME rendering by eye.
+- [ ] Update only dirty rows of a pane's cell batch from Alacritty's damage
+  tracking, and pass those rows on as present damage.
 - [ ] Measure startup, idle CPU, RAM per pane/history, sustained-output throughput,
   and input latency. First baselines, x86-64 Linux, thin LTO: a clean release
   build takes about 3 minutes and produces a 14.4 MiB stripped binary.
