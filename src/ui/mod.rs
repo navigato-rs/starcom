@@ -319,6 +319,9 @@ pub enum Action {
 
 #[derive(Clone)]
 struct OptionDraft {
+    /// Stable egui identity. Rows move when the always-empty entry is inserted
+    /// at the top, so their vector index cannot be their widget identity.
+    id: u64,
     original: Option<core::UserOptionName>,
     name: String,
     value: String,
@@ -351,15 +354,22 @@ fn draft_options(rows: &[OptionDraft]) -> Option<Vec<core::UserOption>> {
     Some(options)
 }
 
-fn ensure_new_option_row(rows: &mut Vec<OptionDraft>) {
+fn fresh_option_row_id(next: &mut u64) -> u64 {
+    let id = *next;
+    *next = next.wrapping_add(1);
+    id
+}
+
+fn ensure_new_option_row(rows: &mut Vec<OptionDraft>, next: &mut u64) {
     if rows.first().is_none_or(|row| !row.is_empty()) {
-        rows.insert(0, OptionDraft::empty());
+        rows.insert(0, OptionDraft::empty(fresh_option_row_id(next)));
     }
 }
 
 impl OptionDraft {
-    fn empty() -> Self {
+    fn empty(id: u64) -> Self {
         Self {
+            id,
             original: None,
             name: String::new(),
             value: String::new(),
@@ -367,8 +377,9 @@ impl OptionDraft {
         }
     }
 
-    fn from_remote(option: &core::UserOption) -> Self {
+    fn from_remote(option: &core::UserOption, id: u64) -> Self {
         Self {
+            id,
             original: Some(option.name.clone()),
             name: option.name.suffix().to_owned(),
             value: option.value.clone(),
@@ -398,6 +409,7 @@ pub struct DesktopUi {
     option_panel_height: f32,
     options_window: Option<tmuxctl::WindowId>,
     option_rows: Vec<OptionDraft>,
+    next_option_row_id: u64,
     /// Last pane the user selected, independent of transient keyboard focus.
     /// It survives tab/window focus changes and is persisted as a resume hint.
     selected: Option<tmuxctl::PaneId>,
@@ -481,7 +493,8 @@ impl DesktopUi {
             options_open: false,
             option_panel_height: 0.0,
             options_window: None,
-            option_rows: vec![OptionDraft::empty()],
+            option_rows: vec![OptionDraft::empty(0)],
+            next_option_row_id: 1,
             selected: None,
             focused: None,
             pane_ui: collections::BTreeMap::new(),
@@ -1651,19 +1664,51 @@ impl DesktopUi {
         if self.options_window != self.window {
             self.options_window = self.window;
             self.options_open = false;
-            self.option_rows = Vec::with_capacity(remote.len() + 1);
-            self.option_rows.push(OptionDraft::empty());
-            self.option_rows
-                .extend(remote.iter().map(OptionDraft::from_remote));
+            self.replace_option_rows(&remote);
             return;
         }
         let dirty = self.option_rows.iter().any(|row| row.dirty);
-        if !dirty || draft_options(&self.option_rows).as_deref() == Some(remote.as_slice()) {
-            self.option_rows = Vec::with_capacity(remote.len() + 1);
-            self.option_rows.push(OptionDraft::empty());
-            self.option_rows
-                .extend(remote.iter().map(OptionDraft::from_remote));
+        if draft_options(&self.option_rows).as_deref() == Some(remote.as_slice()) {
+            // The server has acknowledged the local draft (or nothing has
+            // changed). Keep row identities intact so a periodic refresh
+            // cannot take keyboard focus from an editor.
+            for row in &mut self.option_rows {
+                row.original = if row.is_empty() {
+                    None
+                } else {
+                    Some(
+                        core::UserOptionName::new(row.name.clone())
+                            .expect("matching drafts were validated"),
+                    )
+                };
+                row.dirty = false;
+            }
+        } else if !dirty {
+            self.replace_option_rows(&remote);
         }
+    }
+
+    fn replace_option_rows(&mut self, remote: &[core::UserOption]) {
+        let empty_id = self
+            .option_rows
+            .iter()
+            .find(|row| row.is_empty())
+            .map(|row| row.id)
+            .unwrap_or_else(|| fresh_option_row_id(&mut self.next_option_row_id));
+        let mut existing: collections::BTreeMap<_, _> = self
+            .option_rows
+            .iter()
+            .filter_map(|row| row.original.clone().map(|name| (name, row.id)))
+            .collect();
+        let mut rows = Vec::with_capacity(remote.len() + 1);
+        rows.push(OptionDraft::empty(empty_id));
+        for option in remote {
+            let id = existing
+                .remove(&option.name)
+                .unwrap_or_else(|| fresh_option_row_id(&mut self.next_option_row_id));
+            rows.push(OptionDraft::from_remote(option, id));
+        }
+        self.option_rows = rows;
     }
 
     fn show_option_panel(&mut self, root: &mut egui::Ui, state: &desktop::State) -> Action {
@@ -1702,7 +1747,8 @@ impl DesktopUi {
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = ROW_GAP;
                         for index in 0..self.option_rows.len() {
-                            ui.push_id(index, |ui| {
+                            let row_id = self.option_rows[index].id;
+                            ui.push_id(row_id, |ui| {
                                 let row = &mut self.option_rows[index];
                                 ui.horizontal(|ui| {
                                     let name_id = ui.id().with("name");
@@ -1771,23 +1817,23 @@ impl DesktopUi {
 
         if let Some(index) = delete {
             let removed = self.option_rows.remove(index);
-            ensure_new_option_row(&mut self.option_rows);
+            ensure_new_option_row(&mut self.option_rows, &mut self.next_option_row_id);
             if let (Some(window), Some(name)) = (self.window, removed.original) {
                 return Action::DeleteWindowOption { window, name };
             }
             return Action::None;
         }
         let Some(index) = submit else {
-            ensure_new_option_row(&mut self.option_rows);
+            ensure_new_option_row(&mut self.option_rows, &mut self.next_option_row_id);
             return Action::None;
         };
         let Some(window) = self.window else {
-            ensure_new_option_row(&mut self.option_rows);
+            ensure_new_option_row(&mut self.option_rows, &mut self.next_option_row_id);
             return Action::None;
         };
         let row = self.option_rows[index].clone();
         let Ok(name) = core::UserOptionName::new(row.name) else {
-            ensure_new_option_row(&mut self.option_rows);
+            ensure_new_option_row(&mut self.option_rows, &mut self.next_option_row_id);
             return Action::None;
         };
         if self.option_rows.iter().enumerate().any(|(other, row)| {
@@ -1796,10 +1842,10 @@ impl DesktopUi {
                 && core::UserOptionName::new(row.name.clone()).ok().as_ref() == Some(&name)
         }) {
             self.notice = Some(format!("Note '{}' already exists.", name.as_str()));
-            ensure_new_option_row(&mut self.option_rows);
+            ensure_new_option_row(&mut self.option_rows, &mut self.next_option_row_id);
             return Action::None;
         }
-        ensure_new_option_row(&mut self.option_rows);
+        ensure_new_option_row(&mut self.option_rows, &mut self.next_option_row_id);
         match core::UserOption::new(name, row.value) {
             Ok(option) => Action::SetWindowOption {
                 window,
@@ -1922,6 +1968,10 @@ impl DesktopUi {
             || state.continuity.is_some()
             || state.error.is_some();
 
+        // Areas are viewport-relative by default. Capture the workspace left
+        // after the sidebar was allocated so transient chrome stays over the
+        // terminal rather than crossing into navigation.
+        let main_rect = root.available_rect_before_wrap();
         let option_action = self.show_option_panel(root, state);
         if matches!(action, Action::None) && !matches!(option_action, Action::None) {
             action = option_action;
@@ -1930,10 +1980,11 @@ impl DesktopUi {
         let bottom_offset = 8.0 + self.option_panel_height;
         let actions_overlay = egui::Area::new(root.id().with("session-actions"))
             .order(egui::Order::Foreground)
-            .anchor(
-                egui::Align2::RIGHT_BOTTOM,
-                egui::vec2(-8.0, -bottom_offset),
-            )
+            .pivot(egui::Align2::RIGHT_BOTTOM)
+            .fixed_pos(egui::pos2(
+                main_rect.right() - 8.0,
+                main_rect.bottom() - bottom_offset,
+            ))
             .show(root.ctx(), |ui| {
                 egui::Frame::new()
                     .fill(ui.visuals().panel_fill)
@@ -2006,10 +2057,14 @@ impl DesktopUi {
 
         if show_status {
             let max_width =
-                (root.available_width() - actions_overlay.response.rect.width() - 24.0).max(80.0);
+                (main_rect.width() - actions_overlay.response.rect.width() - 24.0).max(80.0);
             egui::Area::new(root.id().with("status-message"))
                 .order(egui::Order::Foreground)
-                .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(8.0, -bottom_offset))
+                .pivot(egui::Align2::LEFT_BOTTOM)
+                .fixed_pos(egui::pos2(
+                    main_rect.left() + 8.0,
+                    main_rect.bottom() - bottom_offset,
+                ))
                 .show(root.ctx(), |ui| {
                     ui.set_max_width(max_width);
                     egui::Frame::new()
@@ -3835,7 +3890,7 @@ mod tests {
             "starcom".into(),
         )
         .unwrap();
-        let rows = vec![OptionDraft::from_remote(&remote), OptionDraft::empty()];
+        let rows = vec![OptionDraft::from_remote(&remote, 1), OptionDraft::empty(0)];
         assert_eq!(draft_options(&rows).unwrap(), [remote]);
     }
 
@@ -3863,8 +3918,13 @@ mod tests {
         let mut ui = DesktopUi::default();
         ui.open_terminal();
         let mut root_id = None;
+        let mut main_left = 0.0;
         let _ = ctx.run_ui(screen_input(), |root| {
             root_id = Some(root.id());
+            egui::Panel::left("test-sidebar")
+                .exact_size(180.0)
+                .show_inside(root, |_| {});
+            main_left = root.available_rect_before_wrap().left();
             ui.show(root, &mut state);
         });
         let status_id = root_id.unwrap().with("status-message");
@@ -3875,6 +3935,10 @@ mod tests {
 
         ui.notice = Some("Something happened".to_owned());
         let _ = ctx.run_ui(screen_input(), |root| {
+            egui::Panel::left("test-sidebar")
+                .exact_size(180.0)
+                .show_inside(root, |_| {});
+            main_left = root.available_rect_before_wrap().left();
             ui.show(root, &mut state);
         });
         assert!(
@@ -3884,6 +3948,10 @@ mod tests {
         let overlay = egui::containers::AreaState::load(&ctx, status_id)
             .expect("a notice should create the status overlay");
         assert!((20.0..42.0).contains(&overlay.rect().height()));
+        assert!(
+            overlay.rect().left() >= main_left,
+            "status must stay inside the terminal area"
+        );
     }
 
     #[test]
@@ -3893,11 +3961,27 @@ mod tests {
             "value".into(),
         )
         .unwrap();
-        let mut rows = vec![OptionDraft::from_remote(&option)];
-        ensure_new_option_row(&mut rows);
+        let mut rows = vec![OptionDraft::from_remote(&option, 7)];
+        let mut next = 8;
+        ensure_new_option_row(&mut rows, &mut next);
         assert!(rows[0].is_empty());
         assert_eq!(rows[1].name, "existing");
-        ensure_new_option_row(&mut rows);
+        ensure_new_option_row(&mut rows, &mut next);
         assert_eq!(rows.len(), 2);
+    }
+
+    #[test]
+    fn inserting_the_new_option_row_keeps_the_edited_rows_identity() {
+        let mut rows = vec![OptionDraft::empty(4)];
+        rows[0].name = "project".into();
+        rows[0].dirty = true;
+        let edited = rows[0].id;
+        let mut next = 5;
+
+        ensure_new_option_row(&mut rows, &mut next);
+
+        assert!(rows[0].is_empty());
+        assert_eq!(rows[1].id, edited);
+        assert_eq!(rows[1].name, "project");
     }
 }

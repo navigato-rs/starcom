@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Transient terminal messages stay inside the main area, and inserting the
+  always-empty note row or refreshing notes no longer steals editor focus.
 - Terminal cells are painted by a small Blade pipeline instead of one egui
   galley, mesh, and draw call per run of same-styled cells. Glyphs still come
   from egui's font atlas, so text looks the same; each column is now placed at
