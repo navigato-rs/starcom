@@ -286,6 +286,18 @@ pub(crate) enum Step {
     RequestPaste(desktop::Target),
 }
 
+pub(crate) enum WindowOptionEdit {
+    Set {
+        window: tmuxctl::WindowId,
+        previous: Option<core::UserOptionName>,
+        option: core::UserOption,
+    },
+    Delete {
+        window: tmuxctl::WindowId,
+        name: core::UserOptionName,
+    },
+}
+
 pub enum Action {
     None,
     Connect(desktop::Connection),
@@ -302,14 +314,9 @@ pub enum Action {
     Disconnect,
     /// Rename this logical session's tmux window.
     RenameSession(String),
-    SetWindowOption {
-        window: tmuxctl::WindowId,
-        previous: Option<core::UserOptionName>,
-        option: core::UserOption,
-    },
-    DeleteWindowOption {
-        window: tmuxctl::WindowId,
-        name: core::UserOptionName,
+    EditWindowOption {
+        edit: WindowOptionEdit,
+        steps: Vec<Step>,
     },
     /// Every terminal step this frame produced, in order. Never a subset: a
     /// frame that cannot deliver all of its steps reports that to the user.
@@ -1819,7 +1826,10 @@ impl DesktopUi {
             let removed = self.option_rows.remove(index);
             ensure_new_option_row(&mut self.option_rows, &mut self.next_option_row_id);
             if let (Some(window), Some(name)) = (self.window, removed.original) {
-                return Action::DeleteWindowOption { window, name };
+                return Action::EditWindowOption {
+                    edit: WindowOptionEdit::Delete { window, name },
+                    steps: Vec::new(),
+                };
             }
             return Action::None;
         }
@@ -1847,10 +1857,13 @@ impl DesktopUi {
         }
         ensure_new_option_row(&mut self.option_rows, &mut self.next_option_row_id);
         match core::UserOption::new(name, row.value) {
-            Ok(option) => Action::SetWindowOption {
-                window,
-                previous: row.original,
-                option,
+            Ok(option) => Action::EditWindowOption {
+                edit: WindowOptionEdit::Set {
+                    window,
+                    previous: row.original,
+                    option,
+                },
+                steps: Vec::new(),
             },
             Err(error) => {
                 self.notice = Some(error.to_string());
@@ -2283,18 +2296,29 @@ impl DesktopUi {
             }
         }
 
-        if matches!(action, Action::None) && !steps.is_empty() {
-            Action::Frame(steps)
-        } else {
-            if !steps.is_empty() {
-                // Only reachable if a navigation button and a terminal step land
-                // in one frame. Say so rather than discarding input in silence.
-                self.notice = Some(
+        match action {
+            Action::None if !steps.is_empty() => Action::Frame(steps),
+            Action::EditWindowOption {
+                edit,
+                steps: mut edit_steps,
+            } => {
+                edit_steps.extend(steps);
+                Action::EditWindowOption {
+                    edit,
+                    steps: edit_steps,
+                }
+            }
+            action => {
+                if !steps.is_empty() {
+                    // Only reachable if a navigation button and a terminal step land
+                    // in one frame. Say so rather than discarding input in silence.
+                    self.notice = Some(
                     "Terminal input was not sent because this frame changed the connection instead. Nothing was retried."
                         .to_owned(),
                 );
+                }
+                action
             }
-            action
         }
     }
 

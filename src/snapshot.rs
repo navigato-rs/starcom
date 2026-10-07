@@ -341,6 +341,10 @@ pub struct View {
     /// control client exits before a resync, that was the attached session's
     /// final window rather than an unrelated detach or server failure.
     window_closed: bool,
+    /// Window ids explicitly removed by tmux. This survives the replacement
+    /// snapshot until the desktop consumes it, so a fast resync cannot turn a
+    /// deliberate last-pane exit into a persistent red tab.
+    closed_windows: collections::BTreeSet<tmuxctl::WindowId>,
     session_closed: bool,
     /// Bumped when a notification changes what is on screen. Idle polls that
     /// carry no output must not wake the GUI. Mid-2026 synchronized updates
@@ -413,6 +417,7 @@ impl View {
             status: Status::Watching,
             exit: None,
             window_closed: false,
+            closed_windows: collections::BTreeSet::new(),
             session_closed: false,
             display_seq: 0,
             window_display_seq,
@@ -481,6 +486,13 @@ impl View {
         }
     }
 
+    pub(crate) fn invalidate_window(&mut self, window: tmuxctl::WindowId) {
+        if self.status == Status::Watching {
+            self.status = Status::NeedsResync;
+            self.bump_window(window);
+        }
+    }
+
     /// Soonest DECSET 2026 timeout across panes, if a synchronized update is open.
     pub(crate) fn sync_deadline(&self) -> Option<std::time::Instant> {
         self.panes
@@ -517,6 +529,10 @@ impl View {
         self.window_closed
     }
 
+    pub(crate) fn take_closed_windows(&mut self) -> collections::BTreeSet<tmuxctl::WindowId> {
+        std::mem::take(&mut self.closed_windows)
+    }
+
     /// Keep each surviving pane's local history viewport across a snapshot
     /// replace. Zoom, split, and reconnect rebuild the Alacritty model at
     /// offset 0; without this, maximizing while scrolled jumps to the live tip.
@@ -529,6 +545,17 @@ impl View {
                 }
             }
         }
+        // A reconstructed view is a continuation of the same managed tmux
+        // session. Preserve per-window counters so an unrelated window does
+        // not appear active merely because every model was rebuilt.
+        self.display_seq = previous.display_seq.wrapping_add(self.display_seq);
+        for (window, seq) in &mut self.window_display_seq {
+            if let Some(previous) = previous.window_display_seq.get(window) {
+                *seq = previous.wrapping_add(*seq);
+            }
+        }
+        self.closed_windows
+            .extend(previous.closed_windows.iter().copied());
     }
 
     pub fn apply(&mut self, notification: tmuxctl::Notification) {
@@ -544,8 +571,8 @@ impl View {
             // emitting `%window-close`. An orderly, non-detach exit while our
             // coherent model contains exactly one pane is the same terminal
             // condition: there is no session left to keep as a red tab.
-            self.session_closed =
-                self.window_closed || (self.panes.len() == 1 && !explicitly_detached);
+            self.session_closed = (self.window_closed && self.windows.len() == 1)
+                || (self.panes.len() == 1 && !explicitly_detached);
             self.disconnect();
             return;
         }
@@ -607,13 +634,19 @@ impl View {
             | tmuxctl::Notification::SessionWindowChanged { .. }
             | tmuxctl::Notification::ClientSessionChanged { .. }
             | tmuxctl::Notification::PaneModeChanged(_) => {}
-            tmuxctl::Notification::WindowClose(_) => {
+            // tmux reports `%unlinked-window-close` when a non-current window's
+            // final pane exits, even though that window belongs to the attached
+            // session. Both notifications remove the same logical Starcom tab.
+            tmuxctl::Notification::WindowClose(window)
+            | tmuxctl::Notification::UnlinkedWindowClose(window) => {
                 self.window_closed = true;
-                self.status = Status::NeedsResync;
-                self.bump_all();
+                self.closed_windows.insert(window);
+                self.invalidate_window(window);
             }
-            tmuxctl::Notification::LayoutChange { .. }
-            | tmuxctl::Notification::WindowAdd(_)
+            tmuxctl::Notification::LayoutChange { window, .. } => {
+                self.invalidate_window(window);
+            }
+            tmuxctl::Notification::WindowAdd(_)
             | tmuxctl::Notification::Pause(_)
             | tmuxctl::Notification::Continue(_)
             | tmuxctl::Notification::SessionChanged(..)
@@ -967,6 +1000,57 @@ mod tests {
         });
         assert_eq!(view.window_display_seq(tmuxctl::WindowId(2)), 1);
         assert_eq!(view.window_display_seq(tmuxctl::WindowId(3)), 0);
+    }
+
+    #[test]
+    fn replacement_snapshots_preserve_activity_per_window() {
+        let first = Pane::restore(state(12, 3), &lines(&["", "", ""]), &[], &[], 0).unwrap();
+        let mut second_state = state(12, 3);
+        second_state.pane = tmuxctl::PaneId(2);
+        second_state.window = tmuxctl::WindowId(3);
+        let second = Pane::restore(second_state, &lines(&["", "", ""]), &[], &[], 0).unwrap();
+        let windows = collections::BTreeMap::from([
+            (tmuxctl::WindowId(2), "work".to_owned()),
+            (tmuxctl::WindowId(3), "build".to_owned()),
+        ]);
+        let mut previous =
+            View::new_named(tmuxctl::SessionId(0), vec![first, second], windows.clone()).unwrap();
+        previous.apply(tmuxctl::Notification::Output {
+            pane: tmuxctl::PaneId(1),
+            bytes: b"old".to_vec(),
+        });
+
+        let first = Pane::restore(state(12, 3), &lines(&["", "", ""]), &[], &[], 0).unwrap();
+        let mut second_state = state(12, 3);
+        second_state.pane = tmuxctl::PaneId(2);
+        second_state.window = tmuxctl::WindowId(3);
+        let second = Pane::restore(second_state, &lines(&["", "", ""]), &[], &[], 0).unwrap();
+        let mut replacement =
+            View::new_named(tmuxctl::SessionId(0), vec![first, second], windows).unwrap();
+        replacement.apply(tmuxctl::Notification::Output {
+            pane: tmuxctl::PaneId(2),
+            bytes: b"new".to_vec(),
+        });
+        replacement.preserve_history_offsets(&previous);
+
+        assert_eq!(replacement.window_display_seq(tmuxctl::WindowId(2)), 1);
+        assert_eq!(replacement.window_display_seq(tmuxctl::WindowId(3)), 1);
+    }
+
+    #[test]
+    fn a_closed_window_is_durable_until_the_workspace_consumes_it() {
+        let pane = Pane::restore(state(12, 3), &lines(&["", "", ""]), &[], &[], 0).unwrap();
+        let mut view = View::new(tmuxctl::SessionId(0), vec![pane]).unwrap();
+        // This is the notification tmux emits when `exit` closes a non-current
+        // window in the shared managed session.
+        view.apply(tmuxctl::Notification::UnlinkedWindowClose(
+            tmuxctl::WindowId(2),
+        ));
+        assert_eq!(
+            view.take_closed_windows(),
+            collections::BTreeSet::from([tmuxctl::WindowId(2)])
+        );
+        assert!(view.take_closed_windows().is_empty());
     }
 
     #[test]

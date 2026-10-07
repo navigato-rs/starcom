@@ -257,6 +257,9 @@ pub(crate) struct State {
     migrated: Option<sessions::Migration>,
     /// Completed pane handoff waiting for the workspace to open its new tab.
     moved_session: Option<MovedSession>,
+    /// An orderly end of the managed session after its final pane exited.
+    /// The workspace consumes this separately from connection failures.
+    session_closed: bool,
     actions: collections::VecDeque<Pending>,
     action_bytes: usize,
     input_confirmations: collections::VecDeque<PendingConfirmation>,
@@ -293,6 +296,7 @@ impl Default for State {
             rename_revert: None,
             migrated: None,
             moved_session: None,
+            session_closed: false,
             actions: collections::VecDeque::new(),
             action_bytes: 0,
             input_confirmations: collections::VecDeque::new(),
@@ -322,6 +326,7 @@ impl State {
         self.rename_revert = None;
         self.migrated = None;
         self.moved_session = None;
+        self.session_closed = false;
         self.changing_sessions = false;
         self.discard_actions();
         self.access = session::Access::ReadOnly;
@@ -893,6 +898,18 @@ impl Client {
         self.lock().moved_session.take()
     }
 
+    pub(crate) fn take_closed_windows(&self) -> collections::BTreeSet<tmuxctl::WindowId> {
+        self.lock()
+            .view
+            .as_mut()
+            .map(snapshot::View::take_closed_windows)
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn take_session_closed(&self) -> bool {
+        std::mem::take(&mut self.lock().session_closed)
+    }
+
     /// Admit a GUI frame atomically, so a full queue cannot accept half of a
     /// committed UTF-8 string or reorder a paste and its following keys.
     pub(crate) fn submit_batch(&self, actions: Vec<(Target, input::Action)>) -> anyhow::Result<()> {
@@ -1018,8 +1035,8 @@ enum Outcome {
     Cancelled,
     /// tmux ended the control session and said why.
     Ended(reconnect::Failure),
-    /// The attached session's final window closed. Preserve the registered tab
-    /// as a red, explicitly reconnectable record until the user chooses Exit.
+    /// The attached session's final window closed. The workspace removes the
+    /// corresponding logical tab rather than presenting a reconnect failure.
     SessionClosed,
     /// A non-idempotent rename was delivered but its final reply was not
     /// observed. Reconnect once to the already-saved new name; never resend it.
@@ -1178,7 +1195,7 @@ fn run_query(shared: Shared, wake: Wake, epoch: u64, query: Query) {
 
 fn ended_last_pane(view: Option<&snapshot::View>, failure: reconnect::Failure) -> bool {
     view.is_some_and(|view| {
-        view.window_closed()
+        (view.window_closed() && view.windows().len() == 1)
             // On the affected tmux path the final pane produces neither
             // `%window-close` nor `%exit`; the local tmux front-end instead
             // ends mid-control framing. Restrict that fallback to a coherent
@@ -1200,6 +1217,7 @@ fn report_session_closed(shared: &Shared, wake: &Wake, epoch: u64) {
         state.io_wake = None;
         state.discard_actions();
         state.option_edits.clear();
+        state.session_closed = true;
     }
     drop(state);
     wake();
@@ -1392,6 +1410,20 @@ fn take_ordinary_input(
         }
         return Ok(Some((target, actions, queue)));
     }
+}
+
+fn pop_synchronous_action(state: &mut State) -> Option<Pending> {
+    if state.actions.front().is_some_and(|pending| {
+        matches!(
+            pending.action,
+            input::Action::Bytes(_) | input::Action::Key(..)
+        )
+    }) {
+        return None;
+    }
+    let pending = state.actions.pop_front()?;
+    state.action_bytes -= pending.action.size();
+    Some(pending)
 }
 
 fn slow_input(latency: inspect::InputLatency) -> bool {
@@ -1832,8 +1864,10 @@ fn watch(
                     if !state.accepts(epoch) {
                         return Ok(Outcome::Cancelled);
                     }
-                    if let Some(pending) = state.actions.pop_front() {
-                        state.action_bytes -= pending.action.size();
+                    // Ordinary input has exactly one delivery path. It may be
+                    // temporarily blocked by a phase transition or ordering
+                    // barrier; leave it queued for that pipeline.
+                    if let Some(pending) = pop_synchronous_action(&mut state) {
                         if let input::Action::ClientSize(size) = pending.action {
                             if !state.allow_resize {
                                 continue;
@@ -1889,16 +1923,6 @@ fn watch(
                                 None
                             };
                         let resizing = pending.action.changes_layout();
-                        // Ordinary input is consumed by the bounded pipeline
-                        // above. Reaching this synchronous path with it would
-                        // reintroduce one-acknowledgment-per-input latency.
-                        anyhow::ensure!(
-                            !matches!(
-                                pending.action,
-                                input::Action::Bytes(_) | input::Action::Key(..)
-                            ),
-                            "ordinary input bypassed the pipeline"
-                        );
                         let actions = vec![pending.action];
                         Some((target, actions, resizing, move_name))
                     } else {
@@ -1928,7 +1952,11 @@ fn watch(
                                 "tmux blocked the pane move because its layout changed. Nothing was retried."
                                     .to_owned(),
                             );
-                            state.view.as_mut().expect("view published").invalidate();
+                            state
+                                .view
+                                .as_mut()
+                                .expect("view published")
+                                .invalidate_window(target.window);
                             state.phase = Phase::Resynchronizing;
                         } else {
                             state.moved_session = Some(MovedSession {
@@ -1937,7 +1965,11 @@ fn watch(
                                 window: moved.window,
                             });
                             state.discard_actions();
-                            state.view.as_mut().expect("view published").invalidate();
+                            state
+                                .view
+                                .as_mut()
+                                .expect("view published")
+                                .invalidate_window(target.window);
                             state.phase = Phase::Resynchronizing;
                         }
                         state.last_rtt = inspector.last_rtt;
@@ -1962,7 +1994,11 @@ fn watch(
                         state.view.as_mut().expect("view published").apply(event);
                     }
                     if resizing && outcome.applied {
-                        state.view.as_mut().expect("view published").invalidate();
+                        state
+                            .view
+                            .as_mut()
+                            .expect("view published")
+                            .invalidate_window(target.window);
                         state.phase = Phase::Resynchronizing;
                         if !state.actions.is_empty() {
                             state.error = Some(
@@ -1974,7 +2010,11 @@ fn watch(
                     }
                     if !outcome.applied {
                         state.error = Some("tmux blocked this action: the pane changed, is in a mode, or synchronize-panes/zoom is enabled. Nothing was retried.".to_owned());
-                        state.view.as_mut().expect("view published").invalidate();
+                        state
+                            .view
+                            .as_mut()
+                            .expect("view published")
+                            .invalidate_window(target.window);
                     }
                     state.last_rtt = inspector.last_rtt;
                     drop(state);
@@ -2015,7 +2055,7 @@ fn watch(
                             view.apply(event);
                         }
                         if !applied {
-                            view.invalidate();
+                            view.invalidate_window(window);
                             state.phase = Phase::Resynchronizing;
                         }
                     }
@@ -2345,6 +2385,45 @@ mod tests {
     }
 
     #[test]
+    fn one_closed_window_does_not_close_its_shared_server_workspace() {
+        let mut state = editable();
+        let pane = |pane, window| {
+            let state = snapshot::State::parse(&format!(
+                "%{pane}|@{window}|12|3|0|0|0|0|0|0|2000|||0|2|1|0|0|0|1|0|0|0|0|0|1|"
+            ))
+            .unwrap();
+            snapshot::Pane::restore(
+                state,
+                &[String::new(), String::new(), String::new()],
+                &[],
+                &[],
+                0,
+            )
+            .unwrap()
+        };
+        state.view = Some(
+            snapshot::View::new_named(
+                tmuxctl::SessionId(0),
+                vec![pane(1, 2), pane(2, 3)],
+                collections::BTreeMap::from([
+                    (tmuxctl::WindowId(2), "one".to_owned()),
+                    (tmuxctl::WindowId(3), "two".to_owned()),
+                ]),
+            )
+            .unwrap(),
+        );
+        state
+            .view
+            .as_mut()
+            .unwrap()
+            .apply(tmuxctl::Notification::WindowClose(tmuxctl::WindowId(2)));
+        assert!(!ended_last_pane(
+            state.view.as_ref(),
+            reconnect::Failure::Protocol
+        ));
+    }
+
+    #[test]
     fn queue_coalesces_bytes_without_crossing_a_key_or_pane_boundary() {
         let mut state = editable();
         let a = state.target(tmuxctl::PaneId(0)).unwrap();
@@ -2459,6 +2538,26 @@ mod tests {
         ));
         assert!(take_ordinary_input(&mut state).unwrap().is_none());
         assert_eq!(state.actions.len(), 1);
+    }
+
+    #[test]
+    fn ordinary_input_never_enters_the_synchronous_action_path() {
+        let mut state = editable();
+        let target = state.target(tmuxctl::PaneId(0)).unwrap();
+        state
+            .enqueue(target, input::Action::Bytes(b"held".to_vec()))
+            .unwrap();
+        assert!(pop_synchronous_action(&mut state).is_none());
+        assert_eq!(state.actions.len(), 1);
+        assert_eq!(state.action_bytes, 4);
+    }
+
+    #[test]
+    fn orderly_final_session_close_is_a_workspace_event() {
+        let client = Client::new(sync::Arc::new(|| {})).unwrap();
+        report_session_closed(&client.shared, &client.wake, 0);
+        assert!(client.take_session_closed());
+        assert!(!client.take_session_closed());
     }
 
     #[test]

@@ -1045,6 +1045,7 @@ impl Inspector {
         &mut self,
         target: input::Target,
         actions: &[input::Action],
+        split_path: Option<&str>,
     ) -> anyhow::Result<(String, usize)> {
         anyhow::ensure!(
             !actions.is_empty() && actions.len() <= 32,
@@ -1077,7 +1078,11 @@ impl Inspector {
                 }
                 input::Action::Split(axis) => {
                     anyhow::ensure!(actions.len() == 1, "split must be a separate transaction");
-                    commands.push(command::Command::split_pane(target.pane, axis));
+                    commands.push(command::Command::split_pane(
+                        target.pane,
+                        axis,
+                        split_path.context("missing split-pane working directory")?,
+                    )?);
                 }
                 input::Action::KillPane => {
                     anyhow::ensure!(
@@ -1146,7 +1151,22 @@ impl Inspector {
         target: input::Target,
         actions: &[input::Action],
     ) -> anyhow::Result<Interaction> {
-        let (wire, reply_count) = self.interaction_wire(target, actions)?;
+        let mut notifications = Vec::new();
+        let split_path = if actions
+            .iter()
+            .any(|action| matches!(action, input::Action::Split(_)))
+        {
+            let (reply, earlier) = self.live_request(&format!(
+                "display-message -p -t {} '#{{pane_current_path}}'\n",
+                target.pane
+            ))?;
+            notifications.extend(earlier);
+            anyhow::ensure!(reply.len() == 1, "invalid pane working directory reply");
+            Some(reply.into_iter().next().expect("length checked"))
+        } else {
+            None
+        };
+        let (wire, reply_count) = self.interaction_wire(target, actions, split_path.as_deref())?;
         let result = self.exchange(&wire, reply_count);
         if result.is_err() {
             self.abort();
@@ -1167,13 +1187,10 @@ impl Inspector {
             last.len() == 1 && matches!(last[0].as_str(), "STARCOM-APPLIED" | "STARCOM-BLOCKED"),
             "invalid interactive result"
         );
+        notifications.extend(batch.notifications.into_iter().map(|(_, event)| event));
         Ok(Interaction {
             applied: last[0] == "STARCOM-APPLIED",
-            notifications: batch
-                .notifications
-                .into_iter()
-                .map(|(_, event)| event)
-                .collect(),
+            notifications,
         })
     }
 
@@ -1207,7 +1224,7 @@ impl Inspector {
             "only ordinary terminal input may be pipelined"
         );
         anyhow::ensure!(self.can_pipeline_input(), "input pipeline is full");
-        let (wire, reply_count) = self.interaction_wire(target, actions)?;
+        let (wire, reply_count) = self.interaction_wire(target, actions, None)?;
         let sent_at = time::Instant::now();
         let deadline = sent_at + self.channel.timeout();
         match self.register_and_write(&wire, reply_count, deadline) {
