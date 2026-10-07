@@ -243,7 +243,6 @@ impl Inspector {
         Ok(batch.replies.remove(0))
     }
 
-    #[cfg(feature = "gui")]
     fn live_request(
         &mut self,
         command: &str,
