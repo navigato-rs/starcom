@@ -48,14 +48,25 @@ impl Command {
         ))
     }
 
-    pub fn split_pane(pane: tmuxctl::PaneId, axis: input::Axis) -> Self {
-        Self(format!(
-            "split-window {} -c \"#{{pane_current_path}}\" -t {pane}\n",
+    pub fn split_pane(
+        pane: tmuxctl::PaneId,
+        axis: input::Axis,
+        current_path: &str,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            !current_path.is_empty()
+                && current_path.len() <= 4096
+                && !current_path.chars().any(char::is_control),
+            "pane working directory cannot be placed in a tmux command"
+        );
+        let current_path = tmux_quote(current_path)?;
+        Ok(Self(format!(
+            "split-window {} -c {current_path} -t {pane}\n",
             match axis {
                 input::Axis::Columns => "-h",
                 input::Axis::Rows => "-v",
             }
-        ))
+        )))
     }
 
     pub fn kill_pane(pane: tmuxctl::PaneId) -> Self {
@@ -205,12 +216,16 @@ mod tests {
             "refresh-client -C 120x40\n"
         );
         assert_eq!(
-            Command::split_pane(tmuxctl::PaneId(3), input::Axis::Columns).as_str(),
-            "split-window -h -c \"#{pane_current_path}\" -t %3\n"
+            Command::split_pane(tmuxctl::PaneId(3), input::Axis::Columns, "/work/it's")
+                .unwrap()
+                .as_str(),
+            "split-window -h -c '/work/it'\"'\"'s' -t %3\n"
         );
         assert_eq!(
-            Command::split_pane(tmuxctl::PaneId(3), input::Axis::Rows).as_str(),
-            "split-window -v -c \"#{pane_current_path}\" -t %3\n"
+            Command::split_pane(tmuxctl::PaneId(3), input::Axis::Rows, "/work")
+                .unwrap()
+                .as_str(),
+            "split-window -v -c '/work' -t %3\n"
         );
         assert_eq!(
             Command::kill_pane(tmuxctl::PaneId(3)).as_str(),

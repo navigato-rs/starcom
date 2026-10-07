@@ -162,6 +162,46 @@ fn ack_painted(tab: &mut Tab) {
     tab.last_revision = state.revision();
 }
 
+fn submit_frame(
+    tab: &mut Tab,
+    steps: Vec<ui::Step>,
+    can_add_session: bool,
+    clipboard: &mut impl FnMut() -> Option<String>,
+) -> anyhow::Result<(bool, bool)> {
+    let mut save = false;
+    let mut actions = Vec::with_capacity(steps.len());
+    for step in steps {
+        match step {
+            ui::Step::Send(target, action) => {
+                if matches!(action, crate::input::Action::SelectPane) {
+                    save = true;
+                }
+                actions.push((target, action));
+            }
+            ui::Step::RequestPaste(target) => {
+                if let Some(text) = clipboard()
+                    && let Some(action) = tab.ui.clipboard_paste(&tab.client.lock(), target, &text)
+                {
+                    actions.push((target, action));
+                }
+            }
+        }
+    }
+    anyhow::ensure!(
+        can_add_session
+            || !actions
+                .iter()
+                .any(|(_, action)| matches!(action, crate::input::Action::MoveToNewSession)),
+        "at most {MAX_TABS} session tabs may be open"
+    );
+    if actions.is_empty() {
+        Ok((save, false))
+    } else {
+        tab.client.submit_batch(actions)?;
+        Ok((save, true))
+    }
+}
+
 fn spawn_tab(
     id: u64,
     wake: Wake,
@@ -559,6 +599,8 @@ impl Workspace {
                 if phase_changed || display_changed {
                     tab.last_phase = phase;
                     tab.last_seq = seq;
+                }
+                if display_changed {
                     tab.last_output = now;
                 }
             }
@@ -1027,6 +1069,53 @@ impl Workspace {
         }
     }
 
+    fn apply_remote_closures(&mut self) {
+        let mut events = Vec::new();
+        for index in 0..self.tabs.len() {
+            if self.tabs[..index]
+                .iter()
+                .any(|tab| sync::Arc::ptr_eq(&tab.client, &self.tabs[index].client))
+            {
+                continue;
+            }
+            let client = sync::Arc::clone(&self.tabs[index].client);
+            let session = client.take_session_closed();
+            let windows = client.take_closed_windows();
+            if session || !windows.is_empty() {
+                events.push((client, session, windows));
+            }
+        }
+        if events.is_empty() {
+            return;
+        }
+        let mut remove = Vec::new();
+        for (index, tab) in self.tabs.iter().enumerate() {
+            if events.iter().any(|(client, session, windows)| {
+                sync::Arc::ptr_eq(&tab.client, client)
+                    && (*session
+                        || tab.ui.current_window().map_or_else(
+                            || {
+                                tab.ui
+                                    .saved()
+                                    .window
+                                    .map(tmuxctl::WindowId)
+                                    .is_some_and(|window| windows.contains(&window))
+                            },
+                            |window| windows.contains(&window),
+                        ))
+            }) {
+                remove.push(index);
+            }
+        }
+        if remove.is_empty() {
+            return;
+        }
+        for index in remove.into_iter().rev() {
+            self.remove_tab(index);
+        }
+        self.persist();
+    }
+
     fn apply_moved_session(&mut self) -> anyhow::Result<()> {
         let moved = self.tabs.iter().find_map(|tab| {
             tab.client
@@ -1079,6 +1168,7 @@ impl Workspace {
     }
 
     pub fn show(&mut self, root: &mut egui::Ui) -> Action {
+        self.apply_remote_closures();
         if let Err(error) = self.apply_moved_session() {
             self.notice = Some(error.to_string());
         }
@@ -1176,10 +1266,12 @@ impl Workspace {
                         .map(|view| tab.ui.display_seq(view))
                         .unwrap_or(0);
                     drop(state);
+                    if seq != tab.last_seq {
+                        tab.last_output = now;
+                    }
                     if seq != tab.last_seq || phase != tab.last_phase {
                         tab.last_seq = seq;
                         tab.last_phase = phase;
-                        tab.last_output = now;
                     }
                 }
 
@@ -1717,59 +1809,43 @@ impl Workspace {
                                     tab.client.rename_window(window, parsed, previous)
                                 }
                             }
-                            ui::Action::SetWindowOption {
-                                window,
-                                previous,
-                                option,
-                            } => tab.client.set_window_option(window, previous, option),
-                            ui::Action::DeleteWindowOption { window, name } => {
-                                tab.client.delete_window_option(window, name)
+                            ui::Action::EditWindowOption { edit, steps } => {
+                                let edit = match edit {
+                                    ui::WindowOptionEdit::Set {
+                                        window,
+                                        previous,
+                                        option,
+                                    } => tab.client.set_window_option(window, previous, option),
+                                    ui::WindowOptionEdit::Delete { window, name } => {
+                                        tab.client.delete_window_option(window, name)
+                                    }
+                                };
+                                let frame = if steps.is_empty() {
+                                    Ok((false, false))
+                                } else {
+                                    submit_frame(tab, steps, can_add_session, &mut clipboard)
+                                };
+                                if let Ok((frame_save, frame_follow)) = &frame {
+                                    save |= *frame_save;
+                                    follow_input |= *frame_follow;
+                                }
+                                edit.and(frame.map(|_| ()))
                             }
                             ui::Action::Disconnect => {
-                                // Exit is the only way a session tab is removed.
+                                // Explicit local exit removes a live or failed
+                                // tab. An orderly remote final-pane exit is the
+                                // other removal path.
                                 close_after_exit = Some(id);
                                 Ok(())
                             }
                             // Resolve clipboard reads in place so the whole frame
                             // still reaches the worker as one ordered, atomic batch.
                             ui::Action::Frame(steps) => {
-                                let mut actions = Vec::with_capacity(steps.len());
-                                for step in steps {
-                                    match step {
-                                        ui::Step::Send(target, action) => {
-                                            if matches!(action, crate::input::Action::SelectPane) {
-                                                save = true;
-                                            }
-                                            actions.push((target, action))
-                                        }
-                                        ui::Step::RequestPaste(target) => {
-                                            if let Some(text) = clipboard()
-                                                && let Some(action) = tab.ui.clipboard_paste(
-                                                    &tab.client.lock(),
-                                                    target,
-                                                    &text,
-                                                )
-                                            {
-                                                actions.push((target, action));
-                                            }
-                                        }
-                                    }
-                                }
-                                anyhow::ensure!(
-                                    can_add_session
-                                        || !actions.iter().any(|(_, action)| matches!(
-                                            action,
-                                            crate::input::Action::MoveToNewSession
-                                        )),
-                                    "at most {MAX_TABS} session tabs may be open"
-                                );
-                                if actions.is_empty() {
-                                    Ok(())
-                                } else {
-                                    let sent = tab.client.submit_batch(actions);
-                                    follow_input = sent.is_ok();
-                                    sent
-                                }
+                                let (frame_save, frame_follow) =
+                                    submit_frame(tab, steps, can_add_session, &mut clipboard)?;
+                                save |= frame_save;
+                                follow_input |= frame_follow;
+                                Ok(())
                             }
                             ui::Action::ReloadConfig => {
                                 self.reload_config();
@@ -2070,6 +2146,30 @@ mod tests {
         assert_eq!(workspace.tabs.len(), 1);
         assert_eq!(workspace.tabs[0].id, failed_id);
         assert!(!workspace.composer_open);
+    }
+
+    #[test]
+    fn a_remote_last_pane_exit_removes_its_logical_tab() {
+        let mut workspace = Workspace::new(sync::Arc::new(|| {}), desktop::Startup::Demo).unwrap();
+        paint(&mut workspace);
+        assert_eq!(
+            workspace.tabs[0].ui.current_window(),
+            Some(tmuxctl::WindowId(0))
+        );
+        workspace.tabs[0]
+            .client
+            .lock()
+            .view
+            .as_mut()
+            .unwrap()
+            .apply(tmuxctl::Notification::UnlinkedWindowClose(
+                tmuxctl::WindowId(0),
+            ));
+
+        workspace.apply_remote_closures();
+
+        assert!(workspace.tabs.is_empty());
+        assert!(workspace.composer_open);
     }
 
     #[test]

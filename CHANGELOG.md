@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Closing a window's final pane now removes that logical session immediately;
+  connection failures still preserve their tabs for explicit recovery. Window
+  activity stays scoped across shared-server resnapshots, guarded splits expand
+  the source pane's working directory in the correct window, note commits can
+  share a frame with the terminal click that ended editing, and ordinary input
+  can no longer fall through to the synchronous control path and poison the
+  stream.
 - Transient terminal messages stay inside the main area, and inserting the
   always-empty note row or refreshing notes no longer steals editor focus.
 - Terminal cells are painted by a small Blade pipeline instead of one egui
