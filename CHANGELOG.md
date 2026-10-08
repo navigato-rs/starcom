@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Creating the first logical session now enters it even when host discovery had
+  not finished first. Links printed across indented hard-wrapped rows are copied
+  as one URL, including Grok comparison links split immediately after `https://`.
 - Closing a window's final pane now removes that logical session immediately;
   connection failures still preserve their tabs for explicit recovery. Window
   activity stays scoped across shared-server resnapshots, guarded splits expand

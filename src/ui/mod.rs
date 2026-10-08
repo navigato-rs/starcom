@@ -628,6 +628,15 @@ impl DesktopUi {
         self.screen = Screen::Terminal;
     }
 
+    fn start_creating(&mut self, name: String) {
+        // Creation is allowed before the automatic listing has completed. Tie
+        // its completion to this host now; otherwise a successful one-shot
+        // create can be ignored because `listed_destination` is still empty.
+        self.listed_destination = self.form.destination().to_owned();
+        self.form.session.clone_from(&name);
+        self.creating = Some(name);
+    }
+
     #[cfg(test)]
     pub(crate) fn showing_form(&self) -> bool {
         self.screen == Screen::Connection
@@ -1315,9 +1324,9 @@ impl DesktopUi {
                                     match self.form.connection_named(self.create_name.trim()) {
                                         Ok(connection) => {
                                             self.notice = None;
-                                            self.creating =
-                                                Some(self.create_name.trim().to_owned());
-                                            self.form.session = self.create_name.trim().to_owned();
+                                            self.start_creating(
+                                                self.create_name.trim().to_owned(),
+                                            );
                                             action = Action::CreateSession(connection);
                                         }
                                         Err(error) => self.notice = Some(error.to_string()),
@@ -2034,7 +2043,7 @@ impl DesktopUi {
                                     Ok(connection) => {
                                         self.notice = None;
                                         if recreate {
-                                            self.creating = Some(self.session_name().to_owned());
+                                            self.start_creating(self.session_name().to_owned());
                                             action = Action::CreateSession(connection);
                                         } else {
                                             action = Action::Connect(connection);
@@ -3430,9 +3439,8 @@ mod tests {
         let mut ui = DesktopUi::default();
         ui.form.destination = "zork".to_owned();
         ui.form.host = "10.0.0.2".to_owned();
-        ui.listed_destination = "zork".to_owned();
-        ui.creating = Some("fresh".to_owned());
-        ui.form.session = "fresh".to_owned();
+        ui.start_creating("fresh".to_owned());
+        assert_eq!(ui.listed_destination, "zork");
         let mut state = desktop::State::default();
         state.discovery = Some(desktop::Discovery::Created("fresh".into()));
         assert!(matches!(paint(&mut ui, &mut state), Action::Connect(_)));
