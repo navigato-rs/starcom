@@ -9,6 +9,12 @@ const MAX_HELD_OUTPUT: usize = 1024 * 1024;
 /// affordance. Longer runs are underlined content, not a hidden link.
 const MAX_AFFORDANCE_CELLS: usize = 40;
 
+#[derive(Clone, Copy)]
+enum HardWrapTarget {
+    Cell,
+    SameLineAffordance,
+}
+
 impl grid::Dimensions for core::Size {
     fn columns(&self) -> usize {
         (*self).columns()
@@ -228,6 +234,9 @@ impl Terminal {
         if let Some(uri) = self.hyperlink_at(point).filter(|uri| !uri.is_empty()) {
             return Some(uri);
         }
+        if let Some(url) = self.hard_wrapped_http_url(point, HardWrapTarget::Cell) {
+            return Some(url);
+        }
         let (column, line) = self.wrapped_line_text(point)?;
         if let Some(url) = http_url_at(&line, column) {
             return Some(url.to_owned());
@@ -238,6 +247,9 @@ impl Terminal {
         let run = self.underline_run(point);
         if run == 0 || run > MAX_AFFORDANCE_CELLS {
             return None;
+        }
+        if let Some(url) = self.hard_wrapped_http_url(point, HardWrapTarget::SameLineAffordance) {
+            return Some(url);
         }
         if let Some(url) = first_http_url(&line) {
             return Some(url.to_owned());
@@ -260,6 +272,117 @@ impl Terminal {
             }
         }
         None
+    }
+
+    /// Reconstruct an application-wrapped URL. Some TUIs print a newline and
+    /// repeat their indentation instead of letting the terminal set WRAPLINE.
+    /// Join only bounded, indented continuations after an obviously unfinished
+    /// URL or a row ending near the terminal margin.
+    fn hard_wrapped_http_url(&self, point: index::Point, target: HardWrapTarget) -> Option<String> {
+        use grid::Dimensions;
+        const MAX_GROUPS: usize = 8;
+
+        let point = self.clamp_point(point);
+        let top = self.model.grid().topmost_line().0;
+        let bottom = self.size.rows() as i32 - 1;
+        let clicked_start = self.logical_line_start(point.line.0, top);
+        let (clicked_column, _) = self.wrapped_line_text(point)?;
+
+        let mut starts = Vec::with_capacity(MAX_GROUPS);
+        let mut start = clicked_start;
+        for _ in 0..MAX_GROUPS {
+            starts.push(start);
+            if start <= top {
+                break;
+            }
+            start = self.logical_line_start(start - 1, top);
+        }
+
+        for start in starts {
+            let (_, line) =
+                self.wrapped_line_text(index::Point::new(index::Line(start), index::Column(0)))?;
+            let mut search = 0;
+            while search < line.len() {
+                let rest = &line[search..];
+                let Some(relative) = rest.find("https://").or_else(|| rest.find("http://")) else {
+                    break;
+                };
+                let url_start = search + relative;
+                let Some((first, reaches_end)) = url_line_piece(&line[url_start..]) else {
+                    search = url_start.saturating_add(1);
+                    continue;
+                };
+                let start_column = line[..url_start].chars().count();
+                let mut touched = clicked_start == start
+                    && clicked_column >= start_column
+                    && clicked_column < start_column + first.chars().count();
+                let mut url = first.to_owned();
+                let mut groups = 1;
+                let mut row = self.logical_line_end(start, bottom);
+                let mut continues = reaches_end && self.url_may_continue(first, &line);
+
+                while continues && row < bottom && groups < MAX_GROUPS {
+                    let next = row + 1;
+                    let (_, next_line) = self.wrapped_line_text(index::Point::new(
+                        index::Line(next),
+                        index::Column(0),
+                    ))?;
+                    let indent_bytes = next_line.len() - next_line.trim_start().len();
+                    if indent_bytes == 0 {
+                        break;
+                    }
+                    let indent_columns = next_line[..indent_bytes].chars().count();
+                    let Some((piece, piece_reaches_end)) =
+                        url_line_piece(&next_line[indent_bytes..])
+                    else {
+                        break;
+                    };
+                    if clicked_start == next
+                        && clicked_column >= indent_columns
+                        && clicked_column < indent_columns + piece.chars().count()
+                    {
+                        touched = true;
+                    }
+                    url.push_str(piece);
+                    groups += 1;
+                    row = self.logical_line_end(next, bottom);
+                    continues = piece_reaches_end && self.url_may_continue(piece, &next_line);
+                }
+
+                if groups > 1
+                    && (touched
+                        || matches!(target, HardWrapTarget::SameLineAffordance)
+                            && start == clicked_start)
+                    && http_url_from(&url).is_some_and(|parsed| parsed.len() == url.len())
+                {
+                    return Some(url);
+                }
+                search = url_start + first.len().max(1);
+            }
+        }
+        None
+    }
+
+    fn logical_line_start(&self, mut row: i32, top: i32) -> i32 {
+        while row > top && self.line_wraps(index::Line(row - 1)) {
+            row -= 1;
+        }
+        row
+    }
+
+    fn logical_line_end(&self, mut row: i32, bottom: i32) -> i32 {
+        while row < bottom && self.line_wraps(index::Line(row)) {
+            row += 1;
+        }
+        row
+    }
+
+    fn url_may_continue(&self, piece: &str, line: &str) -> bool {
+        piece
+            .chars()
+            .last()
+            .is_some_and(|last| matches!(last, '/' | '-' | '_' | '?' | '&' | '=' | '%' | '#'))
+            || line.chars().count().saturating_add(8) >= self.size.columns()
     }
 
     fn line_wraps(&self, line: index::Line) -> bool {
@@ -422,17 +545,23 @@ fn http_url_from(text: &str) -> Option<&str> {
     if !text.starts_with("https://") && !text.starts_with("http://") {
         return None;
     }
-    let len = text
+    let (url, _) = url_line_piece(text)?;
+    let min = if url.starts_with("https://") { 8 } else { 7 };
+    (url.len() > min).then_some(url)
+}
+
+/// One URL-shaped token from a printed row and whether it reaches the row end
+/// without terminal punctuation. Unlike `http_url_from`, the first piece may
+/// be only `https://`; a later indented row supplies the host.
+fn url_line_piece(text: &str) -> Option<(&str, bool)> {
+    let raw_len = text
         .find(|ch: char| {
             ch.is_whitespace() || matches!(ch, '"' | '\'' | '<' | '>' | ')' | ']' | '|')
         })
         .unwrap_or(text.len());
-    let mut url = &text[..len];
-    while let Some(stripped) = url.strip_suffix(['.', ',', ';', '!', '?']) {
-        url = stripped;
-    }
-    let min = if url.starts_with("https://") { 8 } else { 7 };
-    (url.len() > min).then_some(url)
+    let raw = &text[..raw_len];
+    let piece = raw.trim_end_matches(['.', ',', ';', '!', '?']);
+    (!piece.is_empty()).then_some((piece, raw_len == text.len() && piece.len() == raw.len()))
 }
 
 #[cfg(test)]
@@ -602,6 +731,88 @@ mod tests {
                 .as_deref(),
             Some("https://example.com/wrap-path"),
             "the continuation row is the same URL"
+        );
+    }
+
+    #[test]
+    fn grok_hard_wrapped_urls_copy_without_indentation() {
+        let mut terminal = Terminal::new(core::Size::new(80, 6).unwrap(), 0);
+        terminal.feed(
+            concat!(
+                "  \x1b[4mcompare\x1b[0m (https://tclips.ap.tesla.services/viz?id=part-\r\n",
+                "  two&ids=three%2Cfour)\r\n",
+            )
+            .as_bytes(),
+        );
+        let expected = concat!(
+            "https://tclips.ap.tesla.services/viz?id=part-",
+            "two&ids=three%2Cfour",
+        );
+        assert_eq!(
+            terminal
+                .link_destination(index::Point::new(index::Line(0), index::Column(20)))
+                .as_deref(),
+            Some(expected)
+        );
+        assert_eq!(
+            terminal
+                .link_destination(index::Point::new(index::Line(1), index::Column(4)))
+                .as_deref(),
+            Some(expected),
+            "the indented continuation belongs to the same URL"
+        );
+        assert_eq!(
+            terminal
+                .link_destination(index::Point::new(index::Line(0), index::Column(4)))
+                .as_deref(),
+            Some(expected),
+            "a short underlined affordance on the starting row uses the whole URL"
+        );
+    }
+
+    #[test]
+    fn grok_can_hard_wrap_immediately_after_the_scheme() {
+        let mut terminal = Terminal::new(core::Size::new(80, 6).unwrap(), 0);
+        terminal.feed(
+            concat!(
+                "  compare (https://\r\n",
+                "  tclips.ap.tesla.services/viz?id=part-\r\n",
+                "  two&ids=three%2Cfour)\r\n",
+            )
+            .as_bytes(),
+        );
+        let expected = concat!(
+            "https://tclips.ap.tesla.services/viz?id=part-",
+            "two&ids=three%2Cfour",
+        );
+        assert_eq!(
+            terminal
+                .link_destination(index::Point::new(index::Line(0), index::Column(15)))
+                .as_deref(),
+            Some(expected)
+        );
+        assert_eq!(
+            terminal
+                .link_destination(index::Point::new(index::Line(2), index::Column(5)))
+                .as_deref(),
+            Some(expected)
+        );
+    }
+
+    #[test]
+    fn an_indented_new_line_is_not_automatically_part_of_a_url() {
+        let mut terminal = Terminal::new(core::Size::new(80, 4).unwrap(), 0);
+        terminal.feed(b"https://example.com/complete\r\n     ordinary prose\r\n");
+        assert_eq!(
+            terminal
+                .link_destination(index::Point::new(index::Line(0), index::Column(10)))
+                .as_deref(),
+            Some("https://example.com/complete")
+        );
+        assert!(
+            terminal
+                .link_destination(index::Point::new(index::Line(1), index::Column(8)))
+                .is_none()
         );
     }
 
