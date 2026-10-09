@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Refresh activity, the compact Settings gear, and Notes now share one sidebar
+  footer row. Notes grows only to a readable cap and otherwise stays aligned to
+  the right; refresh activity uses a finite outward signal ripple instead of a
+  perpetual-loading-style spinner.
 - Sidebar selection no longer recenters the session list after the user has
   scrolled it. Server headers show ping normally, replace it with blue queue
   bars when multiple inputs are outstanding, and give a stalled red `WAIT`
