@@ -2645,7 +2645,7 @@ fn paint_refresh_indicator(ui: &egui::Ui, rect: egui::Rect, animation_age: Optio
         ui.painter().circle_stroke(
             center,
             radius,
-            egui::Stroke::new(1.5, color.gamma_multiply(strength)),
+            egui::Stroke::new(1.5_f32, color.gamma_multiply(strength)),
         );
     }
     let pulse = progress.map_or(0.32, |progress| 1.0 - 0.55 * progress);
@@ -2659,7 +2659,7 @@ fn settings_button(ui: &mut egui::Ui) -> egui::Response {
         .on_hover_text("Settings");
     let center = response.rect.center();
     let color = ui.visuals().strong_text_color();
-    let stroke = egui::Stroke::new(1.4, color);
+    let stroke = egui::Stroke::new(1.4_f32, color);
     ui.painter().circle_stroke(center, 4.4, stroke);
     ui.painter().circle_stroke(center, 1.6, stroke);
     for index in 0..8 {
