@@ -1269,13 +1269,7 @@ impl Workspace {
                 }
                 paint_tab_fills(ui, idle_fill, idle_hover);
 
-                let controls_height = if self.composer_open || self.tabs.is_empty() {
-                    0.0
-                } else {
-                    32.0
-                };
-                let footer_height = if self.notice.is_some() { 60.0 } else { 34.0 }
-                    + controls_height;
+                let footer_height = if self.notice.is_some() { 60.0 } else { 34.0 };
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .max_height((ui.available_height() - footer_height).max(1.0))
@@ -1514,21 +1508,16 @@ impl Workspace {
                     )
                     .on_hover_text(notice);
                 }
-                if ui
-                    .add(
-                        egui::Button::new(egui::RichText::new("Settings").size(14.0))
-                            .min_size(egui::vec2(ui.available_width(), 28.0)),
-                    )
-                    .clicked()
-                {
-                    self.about = true;
-                }
                 if !self.composer_open
                     && let Some(tab) = self.tabs.get_mut(self.active)
                 {
                     let client = sync::Arc::clone(&tab.client);
                     let state = client.lock();
-                    tab.ui.show_sidebar_controls(ui, &state);
+                    if tab.ui.show_sidebar_controls(ui, &state) {
+                        self.about = true;
+                    }
+                } else if ui::DesktopUi::show_sidebar_settings(ui) {
+                    self.about = true;
                 }
             });
         let resize_id = egui::Id::new("session-sidebar").with("__resize");

@@ -470,7 +470,6 @@ pub struct DesktopUi {
     /// The status marker advances once per visible terminal refresh, not with
     /// wall time. An idle tab therefore cannot animate itself.
     refresh_tick: u64,
-    refresh_animation_tick: u64,
     refresh_started: Option<time::Instant>,
     last_refresh: Option<(u64, u64)>,
 }
@@ -525,7 +524,6 @@ impl DesktopUi {
             client_cells: None,
             pending_client_cells: None,
             refresh_tick: 0,
-            refresh_animation_tick: 0,
             refresh_started: None,
             last_refresh: None,
         }
@@ -662,8 +660,13 @@ impl DesktopUi {
         }
     }
 
-    pub(crate) fn show_sidebar_controls(&mut self, ui: &mut egui::Ui, state: &desktop::State) {
+    pub(crate) fn show_sidebar_controls(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &desktop::State,
+    ) -> bool {
         self.sync_option_rows(state);
+        let mut settings_clicked = false;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             let now = time::Instant::now();
@@ -682,11 +685,11 @@ impl DesktopUi {
             paint_refresh_indicator(
                 ui,
                 refresh_rect.shrink(5.0),
-                self.refresh_tick,
-                self.refresh_animation_tick,
                 animation_age.filter(|_| animating),
             );
             refresh.on_hover_text("Terminal refresh activity");
+
+            settings_clicked = settings_button(ui).clicked();
 
             let option_count = self
                 .option_rows
@@ -696,20 +699,32 @@ impl DesktopUi {
             let options_loaded = self
                 .window
                 .is_some_and(|window| state.window_options.contains_key(&window));
-            let options = ui.add_enabled(
-                options_loaded,
-                egui::Button::new(if options_loaded {
-                    if option_count == 0 {
-                        "Notes".to_owned()
-                    } else {
-                        format!("Notes({option_count})")
-                    }
-                } else {
+            let label = if options_loaded {
+                if option_count == 0 {
                     "Notes".to_owned()
-                })
-                .selected(self.options_open)
-                .min_size(egui::vec2(ui.available_width(), 28.0)),
-            );
+                } else {
+                    format!("Notes({option_count})")
+                }
+            } else {
+                "Notes".to_owned()
+            };
+            let available = egui::vec2(ui.available_width(), 28.0);
+            let options = ui
+                .allocate_ui_with_layout(
+                    available,
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        let width = ui.available_width().min(112.0);
+                        ui.add_enabled_ui(options_loaded, |ui| {
+                            ui.add_sized(
+                                egui::vec2(width, 28.0),
+                                egui::Button::new(label).selected(self.options_open),
+                            )
+                        })
+                        .inner
+                    },
+                )
+                .inner;
             if options
                 .on_disabled_hover_text("Notes are not available yet")
                 .on_hover_text("Show notes attached to this session")
@@ -718,6 +733,11 @@ impl DesktopUi {
                 self.options_open = !self.options_open;
             }
         });
+        settings_clicked
+    }
+
+    pub(crate) fn show_sidebar_settings(ui: &mut egui::Ui) -> bool {
+        ui.horizontal(|ui| settings_button(ui).clicked()).inner
     }
 
     fn show_status_contents(&mut self, ui: &mut egui::Ui, state: &mut desktop::State) {
@@ -1659,7 +1679,6 @@ impl DesktopUi {
                 now.saturating_duration_since(started) >= REFRESH_ANIMATION_DURATION
             });
             if animation_finished {
-                self.refresh_animation_tick = self.refresh_tick;
                 self.refresh_started = Some(now);
             }
             self.last_refresh = refresh;
@@ -2610,46 +2629,46 @@ pub(crate) fn paint_activity_indicator(ui: &egui::Ui, rect: egui::Rect, time: f6
 }
 
 /// A refresh mark driven by visible changes rather than a permanent timer.
-/// Fresh activity sends a bright comet around the ring, then leaves it parked.
-const REFRESH_ANIMATION_DURATION: time::Duration = time::Duration::from_secs(1);
+/// Each activity burst sends one finite ripple out from the center: an event,
+/// not a spinner suggesting that work remains unfinished.
+const REFRESH_ANIMATION_DURATION: time::Duration = time::Duration::from_millis(650);
 
-fn paint_refresh_indicator(
-    ui: &egui::Ui,
-    rect: egui::Rect,
-    tick: u64,
-    animation_tick: u64,
-    animation_age: Option<time::Duration>,
-) {
-    const DOTS: usize = 8;
-    let phase = animation_age
-        .map(|age| {
-            animation_tick as f32
-                + age.as_secs_f32() / REFRESH_ANIMATION_DURATION.as_secs_f32() * DOTS as f32
-        })
-        .unwrap_or(tick as f32);
-    let head = phase.floor() as usize % DOTS;
+fn paint_refresh_indicator(ui: &egui::Ui, rect: egui::Rect, animation_age: Option<time::Duration>) {
     let center = rect.center();
-    let radius = rect.width().min(rect.height()) * 0.36;
+    let extent = rect.width().min(rect.height()) * 0.46;
     let color = ui.visuals().strong_text_color();
-    for index in 0..DOTS {
-        let trail = (head + DOTS - index) % DOTS;
-        let strength = match trail {
-            0 => 1.0,
-            1 => 0.68,
-            2 => 0.42,
-            _ => 0.16,
-        };
-        let angle =
-            index as f32 / DOTS as f32 * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
-        let position = center + egui::vec2(angle.cos(), angle.sin()) * radius;
-        ui.painter()
-            .circle_filled(position, 1.55, color.gamma_multiply(strength));
+    let progress = animation_age
+        .map(|age| (age.as_secs_f32() / REFRESH_ANIMATION_DURATION.as_secs_f32()).clamp(0.0, 1.0));
+    if let Some(progress) = progress {
+        let radius = egui::lerp(2.5..=extent, progress);
+        let strength = (1.0 - progress).powi(2);
+        ui.painter().circle_stroke(
+            center,
+            radius,
+            egui::Stroke::new(1.5, color.gamma_multiply(strength)),
+        );
     }
-    let pulse = animation_age
-        .map(|age| 0.35 + 0.35 * (age.as_secs_f32() * 18.0).sin().abs())
-        .unwrap_or(0.24);
+    let pulse = progress.map_or(0.32, |progress| 1.0 - 0.55 * progress);
     ui.painter()
-        .circle_filled(center, 1.2, color.gamma_multiply(pulse));
+        .circle_filled(center, 2.0, color.gamma_multiply(pulse));
+}
+
+fn settings_button(ui: &mut egui::Ui) -> egui::Response {
+    let response = ui
+        .add(egui::Button::new("").min_size(egui::vec2(28.0, 28.0)))
+        .on_hover_text("Settings");
+    let center = response.rect.center();
+    let color = ui.visuals().strong_text_color();
+    let stroke = egui::Stroke::new(1.4, color);
+    ui.painter().circle_stroke(center, 4.4, stroke);
+    ui.painter().circle_stroke(center, 1.6, stroke);
+    for index in 0..8 {
+        let angle = index as f32 * std::f32::consts::FRAC_PI_4;
+        let direction = egui::vec2(angle.cos(), angle.sin());
+        ui.painter()
+            .line_segment([center + direction * 5.2, center + direction * 7.0], stroke);
+    }
+    response
 }
 
 fn paint_activity_dots(ui: &egui::Ui, rect: egui::Rect, step: u64) {
