@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Sidebar selection no longer recenters the session list after the user has
+  scrolled it. Server headers show ping normally, replace it with blue queue
+  bars when multiple inputs are outstanding, and give a stalled red `WAIT`
+  priority over both. Layout rebuilds discard stale pixel scroll momentum while
+  preserving deliberate history position, so splitting a busy terminal cannot
+  overshoot its rebuilt contents.
+- The 16-session workspace limit and its persistence truncation are removed.
+  Large escaped tmux output notifications (including synchronized TUI redraws)
+  now have a 4 MiB safety bound instead of disconnecting above 64 KiB.
 - Creating the first logical session now enters it even when host discovery had
   not finished first. Links printed across indented hard-wrapped rows are copied
   as one URL, including Grok comparison links split immediately after `https://`.
@@ -29,9 +38,9 @@
   remain ordering barriers, and uncertain delivery is still never retried.
   Slow input records queue time, acknowledgment time, intervening output, and
   tmux flow-control lag; the latest breakdown is available by hovering latency.
-- The status bar shows a compact segmented input backlog between the server and
-  latency: one segment per queued or dispatched-but-unacknowledged ordinary input
-  action. Its hover text separates local queueing from tmux acknowledgments.
+- The server header shows a compact segmented input backlog: one segment per
+  queued or dispatched-but-unacknowledged ordinary input action. Its hover text
+  separates local queueing from tmux acknowledgments.
   Successful layout resynchronization now clears the warning that prompted it.
 - While input awaits acknowledgment, latency changes to a red `WAIT` after
   `max(5 × last RTT, 50 ms)`. The hover reports the live wait and threshold;

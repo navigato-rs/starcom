@@ -16,6 +16,10 @@ pub(crate) fn focus_id(generation: u64, pane: tmuxctl::PaneId) -> egui::Id {
     egui::Id::new(("terminal", generation, pane.0))
 }
 
+fn scroll_id(generation: u64, pane: tmuxctl::PaneId) -> egui::Id {
+    egui::Id::new(("starcom-scroll", generation, pane.0))
+}
+
 /// Font cell size used both to paint and to tell tmux the client size.
 pub(crate) fn cell_metrics(ui: &mut egui::Ui, font_size: f32) -> (f32, f32) {
     let font = egui::FontId::monospace(font_size);
@@ -226,9 +230,10 @@ impl PaneUi {
         }
     }
 
-    /// Layout rebuilds keep stuck/offset; only the sub-row remainder is stale
-    /// because row height and pane size have changed.
+    /// Layout rebuilds keep stuck/offset. Pixel and wheel remainders belong to
+    /// the old geometry and must not carry momentum into a split or resize.
     pub(crate) fn on_layout_rebuild(&mut self) {
+        self.remainder = 0.0;
         self.scroll_frac = 0.0;
     }
 
@@ -347,7 +352,10 @@ impl PaneUi {
                 // the user has scrolled up, Alacritty's display_offset is
                 // the lock. Default ScrollArea offset is 0 (oldest history).
                 let mut area = egui::ScrollArea::vertical()
-                    .id_salt(("starcom-scroll", pane_id.0))
+                    // A split replaces pane geometry. Reusing egui's stored
+                    // offset/velocity can overshoot the rebuilt terminal;
+                    // history position itself is restored explicitly below.
+                    .id_salt(scroll_id(generation, pane_id))
                     .auto_shrink([false, false])
                     .stick_to_bottom(self.stuck)
                     // Dragging contents is local selection, never a pan. The
@@ -1288,6 +1296,13 @@ mod tests {
         let origin = scroll_origin(8, 3, 20.0, 4.0);
         let after = scroll_origin(9, 4, 20.0, 4.0);
         assert!((origin - after).abs() < 0.01);
+    }
+
+    #[test]
+    fn layout_generations_have_independent_scroll_state() {
+        let pane = tmuxctl::PaneId(7);
+        assert_eq!(scroll_id(1, pane), scroll_id(1, pane));
+        assert_ne!(scroll_id(1, pane), scroll_id(2, pane));
     }
 
     #[test]
