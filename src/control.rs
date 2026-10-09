@@ -17,7 +17,12 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            line_bytes: 64 * 1024,
+            // `%output` is one escaped control-protocol line. Full-screen
+            // synchronized redraws from terminal UIs can exceed 64 KiB, and
+            // escaping can expand each source byte to four bytes. Keep a hard
+            // allocation bound without treating a large redraw as a broken
+            // connection.
+            line_bytes: 4 * 1024 * 1024 + 128,
             reply_bytes: 1024 * 1024,
             reply_lines: 16 * 1024,
             pending_commands: 128,
@@ -447,6 +452,14 @@ mod tests {
             control.feed(b"%begin 1 1 0\n12345\n", |_| {}),
             Err(Error::ReplyTooLarge)
         );
+    }
+
+    #[test]
+    fn default_limit_accepts_a_large_terminal_redraw() {
+        let mut line = b"%output %1 ".to_vec();
+        line.extend(std::iter::repeat_n(b'x', 128 * 1024));
+        line.push(b'\n');
+        Control::default().feed(&line, |_| {}).unwrap();
     }
 
     #[test]

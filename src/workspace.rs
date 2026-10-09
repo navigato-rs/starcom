@@ -7,7 +7,6 @@ use anyhow::Context;
 
 use crate::{core, desktop, dialog, reconnect, ssh_config, store, ui};
 
-const MAX_TABS: usize = 16;
 const NEW_CONNECTION: &str = "New connection";
 type Wake = sync::Arc<dyn Fn() + Send + Sync>;
 
@@ -165,7 +164,6 @@ fn ack_painted(tab: &mut Tab) {
 fn submit_frame(
     tab: &mut Tab,
     steps: Vec<ui::Step>,
-    can_add_session: bool,
     clipboard: &mut impl FnMut() -> Option<String>,
 ) -> anyhow::Result<(bool, bool)> {
     let mut save = false;
@@ -187,13 +185,6 @@ fn submit_frame(
             }
         }
     }
-    anyhow::ensure!(
-        can_add_session
-            || !actions
-                .iter()
-                .any(|(_, action)| matches!(action, crate::input::Action::MoveToNewSession)),
-        "at most {MAX_TABS} session tabs may be open"
-    );
     if actions.is_empty() {
         Ok((save, false))
     } else {
@@ -752,12 +743,7 @@ impl Workspace {
             return;
         };
         self.fold_open_time();
-        let tabs: Vec<_> = self
-            .tabs
-            .iter()
-            .take(store::MAX_TABS)
-            .map(|tab| tab.ui.saved())
-            .collect();
+        let tabs: Vec<_> = self.tabs.iter().map(|tab| tab.ui.saved()).collect();
         let saved = store::Workspace {
             tabs,
             active: self.active,
@@ -872,10 +858,6 @@ impl Workspace {
     }
 
     fn push_idle_tab(&mut self) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            self.tabs.len() < MAX_TABS,
-            "at most {MAX_TABS} connection tabs may be open"
-        );
         let tab = spawn_tab(
             self.alloc_id(),
             sync::Arc::clone(&self.wake),
@@ -889,10 +871,6 @@ impl Workspace {
     }
 
     fn promote_composer(&mut self) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            self.tabs.len() < MAX_TABS,
-            "at most {MAX_TABS} connection tabs may be open"
-        );
         let replacement = spawn_tab(
             self.alloc_id(),
             sync::Arc::clone(&self.wake),
@@ -1133,12 +1111,6 @@ impl Workspace {
                     && tab.ui.current_window() == Some(moved.source)
             })
             .context("the source logical session disappeared during its pane move")?;
-        anyhow::ensure!(
-            self.tabs.len() < MAX_TABS,
-            "the pane moved, but the workspace already has {MAX_TABS} tabs; open its '{}' session manually",
-            moved.name
-        );
-
         let mut saved = self.tabs[source].ui.saved();
         saved.session.clone_from(&moved.name);
         saved.window = Some(moved.window.0);
@@ -1276,8 +1248,7 @@ impl Workspace {
                 }
 
                 let add = ui
-                    .add_enabled(
-                        self.tabs.len() < MAX_TABS || self.composer_open,
+                    .add(
                         egui::Button::new(
                             egui::RichText::new("+ New session")
                                 .size(14.0)
@@ -1489,9 +1460,6 @@ impl Workspace {
                                             reorder = Some((*dragged, id, after));
                                         }
                                     }
-                                    if selected && !ui.clip_rect().intersects(response.rect) {
-                                        response.scroll_to_me(Some(egui::Align::Center));
-                                    }
                                     if busy_phase(phase) {
                                         let indicator = egui::Rect::from_center_size(
                                             egui::pos2(
@@ -1686,7 +1654,6 @@ impl Workspace {
                     let mut close_after_exit = None;
                     let mut return_to_composer = false;
                     let mut promoted_composer = false;
-                    let can_add_session = self.tabs.len() < MAX_TABS;
                     let composer_connect = self.composer_open
                         && id == self.composer.id
                         && matches!(action.as_ref(), ui::Action::Connect(_));
@@ -1823,7 +1790,7 @@ impl Workspace {
                                 let frame = if steps.is_empty() {
                                     Ok((false, false))
                                 } else {
-                                    submit_frame(tab, steps, can_add_session, &mut clipboard)
+                                    submit_frame(tab, steps, &mut clipboard)
                                 };
                                 if let Ok((frame_save, frame_follow)) = &frame {
                                     save |= *frame_save;
@@ -1842,7 +1809,7 @@ impl Workspace {
                             // still reaches the worker as one ordered, atomic batch.
                             ui::Action::Frame(steps) => {
                                 let (frame_save, frame_follow) =
-                                    submit_frame(tab, steps, can_add_session, &mut clipboard)?;
+                                    submit_frame(tab, steps, &mut clipboard)?;
                                 save |= frame_save;
                                 follow_input |= frame_follow;
                                 Ok(())
@@ -2821,12 +2788,12 @@ mod tests {
     }
 
     #[test]
-    fn connections_and_tabs_are_bounded() {
+    fn more_than_sixteen_tabs_are_allowed() {
         let mut workspace = Workspace::new(sync::Arc::new(|| {}), desktop::Startup::Demo).unwrap();
-        for _ in 1..MAX_TABS {
+        for _ in 1..32 {
             workspace.push_idle_tab().unwrap();
         }
-        assert!(workspace.push_idle_tab().is_err());
+        assert_eq!(workspace.tabs.len(), 32);
     }
     #[test]
     fn native_smoke_geometry() {
@@ -2870,7 +2837,7 @@ mod tests {
         let ctx = egui::Context::default();
         crate::window::configure(&ctx);
         let mut workspace = Workspace::new(sync::Arc::new(|| {}), desktop::Startup::Demo).unwrap();
-        for _ in 1..MAX_TABS {
+        for _ in 1..32 {
             workspace.push_idle_tab().unwrap();
         }
         for pass in 0..3 {

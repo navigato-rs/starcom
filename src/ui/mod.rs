@@ -688,8 +688,6 @@ impl DesktopUi {
             );
             refresh.on_hover_text("Terminal refresh activity");
 
-            paint_input_backlog_status(ui, state);
-
             let option_count = self
                 .option_rows
                 .iter()
@@ -2736,6 +2734,23 @@ fn latency_warning(
         .map(|waiting| (waiting, threshold))
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ServerIndicator {
+    Ping,
+    Backlog,
+    Wait,
+}
+
+fn server_indicator(backlog: desktop::InputBacklog, warning: bool) -> ServerIndicator {
+    if warning {
+        ServerIndicator::Wait
+    } else if backlog.total() > 1 {
+        ServerIndicator::Backlog
+    } else {
+        ServerIndicator::Ping
+    }
+}
+
 /// Paint the compact server-wide latency shown beside a sidebar server name.
 pub(crate) fn paint_server_latency(ui: &mut egui::Ui, state: &desktop::State) {
     let waiting = state.input_wait();
@@ -2745,7 +2760,12 @@ pub(crate) fn paint_server_latency(ui: &mut egui::Ui, state: &desktop::State) {
         ui.ctx()
             .request_repaint_after(threshold.saturating_sub(waiting));
     }
-    let response = paint_latency(ui, state.last_rtt, warning.is_some());
+    let backlog = state.input_backlog();
+    let response = match server_indicator(backlog, warning.is_some()) {
+        ServerIndicator::Wait => paint_latency(ui, state.last_rtt, true),
+        ServerIndicator::Backlog => paint_server_backlog(ui, backlog),
+        ServerIndicator::Ping => paint_latency(ui, state.last_rtt, false),
+    };
     if let Some((waiting, threshold)) = warning {
         ui.ctx()
             .request_repaint_after(time::Duration::from_millis(100));
@@ -2753,6 +2773,13 @@ pub(crate) fn paint_server_latency(ui: &mut egui::Ui, state: &desktop::State) {
             "No tmux acknowledgment for {} ms; warning threshold {} ms",
             waiting.as_millis(),
             threshold.as_millis(),
+        ));
+    } else if backlog.total() > 1 {
+        response.on_hover_text(format!(
+            "{} terminal input actions awaiting confirmation: {} queued locally, {} dispatched to the control stream",
+            backlog.total(),
+            backlog.queued,
+            backlog.in_flight,
         ));
     } else if state.last_rtt.is_some()
         && let Some(latency) = state.input_latency
@@ -2768,22 +2795,14 @@ pub(crate) fn paint_server_latency(ui: &mut egui::Ui, state: &desktop::State) {
     }
 }
 
-/// Paint the active server's fixed-width input queue in the sidebar footer.
-fn paint_input_backlog_status(ui: &mut egui::Ui, state: &desktop::State) {
-    let backlog = state.input_backlog();
-    let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(input_backlog_width(backlog.total()), 12.0),
-        egui::Sense::hover(),
-    );
-    paint_input_backlog(ui, rect, backlog);
-    if backlog.total() != 0 {
-        response.on_hover_text(format!(
-            "{} terminal input actions awaiting confirmation: {} queued locally, {} dispatched to the control stream",
-            backlog.total(),
-            backlog.queued,
-            backlog.in_flight,
-        ));
-    }
+/// Paint a server's queue in the same fixed slot used by ping and WAIT.
+fn paint_server_backlog(ui: &mut egui::Ui, backlog: desktop::InputBacklog) -> egui::Response {
+    let reserved = latency_size(ui);
+    let (rect, response) = ui.allocate_exact_size(reserved, egui::Sense::hover());
+    let width = input_backlog_width(backlog.total()).min(rect.width());
+    let bars = egui::Rect::from_center_size(rect.center(), egui::vec2(width, rect.height()));
+    paint_input_backlog(ui, bars, backlog);
+    response
 }
 
 fn paint_leave_icon(ui: &egui::Ui, rect: egui::Rect) {
@@ -2864,6 +2883,14 @@ fn paint_latency(ui: &mut egui::Ui, rtt: Option<time::Duration>, warning: bool) 
     response
 }
 
+fn latency_size(ui: &egui::Ui) -> egui::Vec2 {
+    let mut font = egui::TextStyle::Small.resolve(ui.style());
+    font.family = egui::FontFamily::Monospace;
+    ui.painter()
+        .layout_no_wrap("00 ms".to_owned(), font, ui.visuals().text_color())
+        .size()
+}
+
 fn field(ui: &mut egui::Ui, label: &str, value: &mut String) {
     ui.label(label);
     ui.add(
@@ -2891,6 +2918,21 @@ mod tests {
         assert_eq!(input_backlog_width(5), 19.0);
         assert_eq!(input_backlog_width(8), 31.0);
         assert_eq!(input_backlog_width(64), 40.0);
+    }
+
+    #[test]
+    fn server_indicator_prioritizes_wait_then_multi_action_backlog() {
+        let backlog = |total| desktop::InputBacklog {
+            queued: total,
+            in_flight: 0,
+        };
+        assert_eq!(server_indicator(backlog(0), false), ServerIndicator::Ping);
+        assert_eq!(server_indicator(backlog(1), false), ServerIndicator::Ping);
+        assert_eq!(
+            server_indicator(backlog(2), false),
+            ServerIndicator::Backlog
+        );
+        assert_eq!(server_indicator(backlog(2), true), ServerIndicator::Wait);
     }
 
     #[test]

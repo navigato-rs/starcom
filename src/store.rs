@@ -15,11 +15,13 @@ use std::{collections, env, fs, io, path};
 use anyhow::Context;
 
 /// Refuse a file that has grown beyond anything this program writes.
-const MAX_BYTES: u64 = 64 * 1024;
+const MAX_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_VALUE: usize = 4096;
 /// A key, a space, and the longest value this program writes.
 const MAX_LINE: usize = MAX_VALUE + 128;
-pub const MAX_TABS: usize = 16;
+/// Parser resource bound, not a product/UI limit. This is deliberately far
+/// beyond a plausible workspace while keeping hand-edited files bounded.
+const MAX_SAVED_TABS: usize = 16 * 1024;
 /// Desktop redraw cap written as a file-level setting. 0 in a hand-edited file
 /// means "use the default" rather than "never paint".
 pub const DEFAULT_FPS: u32 = 5;
@@ -158,8 +160,8 @@ fn parse(text: &str) -> anyhow::Result<Workspace> {
         }
         if line == "[tab]" {
             anyhow::ensure!(
-                workspace.tabs.len() < MAX_TABS,
-                "saved workspace holds more than {MAX_TABS} tabs"
+                workspace.tabs.len() < MAX_SAVED_TABS,
+                "saved workspace holds more than {MAX_SAVED_TABS} tabs"
             );
             if let Some(fields) = fields.take() {
                 workspace
@@ -253,8 +255,8 @@ fn parse(text: &str) -> anyhow::Result<Workspace> {
     }
     if let Some(fields) = fields {
         anyhow::ensure!(
-            workspace.tabs.len() < MAX_TABS,
-            "saved workspace holds more than {MAX_TABS} tabs"
+            workspace.tabs.len() < MAX_SAVED_TABS,
+            "saved workspace holds more than {MAX_SAVED_TABS} tabs"
         );
         workspace.tabs.push(tab(&fields, version)?);
     }
@@ -367,7 +369,7 @@ pub fn render(workspace: &Workspace) -> String {
         "open {}\n",
         workspace.open_secs.min(MAX_OPEN_SECS)
     ));
-    for tab in workspace.tabs.iter().take(MAX_TABS) {
+    for tab in &workspace.tabs {
         out.push_str("\n[tab]\n");
         let mut put = |key: &str, value: &str| {
             // A control character could only arrive from a field the user typed;
@@ -422,7 +424,12 @@ pub fn save(file: &path::Path, workspace: &Workspace) -> anyhow::Result<()> {
     let parent = file.parent().context("workspace path has no directory")?;
     fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     let temporary = file.with_extension("conf.new");
-    fs::write(&temporary, render(workspace).as_bytes())
+    let rendered = render(workspace);
+    anyhow::ensure!(
+        rendered.len() as u64 <= MAX_BYTES,
+        "saved workspace exceeds {MAX_BYTES} bytes"
+    );
+    fs::write(&temporary, rendered.as_bytes())
         .with_context(|| format!("write {}", temporary.display()))?;
     #[cfg(unix)]
     {
@@ -651,7 +658,7 @@ mod tests {
         assert!(parse("[tab]\naccess maybe\n").is_err());
         assert!(parse("[tab]\nreconnect maybe\n").is_err());
         assert!(parse("[tab]\npane not-a-number\n").is_err());
-        let many = "[tab]\nhost a\n".repeat(MAX_TABS + 1);
+        let many = "[tab]\nhost a\n".repeat(MAX_SAVED_TABS + 1);
         assert!(parse(&many).is_err(), "tab count must be bounded");
         assert!(parse("[tab]\nhost a\nhost b\n").is_err(), "duplicate key");
         // An out-of-range active index selects a real tab instead of panicking.
@@ -673,6 +680,20 @@ mod tests {
             !file.with_extension("conf.new").exists(),
             "the temporary file outlived the save"
         );
+    }
+
+    #[test]
+    fn rendering_does_not_truncate_a_large_workspace() {
+        let mut workspace = sample();
+        workspace.tabs = (0..32)
+            .map(|index| Tab {
+                host: format!("host-{index}"),
+                ..Tab::default()
+            })
+            .collect();
+        let parsed = parse(&render(&workspace)).unwrap();
+        assert_eq!(parsed.tabs.len(), 32);
+        assert_eq!(parsed.tabs.last().unwrap().host, "host-31");
     }
 
     struct Scratch(path::PathBuf);
