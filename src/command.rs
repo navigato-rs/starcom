@@ -92,14 +92,14 @@ impl Command {
     pub fn break_pane(pane: tmuxctl::PaneId, name: &crate::core::SessionName) -> Self {
         let quoted = shell_quote(name.as_str()).expect("SessionName is shell-quotable");
         Self(format!(
-            "break-pane -d -P -F '#{{window_id}}\t#{{window_name}}' -n {quoted} -s {pane}\n"
+            "break-pane -d -P -F '#{{window_id}}|#{{q:window_name}}' -n {quoted} -s {pane}\n"
         ))
     }
 
     pub fn new_window(name: &crate::core::SessionName) -> Self {
         let quoted = shell_quote(name.as_str()).expect("SessionName is shell-quotable");
         Self(format!(
-            "new-window -d -P -F '#{{window_id}}\t#{{window_name}}' -n {quoted}\n"
+            "new-window -d -P -F '#{{window_id}}|#{{q:window_name}}' -n {quoted}\n"
         ))
     }
 

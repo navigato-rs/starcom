@@ -328,13 +328,16 @@ impl Inspector {
             Ok(batch) => {
                 notifications.extend(batch.notifications.into_iter().map(|(_, event)| event));
                 let (listed, later) =
-                    self.live_request("list-windows -F '#{window_id}\t#{window_name}'\n")?;
+                    self.live_request("list-windows -F '#{window_id}|#{q:window_name}'\n")?;
                 notifications.extend(later);
                 let listed: Vec<_> = listed
                     .into_iter()
                     .filter_map(|line| {
-                        line.split_once('\t')
-                            .map(|(id, name)| (id.to_owned(), name.to_owned()))
+                        line.split_once('|').and_then(|(id, name)| {
+                            unescape_tmux_argument(name)
+                                .ok()
+                                .map(|name| (id.to_owned(), name))
+                        })
                     })
                     .collect();
                 let matching = listed
@@ -516,26 +519,28 @@ impl Inspector {
             .first()
             .and_then(|reply| reply.first())
             .context("missing new-window result")?;
-        let (window, actual_name) = reply
-            .split_once('\t')
-            .context("invalid new-window result")?;
+        let (window, actual_name) = reply.split_once('|').context("invalid new-window result")?;
         let window = tmuxctl::WindowId(
             window
                 .strip_prefix('@')
                 .context("invalid new-window id")?
                 .parse()?,
         );
+        let actual_name = unescape_tmux_argument(actual_name)?;
         anyhow::ensure!(actual_name == name.as_str(), "tmux changed the window name");
 
         notifications.extend(batch.notifications.iter().map(|(_, event)| event.clone()));
         let (listed, later) =
-            self.live_request("list-windows -F '#{window_id}\t#{window_name}'\n")?;
+            self.live_request("list-windows -F '#{window_id}|#{q:window_name}'\n")?;
         notifications.extend(later);
         let listed: Vec<_> = listed
             .into_iter()
             .filter_map(|line| {
-                line.split_once('\t')
-                    .map(|(id, name)| (id.to_owned(), name.to_owned()))
+                line.split_once('|').and_then(|(id, name)| {
+                    unescape_tmux_argument(name)
+                        .ok()
+                        .map(|name| (id.to_owned(), name))
+                })
             })
             .collect();
         let matching = listed
@@ -598,15 +603,16 @@ impl Inspector {
             .replies
             .iter()
             .flat_map(|reply| reply.iter())
-            .find(|line| line.starts_with('@') && line.contains('\t'))
+            .find(|line| line.starts_with('@') && line.contains('|'))
             .context("missing pane-move result")?;
-        let (window, actual_name) = reply.split_once('\t').context("invalid pane-move result")?;
+        let (window, actual_name) = reply.split_once('|').context("invalid pane-move result")?;
         let window = tmuxctl::WindowId(
             window
                 .strip_prefix('@')
                 .context("invalid pane-move window id")?
                 .parse()?,
         );
+        let actual_name = unescape_tmux_argument(actual_name)?;
         anyhow::ensure!(
             actual_name == name.as_str(),
             "tmux changed pane-move window name"
@@ -1402,27 +1408,27 @@ fn parse_user_options(lines: &[String]) -> Vec<core::UserOption> {
     options
 }
 
-/// Reverse tmux 3.4's `args_escape`: one quoted command argument with C-style
-/// and three-digit octal escapes. Unsupported/malformed output is rejected
-/// rather than shown as editable data with changed semantics.
-fn unescape_tmux_argument(escaped: &str) -> anyhow::Result<String> {
+/// Reverse tmux's `q` format modifier and 3.4 `args_escape`: one optionally
+/// quoted value with backslash and three-digit octal escapes.
+pub(crate) fn unescape_tmux_argument(escaped: &str) -> anyhow::Result<String> {
     let bytes = escaped.as_bytes();
     let (body, quote) = match (bytes.first(), bytes.last()) {
         (Some(b'\''), Some(b'\'')) if bytes.len() >= 2 => (&bytes[1..bytes.len() - 1], b'\''),
         (Some(b'"'), Some(b'"')) if bytes.len() >= 2 => (&bytes[1..bytes.len() - 1], b'"'),
         _ => (bytes, 0),
     };
-    anyhow::ensure!(
-        quote != 0
-            || (!body.iter().any(u8::is_ascii_whitespace)
-                && !body.iter().any(|byte| matches!(byte, b'\'' | b'"'))),
-        "invalid unquoted tmux option"
-    );
     let mut out = Vec::with_capacity(body.len());
     let mut index = 0;
     while index < body.len() {
         if body[index] != b'\\' {
             anyhow::ensure!(body[index] != quote, "unescaped quote in tmux option");
+            anyhow::ensure!(
+                !body[index].is_ascii_control()
+                    && (quote != 0
+                        || (!body[index].is_ascii_whitespace()
+                            && !matches!(body[index], b'\'' | b'"'))),
+                "invalid unquoted tmux option"
+            );
             out.push(body[index]);
             index += 1;
             continue;
@@ -1455,6 +1461,29 @@ fn unescape_tmux_argument(escaped: &str) -> anyhow::Result<String> {
         index += 1;
     }
     String::from_utf8(out).context("tmux option value is not UTF-8")
+}
+
+/// Split a tmux `-F` record on unescaped pipes. The `q` modifier prefixes a
+/// literal pipe (and every literal backslash) with a backslash, so this stays
+/// unambiguous on tmux versions that rewrite control-character delimiters.
+pub(crate) fn split_tmux_fields(record: &str) -> Vec<&str> {
+    let bytes = record.as_bytes();
+    let mut fields = Vec::new();
+    let mut start = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'\\' {
+            index = (index + 2).min(bytes.len());
+            continue;
+        }
+        if bytes[index] == b'|' {
+            fields.push(&record[start..index]);
+            start = index + 1;
+        }
+        index += 1;
+    }
+    fields.push(&record[start..]);
+    fields
 }
 
 #[cfg(feature = "gui")]
@@ -1776,7 +1805,22 @@ mod tests {
     fn tmux_argument_unescaping_handles_octal_and_rejects_ambiguity() {
         assert_eq!(unescape_tmux_argument("one\\040two").unwrap(), "one two");
         assert_eq!(unescape_tmux_argument("'one two'").unwrap(), "one two");
+        assert_eq!(unescape_tmux_argument("one\\ two").unwrap(), "one two");
+        assert_eq!(
+            unescape_tmux_argument("\\\"quoted\\\"").unwrap(),
+            "\"quoted\""
+        );
         assert!(unescape_tmux_argument("one two").is_err());
         assert!(unescape_tmux_argument("'unterminated").is_err());
+    }
+
+    #[test]
+    fn escaped_pipes_do_not_split_tmux_records() {
+        let fields = split_tmux_fields("$0|starcom||0|0|@1|build\\|test|1");
+        assert_eq!(
+            fields,
+            ["$0", "starcom", "", "0", "0", "@1", "build\\|test", "1"]
+        );
+        assert_eq!(unescape_tmux_argument(fields[6]).unwrap(), "build|test");
     }
 }

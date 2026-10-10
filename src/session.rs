@@ -381,7 +381,7 @@ fn snapshot_commands(panes: &[tmuxctl::PaneId], history: usize) -> Vec<String> {
         commands.push(format!("capture-pane -p -P -C -t {pane}"));
     }
     commands.push(format!("list-panes -s -F '{}'", snapshot::STATE_FORMAT));
-    commands.push("list-windows -F '#{window_id}\t#{window_name}'".to_owned());
+    commands.push("list-windows -F '#{window_id}|#{q:window_name}'".to_owned());
     commands.push("display-message -p '#{session_id}'".to_owned());
     // The reply to this LAST command is the snapshot/live cut. tmux queues
     // subsequent pane output behind it, even under a slow SSH reader.
@@ -393,25 +393,46 @@ fn parse_windows(
     lines: &[String],
 ) -> anyhow::Result<collections::BTreeMap<tmuxctl::WindowId, String>> {
     anyhow::ensure!(!lines.is_empty(), "tmux session has no windows");
-    let mut windows = collections::BTreeMap::new();
+    let mut parsed = Vec::with_capacity(lines.len());
     let mut names = collections::BTreeSet::new();
     for line in lines {
-        let (id, name) = line
-            .split_once('\t')
+        let (id, escaped_name) = line
+            .split_once('|')
             .context("invalid tmux window metadata")?;
         let id = tmuxctl::WindowId(
             id.strip_prefix('@')
                 .context("invalid tmux window id")?
                 .parse()?,
         );
-        let name = core::SessionName::new(name.to_owned())?;
-        anyhow::ensure!(
-            windows.insert(id, name.as_str().to_owned()).is_none(),
-            "duplicate tmux window id"
+        let decoded = inspect::unescape_tmux_argument(escaped_name)
+            .context("invalid escaped tmux window name")?;
+        let name = core::SessionName::new(decoded).ok();
+        if let Some(ref name) = name {
+            anyhow::ensure!(
+                names.insert(name.as_str().to_owned()),
+                "duplicate tmux window name"
+            );
+        }
+        parsed.push((id, name));
+    }
+    let mut windows = collections::BTreeMap::new();
+    for (id, name) in parsed {
+        let name = name.map_or_else(
+            || {
+                let base = format!("invalid-window-{}", id.0);
+                let mut candidate = base.clone();
+                let mut suffix = 2_u32;
+                while !names.insert(candidate.clone()) {
+                    candidate = format!("{base}-{suffix}");
+                    suffix += 1;
+                }
+                candidate
+            },
+            |name| name.as_str().to_owned(),
         );
         anyhow::ensure!(
-            names.insert(name.as_str().to_owned()),
-            "duplicate tmux window name"
+            windows.insert(id, name).is_none(),
+            "duplicate tmux window id"
         );
     }
     Ok(windows)
@@ -442,7 +463,7 @@ mod tests {
         assert!(commands[3].contains("-P"));
         assert_eq!(
             commands[9],
-            "list-windows -F '#{window_id}\t#{window_name}'"
+            "list-windows -F '#{window_id}|#{q:window_name}'"
         );
         assert_eq!(commands[10], "display-message -p '#{session_id}'");
         assert_eq!(commands.last().unwrap(), "refresh-client -f '!no-output'");
@@ -453,5 +474,18 @@ mod tests {
         let commands = snapshot_commands(&maximum, snapshot::MAX_HISTORY_LINES);
         assert!(commands.len() <= 256);
         assert!(commands.join(" ; ").len() < 64 * 1024);
+    }
+
+    #[test]
+    fn an_invalid_window_name_does_not_block_valid_logical_sessions() {
+        let windows = parse_windows(&[
+            "@1|work".to_owned(),
+            "@2|bad\\nname".to_owned(),
+            "@3|invalid-window-2".to_owned(),
+        ])
+        .unwrap();
+        assert_eq!(windows[&tmuxctl::WindowId(1)], "work");
+        assert_eq!(windows[&tmuxctl::WindowId(2)], "invalid-window-2-2");
+        assert_eq!(windows[&tmuxctl::WindowId(3)], "invalid-window-2");
     }
 }
