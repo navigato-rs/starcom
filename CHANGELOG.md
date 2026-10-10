@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Tmux metadata uses quoted, printable names and an escape-aware delimiter.
+  This restores connections to tmux 3.2 servers, which rewrite literal tab
+  separators to underscores, and prevents one control-bearing window name from
+  blocking every valid logical session on the server.
 - Refresh activity, the compact Settings gear, and Notes now share one sidebar
   footer row. Notes grows only to a readable cap and otherwise stays aligned to
   the right; refresh activity uses a finite outward signal ripple instead of a

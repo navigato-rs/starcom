@@ -8,7 +8,7 @@ use std::{collections, io, time};
 
 use anyhow::Context;
 
-use crate::{command, core, ssh};
+use crate::{command, core, inspect, ssh};
 
 const MAX_OUTPUT: usize = 64 * 1024;
 const MAX_WINDOWS: usize = 256;
@@ -82,8 +82,8 @@ pub struct Migration {
 pub fn discover(options: &ssh::Options, socket: Option<&str>) -> anyhow::Result<Listing> {
     let mut wire = tmux(socket, true)?;
     wire.push_str(
-        " list-windows -a -F '#{session_id}\t#{session_name}\t#{session_group}\t\
-         #{session_attached}\t#{window_index}\t#{window_id}\t#{window_name}\t#{window_panes}'",
+        " list-windows -a -F '#{session_id}|#{q:session_name}|#{q:session_group}|\
+         #{session_attached}|#{window_index}|#{window_id}|#{q:window_name}|#{window_panes}'",
     );
     let output = match run(options, &wire) {
         Ok(output) => output,
@@ -428,7 +428,7 @@ fn parse(output: &str) -> anyhow::Result<Listing> {
             rows <= MAX_WINDOWS,
             "tmux reports more than {MAX_WINDOWS} windows"
         );
-        let mut fields = line.split('\t');
+        let mut fields = inspect::split_tmux_fields(line).into_iter();
         let (
             Some(session_id),
             Some(session_name),
@@ -453,10 +453,21 @@ fn parse(output: &str) -> anyhow::Result<Listing> {
         else {
             anyhow::bail!("unexpected tmux session listing");
         };
-        let session_name = core::SessionName::new(session_name)
-            .context("host listed a session name Starcom cannot target")?;
-        let window_name = core::SessionName::new(window_name)
-            .context("host listed a window name Starcom cannot target")?;
+        let session_name = inspect::unescape_tmux_argument(session_name)
+            .context("invalid escaped tmux session name")?;
+        let session_group = inspect::unescape_tmux_argument(session_group)
+            .context("invalid escaped tmux session group")?;
+        let window_name = inspect::unescape_tmux_argument(window_name)
+            .context("invalid escaped tmux window name")?;
+        let (Ok(session_name), Ok(window_name)) = (
+            core::SessionName::new(session_name),
+            core::SessionName::new(window_name),
+        ) else {
+            // A control character in a name must not split the table or block
+            // unrelated valid Starcom windows. It is not safe to offer such a
+            // window as a logical session or migration source.
+            continue;
+        };
         let session = session_id
             .strip_prefix('$')
             .context("invalid tmux session id")?
@@ -522,9 +533,9 @@ fn parse(output: &str) -> anyhow::Result<Listing> {
 mod tests {
     use super::*;
 
-    const LISTING: &str = "$0\tstarcom\t\t1\t0\t@3\twork\t2\n\
-                           $1\tzork/0\t\t0\t0\t@4\tbash\t1\n\
-                           $1\tzork/0\t\t0\t2\t@5\tlogs\t1\n";
+    const LISTING: &str = "$0|starcom||1|0|@3|work|2\n\
+                           $1|zork/0||0|0|@4|bash|1\n\
+                           $1|zork/0||0|2|@5|logs|1\n";
 
     #[test]
     fn all_sessions_are_parsed_and_partitioned() {
@@ -578,15 +589,26 @@ mod tests {
     #[test]
     fn hostile_or_ambiguous_listings_are_rejected() {
         for line in [
-            "$0\tstarcom\t\t0\t0\t@1\twork\u{1b}]0;x\u{7}\t1",
-            "$0\tstarcom\t\t0\t0\t@1\twork",
-            "$0\tstarcom\t\t0\t0\t@1\twork\t1\textra",
-            "$0\tstarcom\t\t0\t0\t@1\twork\tnot-a-number",
-            "$0\tstarcom\t\t0\t0\t@1\t\t1",
-            "$0\tstarcom\t\t0\t0\t@1\twork\t1\n$0\tstarcom\t\t0\t1\t@2\twork\t1",
-            "$0\tstarcom\t\t0\t0\t@1\twork\t1\n$0\tstarcom\t\t0\t1\t@1\tbuild\t1",
+            "$0|starcom||0|0|@1|work\u{1b}]0;x\u{7}|1",
+            "$0|starcom||0|0|@1|work",
+            "$0|starcom||0|0|@1|work|1|extra",
+            "$0|starcom||0|0|@1|work|not-a-number",
+            "$0|starcom||0|0|@1|work|1\n$0|starcom||0|1|@2|work|1",
+            "$0|starcom||0|0|@1|work|1\n$0|starcom||0|1|@1|build|1",
         ] {
             assert!(parse(line).is_err(), "accepted {line:?}");
         }
+    }
+
+    #[test]
+    fn invalid_names_are_quarantined_without_hiding_valid_windows() {
+        let listing = parse(
+            "$0|starcom||0|0|@1|work|1\n\
+             $0|starcom||0|1|@2|bad\\nname|1\n\
+             $0|starcom||0|2|@3||1",
+        )
+        .unwrap();
+        assert_eq!(listing.managed.len(), 1);
+        assert_eq!(listing.managed[0].name, "work");
     }
 }
