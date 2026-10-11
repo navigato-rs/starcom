@@ -1,6 +1,6 @@
 # Starcom plan and roadmap
 
-Updated: 2026-10-02.
+Updated: 2026-10-11.
 
 **Current status:** M0 through M3 are done for the tested configuration, and M4
 is partly done. M2's gate is signed off; M3 is complete: transport loss is classified apart

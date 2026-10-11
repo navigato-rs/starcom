@@ -102,6 +102,7 @@ impl Runtime {
         let encoder = context.create_command_encoder(bg::CommandEncoderDesc {
             name: "starcom",
             buffer_count: 1,
+            manual_barriers: false,
         });
         let input = egui_winit::State::new(
             ctx.clone(),
@@ -599,6 +600,7 @@ pub fn save_snapshot(
     let mut encoder = context.create_command_encoder(bg::CommandEncoderDesc {
         name: "desktop snapshot",
         buffer_count: 1,
+        manual_barriers: false,
     });
     let texture = context.create_texture(bg::TextureDesc {
         name: "desktop snapshot",

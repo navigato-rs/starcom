@@ -1,106 +1,72 @@
 # Changelog
 
-## Unreleased
+## v0.3.1
 
-- Session controls now occupy two compact sidebar rows: Settings and blue-tinted
-  Notes, then a length-graded vertex-and-chord refresh mark or recovery beside a
-  red-tinted Leave button. New session, Notes, and Leave use consistent bold
-  hover feedback, and the latter two share right alignment. Persistent controls
-  no longer cover terminals.
-- Dragged server headers now follow the pointer. Each server header exposes one
-  unambiguous insertion point before its complete session group, with a final
-  target below the list for moving a server to the end.
-- Tmux metadata uses quoted, printable names and an escape-aware delimiter.
-  This restores connections to tmux 3.2 servers, which rewrite literal tab
-  separators to underscores, and prevents one control-bearing window name from
-  blocking every valid logical session on the server.
-- Refresh activity, the compact Settings gear, and Notes now share one sidebar
-  footer row. Notes grows only to a readable cap and otherwise stays aligned to
-  the right; refresh activity uses a finite outward signal ripple instead of a
-  perpetual-loading-style spinner.
-- Sidebar selection no longer recenters the session list after the user has
-  scrolled it. Server headers show ping normally, replace it with blue queue
-  bars when multiple inputs are outstanding, and give a stalled red `WAIT`
-  priority over both. Layout rebuilds discard stale pixel scroll momentum while
-  preserving deliberate history position, so splitting a busy terminal cannot
-  overshoot its rebuilt contents.
-- The 16-session workspace limit and its persistence truncation are removed.
-  Large escaped tmux output notifications (including synchronized TUI redraws)
-  now have a 4 MiB safety bound instead of disconnecting above 64 KiB.
-- Creating the first logical session now enters it even when host discovery had
-  not finished first. Links printed across indented hard-wrapped rows are copied
-  as one URL, including Grok comparison links split immediately after `https://`.
-- Closing a window's final pane now removes that logical session immediately;
-  connection failures still preserve their tabs for explicit recovery. Window
-  activity stays scoped across shared-server resnapshots, guarded splits expand
-  the source pane's working directory in the correct window, note commits can
-  share a frame with the terminal click that ended editing, and ordinary input
-  can no longer fall through to the synchronous control path and poison the
-  stream.
-- Transient terminal messages stay inside the main area, and inserting the
-  always-empty note row or refreshing notes no longer steals editor focus.
-- Terminal cells are painted by a small Blade pipeline instead of one egui
-  galley, mesh, and draw call per run of same-styled cells. Glyphs still come
-  from egui's font atlas, so text looks the same; each column is now placed at
-  its exact position instead of snapping every run's start to a whole pixel.
-  In the demo workspace this takes egui's tessellated output from 175
-  primitives and 6,668 vertices to 10 primitives and 972 vertices, and the UI
-  pass plus tessellation from about 235 µs to 190 µs per frame (x86-64 Linux,
-  release build, egui only; GPU time and native-window behavior not yet
-  measured).
-- Ordinary key and byte input now uses a bounded pipeline of guarded tmux
-  transactions instead of waiting for every earlier acknowledgment before
-  sending the next one. Paste, resize, layout changes, pane moves, and rename
-  remain ordering barriers, and uncertain delivery is still never retried.
-  Slow input records queue time, acknowledgment time, intervening output, and
-  tmux flow-control lag; the latest breakdown is available by hovering latency.
-- The server header shows a compact segmented input backlog: one segment per
-  queued or dispatched-but-unacknowledged ordinary input action. Its hover text
-  separates local queueing from tmux acknowledgments.
-  Successful layout resynchronization now clears the warning that prompted it.
-- While input awaits acknowledgment, latency changes to a red `WAIT` after
-  `max(5 × last RTT, 50 ms)`. The hover reports the live wait and threshold;
-  dispatch timing begins before a potentially blocked SSH write.
-- Pane chrome no longer displays or polls each pane's working directory. Session
-  names are the workspace label; pane chrome is reserved for controls. Splits
-  still start in the source pane's current directory through tmux itself.
-- Session tabs show names only and use browser-tab geometry. The active server
-  moved to the status bar beside latency.
-- Choosing a host focuses the new-session field. Sessions already attached on
-  the host, including ones already open in this Starcom workspace, are red and
-  unavailable instead of offering duplicate attachments. Host buttons with a
-  live connection are green.
-- Pane chrome can move a pane into a newly created session on the same server.
-  Starcom chooses a collision-free `pane-N` name, opens it as the selected tab,
-  and immediately opens its inline rename editor with the generated name
-  selected. The editor keeps keyboard focus while the new terminal view is
-  reconstructed. The action is hidden when the source session has one pane.
-- Failed and ended attachments now remain as red registered tabs until **Exit**;
-  selecting one never silently removes it. A **Reconnect** button beside Exit
-  retries its saved host and tmux session explicitly.
-- Opening the in-place tab rename editor now schedules its own repaint, instead
-  of depending on an unrelated terminal or timer update. Rename stays on the
-  existing control attachment and visibly reports progress for at most five
-  seconds. If tmux applies it but its completion reply is lost, Starcom drops
-  that questionable stream and reconnects once using the optimistically saved
-  new name; it never sends the rename twice. Publishing a successful rename now
-  releases the model mutex before waking the UI, fixing the self-deadlock that
-  previously froze the entire window after tmux had already changed the name.
-- A rename entered immediately after moving a pane now queues behind the new
-  attachment instead of saving a name tmux never received. Workspace persistence
-  changes only after tmux accepts the rename (or uncertain-delivery recovery
-  deliberately targets the new name), and completion is collected from hidden
-  tabs as well as the active one.
-- The host picker starts with every live destination, including direct hosts not
-  present in SSH config, and Enter in the custom field forces fresh discovery.
-  Session choices now include their tmux window count so the current one-tab-per-
-  session model is explicit.
-- The tab strip stays one row and replaces overflow with counted navigation
-  arrows. Hovering a tab draws dashed outlines around its visible same-server
-  siblings.
-- The post-v0.3 host-workspace design is documented: one SSH/control attachment
-  per resolved server and one managed tmux window per user-visible session.
-  This ownership migration is planned, not yet implemented.
+Shared server workspaces, window-based sessions, a vertical session sidebar,
+faster terminal rendering, and more responsive input after `v0.3.0`.
+
+### Sessions and navigation
+
+- Starcom now keeps one SSH connection and tmux control client per resolved
+  server. Each user-visible session is a named window in that server's managed
+  `starcom` tmux session, so many projects no longer create many SSH clients or
+  tmux servers. Saved workspaces reopen those windows through the shared server
+  connection.
+- The resizable vertical sidebar groups sessions under full-width server
+  headers, making ownership visible without taking terminal height. Servers can
+  be reordered by dragging; the selected session is not forced back into view
+  after deliberate scrolling, and the old 16-session limit is gone.
+- Connected sessions and servers are green. The host picker includes live
+  destinations absent from SSH config, refreshes discovery for a typed host,
+  and distinguishes managed windows from yellow non-managed tmux sessions.
+  Those sessions can be explicitly migrated into the managed session, moving
+  their windows and entering the first one.
+- New session, Settings, Notes, refresh/recovery, and Leave controls fit into two
+  compact sidebar rows instead of covering terminal contents. Server headers
+  normally show latency, replace it with blue input-backlog bars when useful,
+  and show a red `WAIT` when an acknowledgment exceeds
+  `max(5 × last RTT, 50 ms)`.
+
+### Session management and recovery
+
+- A pane can move into a collision-free new session on the same server. The new
+  session opens immediately with its generated name selected for replacement;
+  the action is hidden when it would move a session's only pane.
+- Rename now stays on the shared control connection, queues correctly behind a
+  pane move, and is persisted only after tmux accepts it. Lost rename replies
+  reconnect toward the optimistically saved name without sending the command
+  twice, and successful replies no longer deadlock the UI mutex.
+- Closing the final pane removes its logical session immediately. Other failures
+  keep a red saved session until Leave: a reachable server with a missing window
+  offers Recreate, while an unreachable server offers Reconnect. Creating the
+  first window enters it even if host discovery has not finished.
+- Tmux metadata now uses printable quoted names and escape-aware delimiters for
+  compatibility with tmux 3.2. Large escaped output notifications have a 4 MiB
+  safety bound, avoiding disconnects during large synchronized TUI redraws.
+
+### Responsiveness and terminal UX
+
+- Ordinary key input uses a bounded pipeline of guarded tmux transactions rather
+  than waiting for every earlier acknowledgment. Paste, resize, layout, pane
+  move, and rename remain ordering barriers, and uncertain input is still never
+  retried. Latency hover text breaks slow input down into local queueing, tmux
+  acknowledgment, output, and flow-control time.
+- Terminal cells now use one small Blade batch per pane rather than many egui
+  text meshes and draw calls. In the demo workspace this reduced tessellation
+  from 175 primitives and 6,668 vertices to 10 primitives and 972 vertices, and
+  the measured UI-plus-tessellation time from about 235 µs to 190 µs per frame
+  on x86-64 Linux in a release build.
+- Pane chrome no longer polls or displays working directories, while splits
+  still inherit the correct source pane directory. Layout reconstruction
+  preserves deliberate history position without carrying stale pixel momentum,
+  and successful resynchronization clears its warning.
+- Per-window Notes provide bounded key/value metadata backed by tmux user
+  options. Editing, insertion, and periodic refresh preserve focus, and terminal
+  clicks can safely finish a note edit without dropping the same frame's input.
+- Hard-wrapped and indented web links copy as one URL, including links split
+  immediately after `https://`. Transient copy and status messages remain in the
+  terminal area's overlay line instead of moving content or crossing the
+  sidebar.
 
 ## v0.3.0
 
