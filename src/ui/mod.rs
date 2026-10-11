@@ -467,11 +467,15 @@ pub struct DesktopUi {
     /// Last cell size sent to tmux, so we do not spam refresh-client -C.
     client_cells: Option<core::Size>,
     pending_client_cells: Option<(core::Size, time::Instant)>,
-    /// The status marker advances once per visible terminal refresh, not with
-    /// wall time. An idle tab therefore cannot animate itself.
+    /// The status marker advances once per displayed activity burst, not with
+    /// every output packet. Continuous output therefore cannot spin it.
     refresh_tick: u64,
     refresh_started: Option<time::Instant>,
     last_refresh: Option<(u64, u64)>,
+    /// A sidebar lifecycle button is painted before the terminal. Carry its
+    /// action into `show_terminal` so connection changes retain the same
+    /// atomic input handling as buttons painted over the main area did.
+    sidebar_action: Option<Action>,
 }
 
 impl Default for DesktopUi {
@@ -526,6 +530,7 @@ impl DesktopUi {
             refresh_tick: 0,
             refresh_started: None,
             last_refresh: None,
+            sidebar_action: None,
         }
     }
 
@@ -667,71 +672,126 @@ impl DesktopUi {
     ) -> bool {
         self.sync_option_rows(state);
         let mut settings_clicked = false;
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            let now = time::Instant::now();
-            let animation_age = self
-                .refresh_started
-                .map(|started| now.saturating_duration_since(started));
-            let animating = animation_age.is_some_and(|age| age < REFRESH_ANIMATION_DURATION);
-            if animating {
-                ui.ctx()
-                    .request_repaint_after(time::Duration::from_millis(33));
-            }
-            let (refresh_rect, refresh) =
-                ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::hover());
-            ui.painter()
-                .rect_filled(refresh_rect, 4.0, ui.visuals().code_bg_color);
-            paint_refresh_indicator(
-                ui,
-                refresh_rect.shrink(5.0),
-                animation_age.filter(|_| animating),
-            );
-            refresh.on_hover_text("Terminal refresh activity");
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 4.0;
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                settings_clicked = settings_button(ui).clicked();
 
-            settings_clicked = settings_button(ui).clicked();
-
-            let option_count = self
-                .option_rows
-                .iter()
-                .filter(|row| !row.name.is_empty())
-                .count();
-            let options_loaded = self
-                .window
-                .is_some_and(|window| state.window_options.contains_key(&window));
-            let label = if options_loaded {
-                if option_count == 0 {
-                    "Notes".to_owned()
-                } else {
+                let option_count = self
+                    .option_rows
+                    .iter()
+                    .filter(|row| !row.name.is_empty())
+                    .count();
+                let options_loaded = self
+                    .window
+                    .is_some_and(|window| state.window_options.contains_key(&window));
+                let label = if options_loaded && option_count != 0 {
                     format!("Notes({option_count})")
+                } else {
+                    "Notes".to_owned()
+                };
+                let available = egui::vec2(ui.available_width(), 28.0);
+                let options = ui
+                    .allocate_ui_with_layout(
+                        available,
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            ui.add_enabled_ui(options_loaded, |ui| {
+                                tinted_button(
+                                    ui,
+                                    label,
+                                    self.options_open,
+                                    egui::Color32::from_rgb(105, 175, 245),
+                                )
+                            })
+                            .inner
+                        },
+                    )
+                    .inner;
+                if options
+                    .on_disabled_hover_text("Notes are not available yet")
+                    .on_hover_text("Show notes attached to this session")
+                    .clicked()
+                {
+                    self.options_open = !self.options_open;
                 }
-            } else {
-                "Notes".to_owned()
-            };
-            let available = egui::vec2(ui.available_width(), 28.0);
-            let options = ui
-                .allocate_ui_with_layout(
-                    available,
+            });
+
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                let logical_missing = self.window.is_none()
+                    && matches!(
+                        state.phase,
+                        desktop::Phase::Watching | desktop::Phase::Resynchronizing
+                    );
+                let recreate = can_recreate_missing_session(state, logical_missing);
+                let recover = matches!(
+                    state.phase,
+                    desktop::Phase::Failed | desktop::Phase::Disconnected
+                ) || logical_missing;
+                if recover {
+                    let label = if recreate {
+                        if state.changing_sessions {
+                            "Recreating…"
+                        } else {
+                            "Recreate"
+                        }
+                    } else {
+                        "Reconnect"
+                    };
+                    if ui
+                        .add_enabled(
+                            !state.changing_sessions,
+                            egui::Button::new(label).min_size(egui::vec2(0.0, 28.0)),
+                        )
+                        .on_hover_text(if recreate {
+                            "Create a new empty window with this session name on the same server."
+                        } else {
+                            "Attempt to reconnect to this server."
+                        })
+                        .clicked()
+                    {
+                        match self.form.connection() {
+                            Ok(connection) => {
+                                self.notice = None;
+                                if recreate {
+                                    self.start_creating(self.session_name().to_owned());
+                                    self.sidebar_action = Some(Action::CreateSession(connection));
+                                } else {
+                                    self.sidebar_action = Some(Action::Connect(connection));
+                                }
+                            }
+                            Err(error) => self.notice = Some(error.to_string()),
+                        }
+                    }
+                } else if matches!(
+                    state.phase,
+                    desktop::Phase::Watching
+                        | desktop::Phase::Resynchronizing
+                        | desktop::Phase::Demo
+                ) {
+                    let (refresh_rect, refresh) =
+                        ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::hover());
+                    ui.painter()
+                        .rect_filled(refresh_rect, 4.0, ui.visuals().code_bg_color);
+                    paint_refresh_indicator(ui, refresh_rect.shrink(5.0), self.refresh_tick);
+                    refresh.on_hover_text("Terminal refresh activity");
+                }
+
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), 28.0),
                     egui::Layout::right_to_left(egui::Align::Center),
                     |ui| {
-                        let width = ui.available_width().min(112.0);
-                        ui.add_enabled_ui(options_loaded, |ui| {
-                            ui.add_sized(
-                                egui::vec2(width, 28.0),
-                                egui::Button::new(label).selected(self.options_open),
-                            )
-                        })
-                        .inner
+                        if tinted_button(ui, "Leave", false, egui::Color32::from_rgb(238, 105, 112))
+                            .on_hover_text("Close this session locally. Remote jobs keep running.")
+                            .clicked()
+                        {
+                            self.sidebar_action = Some(Action::Disconnect);
+                        }
                     },
-                )
-                .inner;
-            if options
-                .on_disabled_hover_text("Notes are not available yet")
-                .on_hover_text("Show notes attached to this session")
-                .clicked()
-            {
-                self.options_open = !self.options_open;
-            }
+                );
+            });
         });
         settings_clicked
     }
@@ -845,6 +905,7 @@ impl DesktopUi {
         self.upload = None;
         self.upload_progress = None;
         self.drop_prompt = None;
+        self.sidebar_action = None;
     }
 
     pub(crate) fn session_name(&self) -> &str {
@@ -1673,12 +1734,12 @@ impl DesktopUi {
             .as_ref()
             .map(|view| (state.generation, self.display_seq(view)));
         if refresh != self.last_refresh || scrolled {
-            self.refresh_tick = self.refresh_tick.wrapping_add(1);
             let now = time::Instant::now();
-            let animation_finished = self.refresh_started.is_none_or(|started| {
-                now.saturating_duration_since(started) >= REFRESH_ANIMATION_DURATION
+            let step_ready = self.refresh_started.is_none_or(|started| {
+                now.saturating_duration_since(started) >= REFRESH_STEP_INTERVAL
             });
-            if animation_finished {
+            if step_ready {
+                self.refresh_tick = self.refresh_tick.wrapping_add(1);
                 self.refresh_started = Some(now);
             }
             self.last_refresh = refresh;
@@ -1944,7 +2005,7 @@ impl DesktopUi {
         }
         // Navigation and terminal steps are separate results, so a button press
         // can never quietly consume the keystrokes collected in the same frame.
-        let mut action = Action::None;
+        let mut action = self.sidebar_action.take().unwrap_or(Action::None);
         if self.creating.as_deref() == Some(self.session_name())
             && matches!(state.discovery, Some(desktop::Discovery::Created(ref name)) if name == self.session_name())
         {
@@ -1979,13 +2040,6 @@ impl DesktopUi {
         }
         self.sync_option_rows(state);
 
-        let logical_missing = self.window.is_none()
-            && matches!(
-                state.phase,
-                desktop::Phase::Watching | desktop::Phase::Resynchronizing
-            );
-        let recreate = can_recreate_missing_session(state, logical_missing);
-
         if state.renaming {
             root.ctx()
                 .request_repaint_after(time::Duration::from_millis(100));
@@ -2017,86 +2071,8 @@ impl DesktopUi {
         }
 
         let bottom_offset = 8.0 + self.option_panel_height;
-        let actions_overlay = egui::Area::new(root.id().with("session-actions"))
-            .order(egui::Order::Foreground)
-            .pivot(egui::Align2::RIGHT_BOTTOM)
-            .fixed_pos(egui::pos2(
-                main_rect.right() - 8.0,
-                main_rect.bottom() - bottom_offset,
-            ))
-            .show(root.ctx(), |ui| {
-                egui::Frame::new()
-                    .fill(ui.visuals().panel_fill)
-                    .corner_radius(5.0)
-                    .inner_margin(egui::Margin::same(3))
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            if (matches!(
-                                state.phase,
-                                desktop::Phase::Failed | desktop::Phase::Disconnected
-                            ) || logical_missing)
-                                && ui
-                                    .add_enabled(
-                                        !state.changing_sessions,
-                                        egui::Button::new(if recreate {
-                                            if state.changing_sessions {
-                                                "Recreating…"
-                                            } else {
-                                                "Recreate"
-                                            }
-                                        } else {
-                                            "Reconnect"
-                                        })
-                                        .min_size(egui::vec2(0.0, 28.0)),
-                                    )
-                                    .on_hover_text(if recreate {
-                                        "Create a new empty window with this session name on the same server."
-                                    } else {
-                                        "Attempt to reconnect to this server."
-                                    })
-                                    .clicked()
-                            {
-                                match self.form.connection() {
-                                    Ok(connection) => {
-                                        self.notice = None;
-                                        if recreate {
-                                            self.start_creating(self.session_name().to_owned());
-                                            action = Action::CreateSession(connection);
-                                        } else {
-                                            action = Action::Connect(connection);
-                                        }
-                                    }
-                                    Err(error) => self.notice = Some(error.to_string()),
-                                }
-                            }
-                            let leave = ui.add(
-                                egui::Button::new("")
-                                    .fill(egui::Color32::from_rgb(150, 38, 38))
-                                    .min_size(egui::vec2(30.0, 28.0)),
-                            );
-                            leave.widget_info(|| {
-                                egui::WidgetInfo::labeled(
-                                    egui::WidgetType::Button,
-                                    true,
-                                    "Leave session",
-                                )
-                            });
-                            paint_leave_icon(ui, leave.rect);
-                            if leave
-                                .on_hover_text(
-                                    "Close this session locally. Remote jobs keep running.",
-                                )
-                                .clicked()
-                            {
-                                action = Action::Disconnect;
-                            }
-                        });
-                    });
-            });
-
         if show_status {
-            let max_width =
-                (main_rect.width() - actions_overlay.response.rect.width() - 24.0).max(80.0);
+            let max_width = (main_rect.width() - 16.0).max(80.0);
             egui::Area::new(root.id().with("status-message"))
                 .order(egui::Order::Foreground)
                 .pivot(egui::Align2::LEFT_BOTTOM)
@@ -2145,7 +2121,7 @@ impl DesktopUi {
                                 sessions::MANAGED_SESSION,
                             ),
                         );
-                        ui.label("This tab remains until you choose Exit.");
+                        ui.label("This tab remains until you choose Leave.");
                     });
                     return;
                 }
@@ -2629,28 +2605,48 @@ pub(crate) fn paint_activity_indicator(ui: &egui::Ui, rect: egui::Rect, time: f6
 }
 
 /// A refresh mark driven by visible changes rather than a permanent timer.
-/// Each activity burst sends one finite ripple out from the center: an event,
-/// not a spinner suggesting that work remains unfinished.
-const REFRESH_ANIMATION_DURATION: time::Duration = time::Duration::from_millis(650);
+/// Each burst advances one edge around a seven-point star traversal. Brightness
+/// increases continuously along the retained three-edge path, so every edge
+/// participates in one length-based trail rather than having one opacity.
+const REFRESH_STEP_INTERVAL: time::Duration = time::Duration::from_millis(850);
 
-fn paint_refresh_indicator(ui: &egui::Ui, rect: egui::Rect, animation_age: Option<time::Duration>) {
+fn paint_refresh_indicator(ui: &egui::Ui, rect: egui::Rect, tick: u64) {
+    const EDGE_SEGMENTS: usize = 8;
     let center = rect.center();
-    let extent = rect.width().min(rect.height()) * 0.46;
+    let radius = rect.width().min(rect.height()) * 0.42;
+    let vertices: Vec<_> = (0..7)
+        .map(|index| {
+            let angle = index as f32 * std::f32::consts::TAU / 7.0 - std::f32::consts::FRAC_PI_2;
+            center + egui::vec2(angle.cos(), angle.sin()) * radius
+        })
+        .collect();
     let color = ui.visuals().strong_text_color();
-    let progress = animation_age
-        .map(|age| (age.as_secs_f32() / REFRESH_ANIMATION_DURATION.as_secs_f32()).clamp(0.0, 1.0));
-    if let Some(progress) = progress {
-        let radius = egui::lerp(2.5..=extent, progress);
-        let strength = (1.0 - progress).powi(2);
-        ui.painter().circle_stroke(
-            center,
-            radius,
-            egui::Stroke::new(1.5_f32, color.gamma_multiply(strength)),
-        );
+    for vertex in &vertices {
+        ui.painter()
+            .circle_filled(*vertex, 1.15, color.gamma_multiply(0.24));
     }
-    let pulse = progress.map_or(0.32, |progress| 1.0 - 0.55 * progress);
-    ui.painter()
-        .circle_filled(center, 2.0, color.gamma_multiply(pulse));
+    // Draw the oldest first so the current edge wins at intersections.
+    for history in (0..3).rev() {
+        let edge =
+            (tick.wrapping_sub(1).wrapping_sub(history as u64) % vertices.len() as u64) as usize;
+        let start = (edge * 3) % vertices.len();
+        let end = ((edge + 1) * 3) % vertices.len();
+        let trail_edge = 2 - history;
+        for segment in 0..EDGE_SEGMENTS {
+            let edge_start = segment as f32 / EDGE_SEGMENTS as f32;
+            let edge_end = (segment + 1) as f32 / EDGE_SEGMENTS as f32;
+            let trail_position = (trail_edge as f32 + (edge_start + edge_end) * 0.5) / 3.0;
+            let strength = egui::lerp(0.08..=1.0, trail_position.powf(1.15));
+            let edge_vector = vertices[end] - vertices[start];
+            ui.painter().line_segment(
+                [
+                    vertices[start] + edge_vector * edge_start,
+                    vertices[start] + edge_vector * edge_end,
+                ],
+                egui::Stroke::new(1.25_f32, color.gamma_multiply(strength)),
+            );
+        }
+    }
 }
 
 fn settings_button(ui: &mut egui::Ui) -> egui::Response {
@@ -2659,15 +2655,69 @@ fn settings_button(ui: &mut egui::Ui) -> egui::Response {
         .on_hover_text("Settings");
     let center = response.rect.center();
     let color = ui.visuals().strong_text_color();
-    let stroke = egui::Stroke::new(1.4_f32, color);
-    ui.painter().circle_stroke(center, 4.4, stroke);
-    ui.painter().circle_stroke(center, 1.6, stroke);
-    for index in 0..8 {
-        let angle = index as f32 * std::f32::consts::FRAC_PI_4;
-        let direction = egui::vec2(angle.cos(), angle.sin());
-        ui.painter()
-            .line_segment([center + direction * 5.2, center + direction * 7.0], stroke);
+    let stroke = egui::Stroke::new(1.5_f32, color);
+    let teeth = (0..24)
+        .map(|index| {
+            let angle = index as f32 * std::f32::consts::TAU / 24.0 - std::f32::consts::FRAC_PI_2;
+            let radius = if matches!(index % 4, 1 | 2) { 7.8 } else { 6.1 };
+            center + egui::vec2(angle.cos(), angle.sin()) * radius
+        })
+        .collect();
+    ui.painter().add(egui::Shape::closed_line(teeth, stroke));
+    ui.painter().circle_stroke(center, 2.2, stroke);
+    response
+}
+
+fn tinted_button(
+    ui: &mut egui::Ui,
+    text: impl Into<String>,
+    selected: bool,
+    color: egui::Color32,
+) -> egui::Response {
+    let text = text.into();
+    let normal = egui::WidgetText::from(text.clone()).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        96.0,
+        egui::TextStyle::Button,
+    );
+    let bold = egui::WidgetText::from(egui::RichText::new(text.clone()).strong()).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        96.0,
+        egui::TextStyle::Button,
+    );
+    let text_width = normal.size().x.max(bold.size().x);
+    let desired = egui::vec2((text_width + 16.0).clamp(44.0, 112.0), 28.0);
+    let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::click());
+    let enabled = ui.is_enabled();
+    let emphasized = enabled && (response.hovered() || response.is_pointer_button_down_on());
+    let mut fill = color.gamma_multiply(if selected { 0.24 } else { 0.10 });
+    let mut stroke_color = color.gamma_multiply(0.72);
+    let mut text_color = color;
+    let galley = if emphasized { bold } else { normal };
+    if !enabled {
+        fill = ui.visuals().disable(fill);
+        stroke_color = ui.visuals().disable(stroke_color);
+        text_color = ui.visuals().disable(text_color);
     }
+    ui.painter().rect(
+        rect,
+        4.0,
+        fill,
+        egui::Stroke::new(1.0_f32, stroke_color),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().galley(
+        egui::pos2(
+            rect.center().x - galley.size().x * 0.5,
+            rect.center().y - galley.size().y * 0.5,
+        ),
+        galley,
+        text_color,
+    );
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, text.clone()));
     response
 }
 
@@ -2822,28 +2872,6 @@ fn paint_server_backlog(ui: &mut egui::Ui, backlog: desktop::InputBacklog) -> eg
     let bars = egui::Rect::from_center_size(rect.center(), egui::vec2(width, rect.height()));
     paint_input_backlog(ui, bars, backlog);
     response
-}
-
-fn paint_leave_icon(ui: &egui::Ui, rect: egui::Rect) {
-    let stroke = egui::Stroke::new(1.6_f32, egui::Color32::WHITE);
-    let center = rect.center();
-    let frame = egui::Rect::from_center_size(center - egui::vec2(2.0, 0.0), egui::vec2(11.0, 15.0));
-    ui.painter()
-        .line_segment([frame.left_top(), frame.right_top()], stroke);
-    ui.painter()
-        .line_segment([frame.left_top(), frame.left_bottom()], stroke);
-    ui.painter()
-        .line_segment([frame.left_bottom(), frame.right_bottom()], stroke);
-    let door = [
-        frame.right_top(),
-        center + egui::vec2(5.0, -5.5),
-        center + egui::vec2(5.0, 5.5),
-        frame.right_bottom(),
-    ];
-    ui.painter()
-        .add(egui::Shape::closed_line(door.to_vec(), stroke));
-    ui.painter()
-        .circle_filled(center + egui::vec2(3.0, 0.0), 1.0, egui::Color32::WHITE);
 }
 
 fn can_recreate_missing_session(state: &desktop::State, logical_missing: bool) -> bool {
@@ -3175,12 +3203,20 @@ mod tests {
                 bytes: b"changed".to_vec(),
             });
         assert!(ui.note_refresh(&state, false));
-        assert_eq!(ui.refresh_tick, initial + 1);
+        assert_eq!(
+            ui.refresh_tick, initial,
+            "one activity burst must not advance for every output packet"
+        );
         assert_eq!(ui.refresh_started, animation_started);
 
         assert!(ui.note_refresh(&state, true));
-        assert_eq!(ui.refresh_tick, initial + 2);
+        assert_eq!(ui.refresh_tick, initial);
         assert_eq!(ui.refresh_started, animation_started);
+
+        ui.refresh_started = Some(time::Instant::now() - REFRESH_STEP_INTERVAL);
+        assert!(ui.note_refresh(&state, true));
+        assert_eq!(ui.refresh_tick, initial + 1);
+        assert_ne!(ui.refresh_started, animation_started);
     }
 
     #[test]
@@ -3623,8 +3659,18 @@ mod tests {
         assert_eq!(
             ui.screen,
             Screen::Terminal,
-            "a registered attachment is removed only by Exit"
+            "a registered attachment is removed only by Leave"
         );
+    }
+
+    #[test]
+    fn sidebar_lifecycle_actions_enter_the_terminal_frame() {
+        let mut ui = DesktopUi::default();
+        let mut state = desktop::State::interactive_demo().unwrap();
+        paint(&mut ui, &mut state);
+        ui.sidebar_action = Some(Action::Disconnect);
+        assert!(matches!(paint(&mut ui, &mut state), Action::Disconnect));
+        assert!(ui.sidebar_action.is_none());
     }
 
     #[test]
@@ -3657,7 +3703,7 @@ mod tests {
         let action = paint(&mut ui, &mut state);
         assert!(
             !matches!(action, Action::Disconnect),
-            "a gone session must not close or move the tab; Exit stays for the user"
+            "a gone session must not close or move the tab; Leave stays for the user"
         );
         assert_eq!(ui.screen, Screen::Terminal);
         let painted: usize = ui.pane_ui.values().map(|pane| pane.painted_rows).sum();
