@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Dragged server headers now follow the pointer. Each server header exposes one
+  unambiguous insertion point before its complete session group, with a final
+  target below the list for moving a server to the end.
 - Tmux metadata uses quoted, printable names and an escape-aware delimiter.
   This restores connections to tmux 3.2 servers, which rewrite literal tab
   separators to underscores, and prevents one control-bearing window name from
