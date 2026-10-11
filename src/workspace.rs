@@ -331,6 +331,43 @@ fn session_row(
     response
 }
 
+fn new_session_button(ui: &mut egui::Ui, selected: bool) -> egui::Response {
+    let desired = egui::vec2(ui.available_width(), 28.0);
+    let response = ui.add(
+        egui::Button::new("")
+            .selected(selected)
+            .stroke(egui::Stroke::new(
+                1.0_f32,
+                ui.visuals().selection.stroke.color,
+            ))
+            .corner_radius(6.0)
+            .min_size(desired),
+    );
+    let label = "+ New session";
+    let rich = egui::RichText::new(label).size(14.0);
+    let text = if response.hovered() || response.is_pointer_button_down_on() {
+        rich.strong()
+    } else {
+        rich
+    };
+    let galley = egui::WidgetText::from(text).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        (response.rect.width() - 12.0).max(1.0),
+        egui::TextStyle::Button,
+    );
+    ui.painter().galley(
+        egui::pos2(
+            response.rect.center().x - galley.size().x * 0.5,
+            response.rect.center().y - galley.size().y * 0.5,
+        ),
+        galley,
+        ui.visuals().selection.stroke.color,
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    response
+}
+
 fn server_header(ui: &mut egui::Ui, server: &str, state: &desktop::State) {
     egui::Frame::new()
         .fill(ui.visuals().code_bg_color)
@@ -1272,29 +1309,17 @@ impl Workspace {
                     }
                 }
 
-                let add = ui
-                    .add(
-                        egui::Button::new(
-                            egui::RichText::new("+ New session")
-                                .size(14.0)
-                                .strong()
-                                .color(ui.visuals().selection.stroke.color),
-                        )
-                            .selected(self.composer_open)
-                            .stroke(egui::Stroke::new(
-                                1.0_f32,
-                                ui.visuals().selection.stroke.color,
-                            ))
-                            .corner_radius(6.0)
-                            .min_size(egui::vec2(ui.available_width(), 28.0)),
-                    )
+                let add = new_session_button(ui, self.composer_open)
                     .on_hover_text("New connection");
                 if add.clicked() {
                     navigation = Action::New;
                 }
                 paint_tab_fills(ui, idle_fill, idle_hover);
 
-                let footer_height = if self.notice.is_some() { 60.0 } else { 34.0 };
+                let session_controls = !self.composer_open && self.tabs.get(self.active).is_some();
+                let controls_height = if session_controls { 66.0 } else { 34.0 };
+                let footer_height =
+                    controls_height + if self.notice.is_some() { 26.0 } else { 0.0 };
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .max_height((ui.available_height() - footer_height).max(1.0))

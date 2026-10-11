@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Session controls now occupy two compact sidebar rows: Settings and blue-tinted
+  Notes, then a length-graded vertex-and-chord refresh mark or recovery beside a
+  red-tinted Leave button. New session, Notes, and Leave use consistent bold
+  hover feedback, and the latter two share right alignment. Persistent controls
+  no longer cover terminals.
 - Dragged server headers now follow the pointer. Each server header exposes one
   unambiguous insertion point before its complete session group, with a final
   target below the list for moving a server to the end.
