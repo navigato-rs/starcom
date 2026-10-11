@@ -331,6 +331,31 @@ fn session_row(
     response
 }
 
+fn server_header(ui: &mut egui::Ui, server: &str, state: &desktop::State) {
+    egui::Frame::new()
+        .fill(ui.visuals().code_bg_color)
+        .stroke(egui::Stroke::new(
+            1.0_f32,
+            ui.visuals().widgets.noninteractive.bg_stroke.color,
+        ))
+        .inner_margin(egui::Margin::symmetric(6, 4))
+        .show(ui, |ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), 20.0),
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    ui::paint_server_latency(ui, state);
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.add(
+                            egui::Label::new(egui::RichText::new(server).strong().size(14.0))
+                                .truncate(),
+                        );
+                    });
+                },
+            );
+        });
+}
+
 fn paint_drop_marker(ui: &egui::Ui, rect: egui::Rect, after: bool) {
     let y = if after { rect.bottom() } else { rect.top() };
     ui.painter().hline(
@@ -1276,60 +1301,37 @@ impl Workspace {
                     .show(ui, |ui| {
                         ui.set_min_width(ui.available_width());
                         let mut server_reorder = None;
-                        for group in server_groups(&self.tabs) {
+                        let groups = server_groups(&self.tabs);
+                        let last_server = groups.last().map(|group| self.tabs[group[0]].id);
+                        for group in groups {
                             let first = group[0];
                             let first_id = self.tabs[first].id;
                             let server = self.tabs[first].ui.server_name().trim();
                             let server = if server.is_empty() { "Demo" } else { server };
-                            let header = egui::Frame::new()
-                                .fill(ui.visuals().code_bg_color)
-                                .stroke(egui::Stroke::new(
-                                    1.0_f32,
-                                    ui.visuals().widgets.noninteractive.bg_stroke.color,
-                                ))
-                                .inner_margin(egui::Margin::symmetric(6, 4))
-                                .show(ui, |ui| {
-                                    ui.allocate_ui_with_layout(
-                                        egui::vec2(ui.available_width(), 20.0),
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            let state = self.tabs[first].client.lock();
-                                            ui::paint_server_latency(ui, &state);
-                                            ui.with_layout(
-                                                egui::Layout::left_to_right(egui::Align::Center),
-                                                |ui| {
-                                                    ui.add(
-                                                        egui::Label::new(
-                                                            egui::RichText::new(server)
-                                                                .strong()
-                                                                .size(14.0),
-                                                        )
-                                                        .truncate(),
-                                                    );
-                                                },
-                                            );
-                                        },
-                                    );
+                            let drag_id = ui.id().with(("server-drag", first_id));
+                            let header = ui
+                                .dnd_drag_source(drag_id, ServerDrag(first_id), |ui| {
+                                    let state = self.tabs[first].client.lock();
+                                    server_header(ui, server, &state);
                                 })
                                 .response
-                                .interact(egui::Sense::drag())
                                 .on_hover_text("Drag to reorder servers");
-                            header.dnd_set_drag_payload(ServerDrag(first_id));
-                            if header.dragged() {
+                            if ui.ctx().is_being_dragged(drag_id) {
                                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
                                 ui.ctx().request_repaint();
                             }
                             if let Some(dragged) = header.dnd_hover_payload::<ServerDrag>()
                                 && dragged.0 != first_id
                             {
-                                let after = ui
-                                    .input(|input| input.pointer.interact_pos())
-                                    .is_some_and(|pointer| pointer.y >= header.rect.center().y);
-                                paint_drop_marker(ui, header.rect, after);
+                                // A server owns all following session rows, so
+                                // its only meaningful header target is before
+                                // the complete group. The end target below the
+                                // list handles moving a group to the bottom.
+                                paint_drop_marker(ui, header.rect, false);
                                 if let Some(dragged) =
                                     header.dnd_release_payload::<ServerDrag>()
                                 {
-                                    server_reorder = Some((dragged.0, first_id, after));
+                                    server_reorder = Some((dragged.0, first_id, false));
                                 }
                             }
 
@@ -1493,6 +1495,24 @@ impl Workspace {
                                 });
                             }
                             ui.add_space(4.0);
+                        }
+                        if let Some(last_server) = last_server {
+                            let (end_rect, end_target) = ui.allocate_exact_size(
+                                egui::vec2(ui.available_width(), 12.0),
+                                egui::Sense::hover(),
+                            );
+                            if let Some(dragged) =
+                                end_target.dnd_hover_payload::<ServerDrag>()
+                                && dragged.0 != last_server
+                            {
+                                paint_drop_marker(ui, end_rect, false);
+                                if let Some(dragged) =
+                                    end_target.dnd_release_payload::<ServerDrag>()
+                                {
+                                    server_reorder =
+                                        Some((dragged.0, last_server, true));
+                                }
+                            }
                         }
                         if let Some((id, target, after)) = server_reorder {
                             navigation = Action::ReorderServer { id, target, after };
