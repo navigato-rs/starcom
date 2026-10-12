@@ -507,6 +507,7 @@ impl Renderer {
                 memory: bg::Memory::Shared,
                 min_chunk_size: 0x10000,
                 alignment: bg::limits::STORAGE_BUFFER_ALIGNMENT,
+                target: bg::BufferTarget::Data,
             }),
             atlas: None,
             dropped: Vec::new(),

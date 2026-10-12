@@ -1,6 +1,6 @@
 [package]
 name = "starcom"
-version = "0.3.0"
+version = "0.3.1"
 description = "Session Terminal And Remote COMmander"
 keywords = ["terminal", "tmux", "ssh"]
 categories = ["command-line-utilities"]
@@ -49,8 +49,8 @@ path = "src/bin/starcom-inspect.rs"
 required-features = ["ssh"]
 
 [dependencies]
-navigato-http = { version = "0.1.0", git = "https://github.com/navigato-rs/fileman", rev = "78ab35bc16a35ada85e88b69f062fca166c2aa34", optional = true }
-navigato-support = { version = "0.1.0", git = "https://github.com/navigato-rs/fileman", rev = "78ab35bc16a35ada85e88b69f062fca166c2aa34", optional = true }
+navigato-http = { version = "0.1.0", git = "https://github.com/navigato-rs/fileman", rev = "1e27db8b51b0f9e9c992844e8c92deefcff12171", optional = true }
+navigato-support = { version = "0.1.0", git = "https://github.com/navigato-rs/fileman", rev = "1e27db8b51b0f9e9c992844e8c92deefcff12171", optional = true }
 anyhow = "1.0"
 alacritty_terminal = "0.26"
 tmuxctl = { version = "=0.1.0", default-features = false }
@@ -58,10 +58,10 @@ sunset-client = { version = "0.1.0", git = "https://github.com/navigato-rs/sunse
 sunset-sftp = { version = "0.2.0", git = "https://github.com/navigato-rs/sunset", rev = "510efc5c8e1f2677000e1fb1ba080acb46cd815b", default-features = false, features = ["long-paths-1024"], optional = true }
 polling = { version = "3.11", optional = true }
 
-blade-egui = { version = "0.8.1", git = "https://github.com/kvark/blade", rev = "f1fbf2a", optional = true }
-blade-graphics = { version = "0.8.4", git = "https://github.com/kvark/blade", rev = "f1fbf2a", optional = true }
-blade-macros = { version = "0.3.0", git = "https://github.com/kvark/blade", rev = "f1fbf2a", optional = true }
-blade-util = { version = "0.4.1", git = "https://github.com/kvark/blade", rev = "f1fbf2a", optional = true }
+blade-egui = { version = "0.9.0", git = "https://github.com/kvark/blade", rev = "56f0565", optional = true }
+blade-graphics = { version = "0.9.0", git = "https://github.com/kvark/blade", rev = "56f0565", optional = true }
+blade-macros = { version = "0.3.0", git = "https://github.com/kvark/blade", rev = "56f0565", optional = true }
+blade-util = { version = "0.5.0", git = "https://github.com/kvark/blade", rev = "56f0565", optional = true }
 bytemuck = { version = "1.25", features = ["derive"], optional = true }
 egui = { version = "0.34", optional = true }
 egui-winit = { version = "0.34", default-features = false, features = ["clipboard", "wayland", "x11"], optional = true }

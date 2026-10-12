@@ -257,7 +257,7 @@ version = "0.38.0+1.3.281"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bb44936d800fea8f016d7f2311c6a4f97aebd5dc86f09906139ec848cf3a46f"
 dependencies = [
- "libloading",
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -324,18 +324,18 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "bit-set"
-version = "0.9.1"
+version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34ddef2995421ab6a5c779542c81ee77c115206f4ad9d5a8e05f4ff49716a3dd"
+checksum = "56d87354e4229f54a44f7bf2435906a4656dba36026ab6eaca629a2c436a691c"
 dependencies = [
  "bit-vec",
 ]
 
 [[package]]
 name = "bit-vec"
-version = "0.9.1"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b71798fca2c1fe1086445a7258a4bc81e6e49dcd24c8d0dd9a1e57395b603f51"
+checksum = "5727b15fa97d4f4fee0a3b7c3d550ed0269f54329207b86388de918604e31269"
 
 [[package]]
 name = "bitflags"
@@ -354,8 +354,8 @@ dependencies = [
 
 [[package]]
 name = "blade-egui"
-version = "0.8.1"
-source = "git+https://github.com/kvark/blade?rev=f1fbf2a#f1fbf2aeca5cc7a5304df7a6a66daf9f67fcc485"
+version = "0.9.0"
+source = "git+https://github.com/kvark/blade?rev=56f0565#56f05651cca73659130e924e497dda633f839d40"
 dependencies = [
  "blade-graphics",
  "blade-macros",
@@ -367,8 +367,8 @@ dependencies = [
 
 [[package]]
 name = "blade-graphics"
-version = "0.8.4"
-source = "git+https://github.com/kvark/blade?rev=f1fbf2a#f1fbf2aeca5cc7a5304df7a6a66daf9f67fcc485"
+version = "0.9.0"
+source = "git+https://github.com/kvark/blade?rev=56f0565#56f05651cca73659130e924e497dda633f839d40"
 dependencies = [
  "ash",
  "ash-window",
@@ -382,7 +382,7 @@ dependencies = [
  "js-sys",
  "khronos-egl",
  "libc",
- "libloading",
+ "libloading 0.9.0",
  "log",
  "mint",
  "naga",
@@ -404,7 +404,7 @@ dependencies = [
 [[package]]
 name = "blade-macros"
 version = "0.3.0"
-source = "git+https://github.com/kvark/blade?rev=f1fbf2a#f1fbf2aeca5cc7a5304df7a6a66daf9f67fcc485"
+source = "git+https://github.com/kvark/blade?rev=56f0565#56f05651cca73659130e924e497dda633f839d40"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -413,8 +413,8 @@ dependencies = [
 
 [[package]]
 name = "blade-util"
-version = "0.4.1"
-source = "git+https://github.com/kvark/blade?rev=f1fbf2a#f1fbf2aeca5cc7a5304df7a6a66daf9f67fcc485"
+version = "0.5.0"
+source = "git+https://github.com/kvark/blade?rev=56f0565#56f05651cca73659130e924e497dda633f839d40"
 dependencies = [
  "blade-graphics",
  "bytemuck",
@@ -1035,7 +1035,7 @@ version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab8ecd87370524b461f8557c119c405552c396ed91fc0a8eec68679eab26f94a"
 dependencies = [
- "libloading",
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -1234,7 +1234,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1481,9 +1481,9 @@ checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
 
 [[package]]
 name = "glow"
-version = "0.16.0"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5e5ea60d70410161c8bf5da3fdfeaa1c72ed2c15f8bbb9d19fe3a4fad085f08"
+checksum = "29038e1c483364cc6bb3cf78feee1816002e127c331a1eec55a4d202b9e1adb5"
 dependencies = [
  "js-sys",
  "slotmap",
@@ -1567,6 +1567,9 @@ name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+dependencies = [
+ "foldhash",
+]
 
 [[package]]
 name = "heapless"
@@ -1595,12 +1598,6 @@ name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
-
-[[package]]
-name = "hexf-parse"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
 
 [[package]]
 name = "hidden-trait"
@@ -1968,7 +1965,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6aae1df220ece3c0ada96b8153459b67eebe9ae9212258bb0134ae60416fdf76"
 dependencies = [
  "libc",
- "libloading",
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -2000,6 +1997,16 @@ name = "libloading"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
+dependencies = [
+ "cfg-if",
+ "windows-link",
+]
+
+[[package]]
+name = "libloading"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "754ca22de805bb5744484a5b151a9e1a8e837d5dc232c2d7d8c2e3492edc8b60"
 dependencies = [
  "cfg-if",
  "windows-link",
@@ -2159,9 +2166,8 @@ dependencies = [
 
 [[package]]
 name = "naga"
-version = "29.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2bf919621e7975acb27d881bae2fb993e0d45c8e0446e85e6272971e00dc8df"
+version = "30.0.0"
+source = "git+https://github.com/gfx-rs/wgpu?rev=323acfb729a00c3030e362faa27252afe6368792#323acfb729a00c3030e362faa27252afe6368792"
 dependencies = [
  "arrayvec",
  "bit-set",
@@ -2170,11 +2176,11 @@ dependencies = [
  "cfg_aliases",
  "codespan-reporting",
  "half",
- "hashbrown 0.16.1",
- "hexf-parse",
+ "hashbrown 0.17.1",
  "indexmap",
  "libm",
  "log",
+ "naga-types",
  "num-traits",
  "once_cell",
  "rustc-hash",
@@ -2184,9 +2190,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "naga-types"
+version = "30.0.0"
+source = "git+https://github.com/gfx-rs/wgpu?rev=323acfb729a00c3030e362faa27252afe6368792#323acfb729a00c3030e362faa27252afe6368792"
+dependencies = [
+ "hashbrown 0.17.1",
+ "indexmap",
+ "rustc-hash",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "navigato-http"
 version = "0.1.0"
-source = "git+https://github.com/navigato-rs/fileman?rev=78ab35bc16a35ada85e88b69f062fca166c2aa34#78ab35bc16a35ada85e88b69f062fca166c2aa34"
+source = "git+https://github.com/navigato-rs/fileman?rev=1e27db8b51b0f9e9c992844e8c92deefcff12171#1e27db8b51b0f9e9c992844e8c92deefcff12171"
 dependencies = [
  "getrandom 0.4.3",
  "p256",
@@ -2201,7 +2218,7 @@ dependencies = [
 [[package]]
 name = "navigato-support"
 version = "0.1.0"
-source = "git+https://github.com/navigato-rs/fileman?rev=78ab35bc16a35ada85e88b69f062fca166c2aa34#78ab35bc16a35ada85e88b69f062fca166c2aa34"
+source = "git+https://github.com/navigato-rs/fileman?rev=1e27db8b51b0f9e9c992844e8c92deefcff12171#1e27db8b51b0f9e9c992844e8c92deefcff12171"
 dependencies = [
  "backtrace",
  "egui",
@@ -2633,21 +2650,21 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
 name = "openxr"
-version = "0.19.0"
+version = "0.21.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a2d6934d2508f94fd4cbda6c2a326f111f60ce59fd9136df6d478564397dd40"
+checksum = "2c2f814a47d257c79c762bc64042859661b6aa2f57cfa1f0ad4d778f419aeb0e"
 dependencies = [
  "libc",
- "libloading",
+ "libloading 0.9.0",
  "ndk-context",
  "openxr-sys",
 ]
 
 [[package]]
 name = "openxr-sys"
-version = "0.11.0"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f10e7e38c47f2175fc39363713b656db899fa0b4a14341029702cbdfa6f44d05"
+checksum = "4b8d66081de28c2fa40216182a37292fe38aeea20bc184612504d5e64daf5359"
 dependencies = [
  "libc",
 ]
@@ -3219,7 +3236,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3232,7 +3249,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3810,7 +3827,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "starcom"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -4612,7 +4629,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4907,7 +4924,7 @@ dependencies = [
  "as-raw-xcb-connection",
  "gethostname",
  "libc",
- "libloading",
+ "libloading 0.8.9",
  "once_cell",
  "rustix 1.1.4",
  "x11rb-protocol",
