@@ -99,10 +99,11 @@ confidence-threshold = 0.9
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-# The GUI stack is pinned to an exact revision of Blade, which is not published.
-# Packaging a release (M5) requires resolving this.
+# The GUI stack is pinned to exact revisions. Blade 0.9 consumes shader types
+# from its matching wgpu revision, so review and advance those sources together.
 allow-git = [
     "https://github.com/kvark/blade",
+    "https://github.com/gfx-rs/wgpu",
     # Starcom's Sunset fork, pinned by revision. Same arrangement as Blade.
     "https://github.com/navigato-rs/sunset",
     # Shared, content-free feedback support; GUI-only and revision-pinned.
