@@ -1,11 +1,12 @@
 # Starcom plan and roadmap
 
-Updated: 2026-10-11.
+Updated: 2026-10-14.
 
 **Current status:** M0 through M3 are done for the tested configuration, and M4
 is partly done. M2's gate is signed off; M3 is complete: transport loss is classified apart
 from authentication, trust, missing-session, server-exit, and detach; retries use
-cancellable jittered backoff with visible state; every attempt takes a fresh
+cancellable jittered backoff with visible state and pause after ten failures;
+every attempt takes a fresh
 epoch and rebuilds models; a replaced session or restarted tmux server is
 reported. Alternate-screen panes and a History setting below tmux's buffer are
 not treated as lost output. Loss during output, input, paste, and a remote layout
@@ -89,7 +90,7 @@ mode is the external frontend interface and works with the host's installed tmux
 | Control protocol | `tmuxctl` with runtime/spawn defaults disabled. |
 | SSH | Embedded Sunset + RustCrypto; no libssh2/OpenSSL/ring/AWS-LC backend. |
 | Dependency risk | Owning the SSH stack means owning its advisories: `deny.toml` gates every change and runs weekly. |
-| Automatic retry | Transport loss only. Authentication, trust, missing-session, server-exit, and detach always stop. |
+| Automatic retry | Transport loss only, capped at ten retries before explicit user action. Authentication, trust, missing-session, server-exit, and detach always stop. |
 | Advanced SSH escape hatch | Optional system-SSH transport remains a future option, alongside the Sunset fork. |
 | Third-party patches | Forks pinned by revision on `main` (Blade, Sunset). Never vendored, never unpinned. |
 | Saved state | Destinations, preferences, and last-used session name. Startup reconnects saved tabs using current SSH policy unless disabled. An unreadable file is a system dialog: clear it, or exit and leave it. |

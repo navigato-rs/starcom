@@ -1111,7 +1111,16 @@ fn worker_loop(shared: Shared, wake: Wake) {
                 }
             };
             let retriable = failure.retriable() && connection.reconnect;
-            let delay = retriable.then(|| backoff.next_delay());
+            let exhausted = retriable && !backoff.automatic_retry_available();
+            let delay = (retriable && !exhausted).then(|| backoff.next_delay());
+            let detail = if exhausted {
+                format!(
+                    "{detail} Automatic reconnect paused after {} retries; use Reconnect to try again.",
+                    reconnect::MAX_AUTOMATIC_RETRIES
+                )
+            } else {
+                detail
+            };
             let scheduled = report_failure(
                 &shared,
                 &wake,

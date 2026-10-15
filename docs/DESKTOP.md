@@ -420,8 +420,10 @@ form. Failed sessions stay in the sidebar when selected.
 If the managed tmux session ends, the shared connection fails and its tabs keep
 their last frozen view. If one managed window disappears, only its logical tab
 becomes unavailable. In both cases the affected row stays red so you can still
-copy from it. A missing window offers **Recreate**; an inaccessible server offers
-**Reconnect**; and the leave button remains the only action that removes the tab.
+copy from it. A missing window or a reachable server whose tmux server exited
+offers **Recreate** under the remembered window name; an inaccessible server
+offers **Reconnect**; and the leave button remains the only action that removes
+the tab.
 
 **Reconnect automatically after connection loss** is on by default in the
 connection form. Only transport loss is retried. That includes a TCP drop, a
@@ -436,7 +438,8 @@ not live, and the tab is yellow with an animated three-dot pulse.
 Each retry waits a little longer, up to 30 seconds, with jitter so several tabs
 that drop together do not reconnect in lockstep. A temporary bottom overlay shows
 the attempt number and remaining wait. A successful attachment resets the
-schedule.
+schedule. After ten failed retries Starcom pauses and exposes **Reconnect**; the
+saved tabs and their frozen contents remain until the user leaves them.
 
 While disconnected, the last view stays readable and copyable, but no input token
 is issued: nothing typed during an outage is queued for later delivery, and a
