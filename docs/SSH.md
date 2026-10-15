@@ -172,10 +172,14 @@ never promote a failure to retriable. Remote output is untrusted, so it is allow
 to stop Starcom from retrying but never to make it retry.
 
 Retries use exponential backoff from 500 ms to a 30 s ceiling with per-connection
-jitter, and the wait is cancellable at any point. Each attempt takes a fresh
-connection epoch, which invalidates every outstanding input token, and rebuilds
-all pane models from a new snapshot boundary. Nothing typed while disconnected is
-queued, and no write with uncertain delivery is repeated.
+jitter, and the wait is cancellable at any point. After ten automatic retries,
+Starcom pauses with the frozen view and an explicit **Reconnect** action instead
+of polling forever. That action starts a fresh retry schedule. Each attempt takes
+a fresh connection epoch, which invalidates every outstanding input token, and
+rebuilds all pane models from a new snapshot boundary. Nothing typed while
+disconnected is queued, and no write with uncertain delivery is repeated. Every
+direct attempt calls the OS resolver again; Starcom does not retain a resolved IP
+address between attempts.
 
 Sunset currently has a small receive window and a narrower algorithm set than
 OpenSSH. High-latency throughput and compatibility with additional servers need

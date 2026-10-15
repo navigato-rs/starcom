@@ -2875,8 +2875,9 @@ fn paint_server_backlog(ui: &mut egui::Ui, backlog: desktop::InputBacklog) -> eg
 }
 
 fn can_recreate_missing_session(state: &desktop::State, logical_missing: bool) -> bool {
-    (state.failure == Some(reconnect::Failure::MissingSession) || logical_missing)
-        && !matches!(state.discovery, Some(desktop::Discovery::Failed(_)))
+    state.failure == Some(reconnect::Failure::ServerExit)
+        || ((state.failure == Some(reconnect::Failure::MissingSession) || logical_missing)
+            && !matches!(state.discovery, Some(desktop::Discovery::Failed(_))))
 }
 
 fn terminal_client_size(
@@ -3738,6 +3739,13 @@ mod tests {
         state.discovery = None;
         assert!(!can_recreate_missing_session(&state, false));
         assert!(can_recreate_missing_session(&state, true));
+
+        state.failure = Some(reconnect::Failure::ServerExit);
+        state.discovery = Some(desktop::Discovery::Failed("old lookup".into()));
+        assert!(
+            can_recreate_missing_session(&state, false),
+            "a reachable rebooted server can explicitly recreate remembered windows"
+        );
     }
 
     #[test]

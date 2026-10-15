@@ -162,6 +162,10 @@ pub const FIRST_DELAY: time::Duration = time::Duration::from_millis(500);
 /// Ceiling for a single wait. A laptop that slept for an hour still comes back
 /// within this bound instead of drifting into a multi-minute backoff.
 pub const MAX_DELAY: time::Duration = time::Duration::from_secs(30);
+/// Stop automatic transport retries after a useful reboot-sized window. The
+/// saved tab and frozen view remain, and the user can begin a fresh schedule
+/// explicitly instead of Starcom silently retrying forever.
+pub const MAX_AUTOMATIC_RETRIES: u32 = 10;
 /// Wall time running this far ahead of the monotonic clock is a suspend, not
 /// scheduling jitter. NTP steps of a second or two must not force a reconnect.
 pub const SUSPEND_SLACK: time::Duration = time::Duration::from_secs(2);
@@ -197,10 +201,6 @@ impl AliveClock {
 }
 
 /// Exponential backoff with deterministic +/-25% jitter.
-///
-/// It never gives up on its own. A retry loop ends because the user cancelled it
-/// or because the failure stopped being retriable — not because a counter ran
-/// out, which would silently abandon a session the user still wants.
 pub struct Backoff {
     attempt: u32,
     state: u64,
@@ -225,6 +225,12 @@ impl Backoff {
     /// A successful, fully restored attachment starts the schedule over.
     pub fn reset(&mut self) {
         self.attempt = 0;
+    }
+
+    /// Whether another automatic retry may be scheduled. Reaching the limit
+    /// pauses in a visible recoverable state; it never removes the saved tab.
+    pub fn automatic_retry_available(&self) -> bool {
+        self.attempt < MAX_AUTOMATIC_RETRIES
     }
 
     pub fn next_delay(&mut self) -> time::Duration {
@@ -407,6 +413,18 @@ mod tests {
         // The same seed reproduces the same schedule, so this stays testable.
         let mut again = Backoff::new(1);
         assert_eq!(left, (0..6).map(|_| again.next_delay()).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn automatic_retries_have_an_explicit_limit() {
+        let mut backoff = Backoff::new(1);
+        for _ in 0..MAX_AUTOMATIC_RETRIES {
+            assert!(backoff.automatic_retry_available());
+            backoff.next_delay();
+        }
+        assert!(!backoff.automatic_retry_available());
+        backoff.reset();
+        assert!(backoff.automatic_retry_available());
     }
 
     #[cfg(feature = "ssh")]

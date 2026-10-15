@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Automatic transport recovery now pauses after ten retries instead of looping
+  forever. The frozen tabs remain available with an explicit Reconnect action;
+  when a reachable host reports that tmux exited during a reboot, each remembered
+  logical session offers Recreate under its saved window name.
+- The terminal-cell safety ceiling is enforced per logical tmux window rather
+  than across every window sharing a server connection. Unrelated sessions no
+  longer exhaust one another's budget; pane count, individual dimensions,
+  history, captures, and each window's split tree remain bounded.
+
 ## v0.3.1
 
 Shared server workspaces, window-based sessions, a vertical session sidebar,

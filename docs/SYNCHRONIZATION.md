@@ -92,10 +92,13 @@ There is no pane-input API on this path, no offline keystroke queue, and no
 network reconnect scheduler. It does not promote the existing connection policy
 into its interactive `Live` state.
 
-The initial limits are 32 panes, 1,000 requested history rows per pane, a 64 KiB
-outgoing command list, 256 pending commands, 8 MiB per batch, the existing 1 MiB
-reply budget, and a conservative 1,048,576-cell aggregate allocation budget.
-Budgets are explicit safety limits, not measured performance claims.
+The initial limits are 32 panes across the managed server workspace, 1,000
+requested history rows per pane, a 64 KiB outgoing command list, 256 pending
+commands, 8 MiB per batch, the existing 1 MiB reply budget, and a conservative
+1,048,576-cell allocation budget per logical tmux window. Pane count, individual
+pane geometry, and per-pane terminal buffers still bound the workspace total;
+unrelated windows do not consume one another's allowance. Budgets are explicit
+safety limits, not measured performance claims.
 
 ## Validation gate
 

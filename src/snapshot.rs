@@ -11,7 +11,10 @@ use anyhow::Context;
 
 pub const MAX_PANES: usize = 32;
 pub const MAX_HISTORY_LINES: usize = 1000;
-const MAX_SESSION_CELLS: usize = 1_048_576;
+/// One user-visible logical session is one tmux window. Keep a hostile split
+/// tree from consuming an unbounded amount without charging unrelated windows
+/// on the same shared server workspace against each other.
+const MAX_WINDOW_CELLS: usize = 1_048_576;
 const MAX_CAPTURE_BYTES: usize = 1024 * 1024;
 
 // No names or free-form text: every separator has an unambiguous meaning.
@@ -186,24 +189,38 @@ impl State {
     }
 }
 
-/// Check the complete session budget before allocating any replacement grids.
+fn charge_window_cells(
+    windows: &mut collections::BTreeMap<tmuxctl::WindowId, usize>,
+    window: tmuxctl::WindowId,
+    additional: usize,
+) -> anyhow::Result<()> {
+    let cells = windows.entry(window).or_default();
+    *cells = cells
+        .checked_add(additional)
+        .context("cell budget overflow")?;
+    anyhow::ensure!(
+        *cells <= MAX_WINDOW_CELLS,
+        "window exceeds terminal cell budget"
+    );
+    Ok(())
+}
+
+/// Check each logical window before allocating any replacement grids.
 pub fn validate_budget(states: &[State], history: usize) -> anyhow::Result<()> {
     anyhow::ensure!(history <= MAX_HISTORY_LINES, "history exceeds budget");
     anyhow::ensure!(
         !states.is_empty() && states.len() <= MAX_PANES,
         "invalid pane count"
     );
-    let mut cells = 0usize;
+    let mut window_cells = collections::BTreeMap::<tmuxctl::WindowId, usize>::new();
     let mut ids = collections::BTreeSet::new();
     for state in states {
         anyhow::ensure!(ids.insert(state.pane), "duplicate pane");
-        cells = cells
-            .checked_add(terminal::Terminal::estimated_cells(state.size, history))
-            .context("cell budget overflow")?;
-        anyhow::ensure!(
-            cells <= MAX_SESSION_CELLS,
-            "session exceeds terminal cell budget"
-        );
+        charge_window_cells(
+            &mut window_cells,
+            state.window,
+            terminal::Terminal::estimated_cells(state.size, history),
+        )?;
     }
     Ok(())
 }
@@ -388,7 +405,7 @@ impl View {
             crate::core::SessionName::new(name.clone())?;
             anyhow::ensure!(names.insert(name), "duplicate tmux window name");
         }
-        let mut cells = 0usize;
+        let mut window_cells = collections::BTreeMap::<tmuxctl::WindowId, usize>::new();
         let mut map = collections::BTreeMap::new();
         for pane in panes {
             anyhow::ensure!(
@@ -397,13 +414,11 @@ impl View {
             );
             // Charge the complete per-pane allocation ceiling, including both
             // visible grids, rather than only the number of nonblank cells.
-            cells = cells
-                .checked_add(pane.terminal.cell_budget())
-                .context("cell budget overflow")?;
-            anyhow::ensure!(
-                cells <= MAX_SESSION_CELLS,
-                "session exceeds terminal cell budget"
-            );
+            charge_window_cells(
+                &mut window_cells,
+                pane.state.window,
+                pane.terminal.cell_budget(),
+            )?;
             anyhow::ensure!(
                 map.insert(pane.state.pane, pane).is_none(),
                 "duplicate pane"
@@ -1086,6 +1101,18 @@ mod tests {
         }
         assert!(validate_budget(&states, 1000).is_err());
         assert!(validate_budget(&states[..1], 1000).is_ok());
+    }
+
+    #[test]
+    fn independent_windows_do_not_share_a_cell_budget() {
+        let mut states = Vec::new();
+        for id in 0..16 {
+            let mut state = state(120, 60);
+            state.pane = tmuxctl::PaneId(id);
+            state.window = tmuxctl::WindowId(id);
+            states.push(state);
+        }
+        assert!(validate_budget(&states, 1000).is_ok());
     }
 
     #[test]
