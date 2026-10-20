@@ -275,9 +275,10 @@ impl Terminal {
     }
 
     /// Reconstruct an application-wrapped URL. Some TUIs print a newline and
-    /// repeat their indentation instead of letting the terminal set WRAPLINE.
-    /// Join only bounded, indented continuations after an obviously unfinished
-    /// URL or a row ending near the terminal margin.
+    /// repeat their indentation, leaving WRAPLINE unset across the break.
+    /// Vertical box gutters are stripped so a hyphenated URL inside a panel
+    /// still joins. Join only bounded, indented continuations after an
+    /// obviously unfinished URL or a row ending near the terminal margin.
     fn hard_wrapped_http_url(&self, point: index::Point, target: HardWrapTarget) -> Option<String> {
         use grid::Dimensions;
         const MAX_GROUPS: usize = 8;
@@ -299,8 +300,9 @@ impl Terminal {
         }
 
         for start in starts {
-            let (_, line) =
+            let (_, raw_line) =
                 self.wrapped_line_text(index::Point::new(index::Line(start), index::Column(0)))?;
+            let (gutter, line) = line_without_box_gutter(&raw_line);
             let mut search = 0;
             while search < line.len() {
                 let rest = &line[search..];
@@ -312,26 +314,27 @@ impl Terminal {
                     search = url_start.saturating_add(1);
                     continue;
                 };
-                let start_column = line[..url_start].chars().count();
+                let start_column = gutter + line[..url_start].chars().count();
                 let mut touched = clicked_start == start
                     && clicked_column >= start_column
                     && clicked_column < start_column + first.chars().count();
                 let mut url = first.to_owned();
                 let mut groups = 1;
                 let mut row = self.logical_line_end(start, bottom);
-                let mut continues = reaches_end && self.url_may_continue(first, &line);
+                let mut continues = reaches_end && self.url_may_continue(first, line);
 
                 while continues && row < bottom && groups < MAX_GROUPS {
                     let next = row + 1;
-                    let (_, next_line) = self.wrapped_line_text(index::Point::new(
+                    let (_, raw_next) = self.wrapped_line_text(index::Point::new(
                         index::Line(next),
                         index::Column(0),
                     ))?;
+                    let (next_gutter, next_line) = line_without_box_gutter(&raw_next);
                     let indent_bytes = next_line.len() - next_line.trim_start().len();
                     if indent_bytes == 0 {
                         break;
                     }
-                    let indent_columns = next_line[..indent_bytes].chars().count();
+                    let indent_columns = next_gutter + next_line[..indent_bytes].chars().count();
                     let Some((piece, piece_reaches_end)) =
                         url_line_piece(&next_line[indent_bytes..])
                     else {
@@ -346,7 +349,7 @@ impl Terminal {
                     url.push_str(piece);
                     groups += 1;
                     row = self.logical_line_end(next, bottom);
-                    continues = piece_reaches_end && self.url_may_continue(piece, &next_line);
+                    continues = piece_reaches_end && self.url_may_continue(piece, next_line);
                 }
 
                 if groups > 1
@@ -556,12 +559,37 @@ fn http_url_from(text: &str) -> Option<&str> {
 fn url_line_piece(text: &str) -> Option<(&str, bool)> {
     let raw_len = text
         .find(|ch: char| {
-            ch.is_whitespace() || matches!(ch, '"' | '\'' | '<' | '>' | ')' | ']' | '|')
+            ch.is_whitespace()
+                || is_box_gutter(ch)
+                || matches!(ch, '"' | '\'' | '<' | '>' | ')' | ']' | '|')
         })
         .unwrap_or(text.len());
     let raw = &text[..raw_len];
     let piece = raw.trim_end_matches(['.', ',', ';', '!', '?']);
     (!piece.is_empty()).then_some((piece, raw_len == text.len() && piece.len() == raw.len()))
+}
+
+fn is_box_gutter(ch: char) -> bool {
+    matches!(
+        ch,
+        '│' | '┃' | '║' | '┆' | '┊' | '╎' | '╏' | '├' | '┤' | '╟' | '╢' | '╠' | '╣'
+    )
+}
+
+/// Strip a TUI vertical border so a URL wrapped inside a box still joins.
+/// Returns the left-gutter width in cells and the remaining text.
+fn line_without_box_gutter(line: &str) -> (usize, &str) {
+    let mut s = line.trim_end();
+    s = s.trim_end_matches(is_box_gutter).trim_end();
+    let spaces = s.len() - s.trim_start_matches(' ').len();
+    let after_spaces = &s[spaces..];
+    match after_spaces.chars().next() {
+        Some(ch) if is_box_gutter(ch) => (
+            s[..spaces].chars().count() + 1,
+            &after_spaces[ch.len_utf8()..],
+        ),
+        _ => (0, s),
+    }
 }
 
 #[cfg(test)]
@@ -796,6 +824,57 @@ mod tests {
                 .link_destination(index::Point::new(index::Line(2), index::Column(5)))
                 .as_deref(),
             Some(expected)
+        );
+    }
+
+    #[test]
+    fn a_url_wrapped_inside_a_tui_box_copies_in_one_piece() {
+        let mut terminal = Terminal::new(core::Size::new(80, 8).unwrap(), 0);
+        terminal.feed(
+            concat!(
+                "│   Checked just now: https://changelogs.ubuntu.com/meta-            │\r\n",
+                "│   release still ends at 26.04.1, and in meta-release-              │\r\n",
+                "│   development Stonking is still Supported: 0. The 26.10            │\r\n",
+            )
+            .as_bytes(),
+        );
+        let expected = "https://changelogs.ubuntu.com/meta-release";
+        let https_col = "│   Checked just now: ".chars().count();
+        assert_eq!(
+            terminal
+                .link_destination(index::Point::new(index::Line(0), index::Column(https_col)))
+                .as_deref(),
+            Some(expected)
+        );
+        let release_col = "│   ".chars().count();
+        assert_eq!(
+            terminal
+                .link_destination(index::Point::new(
+                    index::Line(1),
+                    index::Column(release_col)
+                ))
+                .as_deref(),
+            Some(expected),
+            "the boxed continuation belongs to the same URL"
+        );
+
+        let mut padded = Terminal::new(core::Size::new(80, 6).unwrap(), 0);
+        padded.feed(
+            concat!(
+                " │   Checked just now: https://changelogs.ubuntu.com/meta-           │\r\n",
+                " │   release still ends at 26.04.1\r\n",
+            )
+            .as_bytes(),
+        );
+        assert_eq!(
+            padded
+                .link_destination(index::Point::new(
+                    index::Line(0),
+                    index::Column(" │   Checked just now: ".chars().count())
+                ))
+                .as_deref(),
+            Some(expected),
+            "a space before the box gutter still joins"
         );
     }
 

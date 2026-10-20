@@ -309,9 +309,9 @@ remotely.
 
 A click on a link copies its destination to the local clipboard: OSC 8 if the
 cell has one, otherwise an `http(s)` URL covering the cell (including when
-the URL is split across soft-wrapped rows), or — for a short underlined
-"click here to copy" affordance whose OSC 8 tmux has stripped — a URL on
-the same or an adjacent line. A long underlined run is treated as
+the URL is split across soft-wrapped rows or hard-wrapped inside a TUI box),
+or — for a short underlined "click here to copy" affordance whose OSC 8 tmux
+has stripped — a URL on the same or an adjacent line. A long underlined run is treated as
 content, not a link. Hover shows the destination. A tiny pointer
 move is not treated as a drag. Keyboard Space and Enter are not pointer
 clicks. When the live pane still has mouse reporting enabled and the
