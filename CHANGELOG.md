@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A click copies an `http(s)` URL that a TUI wrapped inside a box, including
+  when the break is at a hyphen and the next row starts with a `│` gutter.
 - Creating a session refuses a name that already exists on that server. Each
   tab stays bound to its tmux window id, including when another window shares
   the name.
