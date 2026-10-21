@@ -400,10 +400,8 @@ impl View {
             "pane count exceeds budget"
         );
         anyhow::ensure!(!windows.is_empty(), "window list is empty");
-        let mut names = collections::BTreeSet::new();
         for name in windows.values() {
             crate::core::SessionName::new(name.clone())?;
-            anyhow::ensure!(names.insert(name), "duplicate tmux window name");
         }
         let mut window_cells = collections::BTreeMap::<tmuxctl::WindowId, usize>::new();
         let mut map = collections::BTreeMap::new();
@@ -447,10 +445,27 @@ impl View {
         &self.windows
     }
 
+    /// The unique window with this name. An ambiguous name is addressable
+    /// only by id, so this returns `None`.
     pub(crate) fn window_named(&self, name: &str) -> Option<tmuxctl::WindowId> {
+        let mut found = None;
+        for (id, candidate) in &self.windows {
+            if candidate != name {
+                continue;
+            }
+            if found.is_some() {
+                return None;
+            }
+            found = Some(*id);
+        }
+        found
+    }
+
+    /// True when another window already uses this name.
+    pub(crate) fn name_in_use(&self, name: &str, except: Option<tmuxctl::WindowId>) -> bool {
         self.windows
             .iter()
-            .find_map(|(id, candidate)| (candidate == name).then_some(*id))
+            .any(|(id, candidate)| candidate == name && except != Some(*id))
     }
 
     pub(crate) fn window_name(&self, window: tmuxctl::WindowId) -> Option<&str> {
@@ -983,7 +998,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_window_names_are_unique_and_authoritative() {
+    fn duplicate_window_names_keep_both_windows() {
         let first = Pane::restore(state(12, 3), &lines(&["", "", ""]), &[], &[], 0).unwrap();
         let mut second_state = state(12, 3);
         second_state.pane = tmuxctl::PaneId(2);
@@ -993,7 +1008,17 @@ mod tests {
             (tmuxctl::WindowId(2), "work".to_owned()),
             (tmuxctl::WindowId(3), "work".to_owned()),
         ]);
-        assert!(View::new_named(tmuxctl::SessionId(0), vec![first, second], duplicate).is_err());
+        let view = View::new_named(tmuxctl::SessionId(0), vec![first, second], duplicate).unwrap();
+        assert_eq!(view.windows().len(), 2);
+        assert!(
+            view.window_named("work").is_none(),
+            "a shared name is not a unique target"
+        );
+        assert!(view.name_in_use("work", None));
+        assert!(view.name_in_use("work", Some(tmuxctl::WindowId(2))));
+        assert!(!view.name_in_use("build", None));
+        assert_eq!(view.window_name(tmuxctl::WindowId(2)), Some("work"));
+        assert_eq!(view.window_name(tmuxctl::WindowId(3)), Some("work"));
     }
 
     #[test]

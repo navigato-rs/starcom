@@ -720,16 +720,20 @@ impl DesktopUi {
 
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
-                let logical_missing = self.window.is_none()
+                let logical_missing = !self.window_available(state)
                     && matches!(
                         state.phase,
                         desktop::Phase::Watching | desktop::Phase::Resynchronizing
                     );
+                let name_taken = state
+                    .view
+                    .as_ref()
+                    .is_some_and(|view| view.name_in_use(self.session_name(), self.window));
                 let recreate = can_recreate_missing_session(state, logical_missing);
                 let recover = matches!(
                     state.phase,
                     desktop::Phase::Failed | desktop::Phase::Disconnected
-                ) || logical_missing;
+                ) || (logical_missing && recreate);
                 if recover {
                     let label = if recreate {
                         if state.changing_sessions {
@@ -740,11 +744,17 @@ impl DesktopUi {
                     } else {
                         "Reconnect"
                     };
+                    let recreate_blocked = recreate && name_taken;
                     if ui
                         .add_enabled(
-                            !state.changing_sessions,
+                            !state.changing_sessions && !recreate_blocked,
                             egui::Button::new(label).min_size(egui::vec2(0.0, 28.0)),
                         )
+                        .on_disabled_hover_text(if recreate_blocked {
+                            "A logical session with this name already exists."
+                        } else {
+                            "Wait for the current request to finish."
+                        })
                         .on_hover_text(if recreate {
                             "Create a new empty window with this session name on the same server."
                         } else {
@@ -913,10 +923,13 @@ impl DesktopUi {
     }
 
     pub(crate) fn window_available(&self, state: &desktop::State) -> bool {
-        state
-            .view
-            .as_ref()
-            .is_some_and(|view| view.window_named(self.session_name()).is_some())
+        let Some(view) = state.view.as_ref() else {
+            return false;
+        };
+        match self.window {
+            Some(window) => view.windows().contains_key(&window),
+            None => view.window_named(self.session_name()).is_some(),
+        }
     }
 
     pub(crate) fn current_window(&self) -> Option<tmuxctl::WindowId> {
@@ -1387,17 +1400,36 @@ impl DesktopUi {
                                     create.request_focus();
                                     self.focus_new_session = false;
                                 }
+                                let create_taken = create_name_taken(
+                                    &self.create_name,
+                                    &self.unavailable_sessions,
+                                    match state.discovery {
+                                        Some(desktop::Discovery::Sessions(ref found))
+                                            if listing_here =>
+                                        {
+                                            Some(found)
+                                        }
+                                        _ => None,
+                                    },
+                                );
                                 if ui
                                     .add_enabled(
                                         idle
                                             && !busy_here
-                                            && !self.create_name.trim().is_empty(),
+                                            && !self.create_name.trim().is_empty()
+                                            && !create_taken,
                                         egui::Button::new("Create").sense(egui::Sense::CLICK),
                                     )
                                     .on_hover_text(
                                         "Create a named window in Starcom's managed tmux session. \
                                          This starts tmux if needed.",
                                     )
+                                    .on_disabled_hover_text(if create_taken {
+                                        "A logical session with this name already exists."
+                                    } else {
+                                        "Create a named window in Starcom's managed tmux session. \
+                                         This starts tmux if needed."
+                                    })
                                     .clicked()
                                 {
                                     match self.form.connection_named(self.create_name.trim()) {
@@ -1666,14 +1698,19 @@ impl DesktopUi {
             for pane in view.panes().values() {
                 grouped.entry(pane.state.window).or_default().push(pane);
             }
-            // A logical Starcom session is exactly one uniquely named tmux
-            // window. Never follow a saved pane into another window: that
-            // would silently redirect this tab after a remote move.
+            // A logical Starcom session is one tmux window. Keep the saved
+            // window id after it disappears. Follow a unique name on first
+            // attach or Recreate.
+            let creating = self.creating.is_some();
+            let saved = self.window.filter(|window| grouped.contains_key(window));
             let named = view.window_named(self.session_name());
-            if named.is_some() {
+            let follow_name = saved.is_none() && (self.window.is_none() || creating);
+            if follow_name && named.is_some() {
                 self.creating = None;
             }
             if let (Some(previous), Some(current)) = (self.window, named)
+                && saved.is_none()
+                && creating
                 && previous != current
             {
                 self.notice = Some(format!(
@@ -1682,15 +1719,13 @@ impl DesktopUi {
                 ));
                 self.notice_until = None;
             }
-            let id = named.or_else(|| {
-                (state.phase == desktop::Phase::Demo || self.session_name().is_empty())
-                    .then(|| {
-                        self.window
-                            .filter(|window| grouped.contains_key(window))
-                            .or_else(|| grouped.keys().next().copied())
-                    })
-                    .flatten()
-            });
+            let id = saved
+                .or_else(|| follow_name.then_some(named).flatten())
+                .or_else(|| {
+                    (state.phase == desktop::Phase::Demo || self.session_name().is_empty())
+                        .then(|| grouped.keys().next().copied())
+                        .flatten()
+                });
             if let Some(id) = id
                 && let Some(panes) = grouped.get(&id)
             {
@@ -1711,7 +1746,6 @@ impl DesktopUi {
                 }
                 self.window = Some(id);
             } else {
-                self.window = None;
                 self.selected = None;
             }
         }
@@ -2107,7 +2141,7 @@ impl DesktopUi {
                     });
                     return;
                 }
-                if state.phase != desktop::Phase::Demo && self.window.is_none() {
+                if state.phase != desktop::Phase::Demo && !self.window_available(state) {
                     ui.vertical_centered(|ui| {
                         ui.set_max_width(640.0);
                         ui.add_space(90.0);
@@ -2874,9 +2908,24 @@ fn paint_server_backlog(ui: &mut egui::Ui, backlog: desktop::InputBacklog) -> eg
     response
 }
 
+fn create_name_taken(
+    name: &str,
+    unavailable: &collections::BTreeSet<String>,
+    listing: Option<&sessions::Listing>,
+) -> bool {
+    let name = name.trim();
+    !name.is_empty()
+        && (unavailable.contains(name)
+            || listing
+                .is_some_and(|found| found.managed.iter().any(|summary| summary.name == name)))
+}
+
 fn can_recreate_missing_session(state: &desktop::State, logical_missing: bool) -> bool {
-    state.failure == Some(reconnect::Failure::ServerExit)
-        || ((state.failure == Some(reconnect::Failure::MissingSession) || logical_missing)
+    // A live attachment whose named window is gone is still connected: recreate
+    // that window on this client.
+    logical_missing
+        || state.failure == Some(reconnect::Failure::ServerExit)
+        || (state.failure == Some(reconnect::Failure::MissingSession)
             && !matches!(state.discovery, Some(desktop::Discovery::Failed(_))))
 }
 
@@ -3296,6 +3345,140 @@ mod tests {
 
         assert_eq!(ui.window, Some(tmuxctl::WindowId(0)));
         assert_eq!(ui.selected, Some(tmuxctl::PaneId(0)));
+    }
+
+    fn named_windows(windows: &[(u32, u32, &str)]) -> snapshot::View {
+        let panes = windows
+            .iter()
+            .map(|(pane, window, _)| {
+                let state = snapshot::State::parse(&format!(
+                    "%{pane}|@{window}|12|3|0|0|0|0|0|0|2000|||0|2|1|0|0|0|1|0|0|0|0|0|1|"
+                ))
+                .unwrap();
+                snapshot::Pane::restore(
+                    state,
+                    &[String::new(), String::new(), String::new()],
+                    &[],
+                    &[],
+                    0,
+                )
+                .unwrap()
+            })
+            .collect();
+        let names = windows
+            .iter()
+            .map(|(_, window, name)| (tmuxctl::WindowId(*window), (*name).to_owned()))
+            .collect();
+        snapshot::View::new_named(tmuxctl::SessionId(0), panes, names).unwrap()
+    }
+
+    #[test]
+    fn a_duplicate_name_keeps_each_tab_on_its_own_window() {
+        let mut first = DesktopUi::default();
+        first.restore(store::Tab {
+            session: "work".into(),
+            window: Some(1),
+            pane: Some(1),
+            ..store::Tab::default()
+        });
+        first.open_terminal();
+        let mut second = DesktopUi::default();
+        second.restore(store::Tab {
+            session: "work".into(),
+            window: Some(2),
+            pane: Some(2),
+            ..store::Tab::default()
+        });
+        second.open_terminal();
+
+        let mut connected = desktop::State::default();
+        connected.phase = desktop::Phase::Watching;
+        connected.view = Some(named_windows(&[(1, 1, "work"), (2, 2, "work")]));
+        connected.generation = 1;
+        first.rebuild_layout(&connected);
+        second.rebuild_layout(&connected);
+        assert_eq!(first.window, Some(tmuxctl::WindowId(1)));
+        assert_eq!(second.window, Some(tmuxctl::WindowId(2)));
+        assert!(first.window_available(&connected));
+        assert!(second.window_available(&connected));
+
+        connected.view = Some(named_windows(&[(1, 1, "work")]));
+        connected.generation = 2;
+        first.rebuild_layout(&connected);
+        second.rebuild_layout(&connected);
+        assert_eq!(first.window, Some(tmuxctl::WindowId(1)));
+        assert!(first.window_available(&connected));
+        assert_eq!(second.window, Some(tmuxctl::WindowId(2)));
+        assert!(
+            !second.window_available(&connected),
+            "the remaining same-named window belongs to the other tab"
+        );
+    }
+
+    #[test]
+    fn recreate_binds_a_new_window_with_the_same_name() {
+        let mut ui = DesktopUi::default();
+        ui.restore(store::Tab {
+            session: "work".into(),
+            window: Some(2),
+            pane: Some(2),
+            ..store::Tab::default()
+        });
+        ui.open_terminal();
+
+        let mut connected = desktop::State::default();
+        connected.phase = desktop::Phase::Watching;
+        connected.view = Some(named_windows(&[(1, 1, "build")]));
+        connected.generation = 1;
+        ui.rebuild_layout(&connected);
+        assert_eq!(ui.window, Some(tmuxctl::WindowId(2)));
+        assert!(!ui.window_available(&connected));
+
+        ui.creating = Some("work".into());
+        connected.view = Some(named_windows(&[(1, 1, "build"), (3, 3, "work")]));
+        connected.generation = 2;
+        ui.rebuild_layout(&connected);
+        assert_eq!(ui.window, Some(tmuxctl::WindowId(3)));
+        assert!(ui.window_available(&connected));
+        assert!(ui.creating.is_none());
+    }
+
+    #[test]
+    fn first_attach_follows_a_unique_session_name() {
+        let mut ui = DesktopUi::default();
+        ui.restore(store::Tab {
+            session: "work".into(),
+            window: None,
+            ..store::Tab::default()
+        });
+        ui.open_terminal();
+
+        let mut connected = desktop::State::default();
+        connected.phase = desktop::Phase::Watching;
+        connected.view = Some(named_windows(&[(1, 1, "build"), (3, 3, "work")]));
+        connected.generation = 1;
+        ui.rebuild_layout(&connected);
+        assert_eq!(ui.window, Some(tmuxctl::WindowId(3)));
+        assert!(ui.window_available(&connected));
+    }
+
+    #[test]
+    fn an_ambiguous_name_stays_unbound_until_a_window_id_is_known() {
+        let mut ui = DesktopUi::default();
+        ui.restore(store::Tab {
+            session: "work".into(),
+            window: None,
+            ..store::Tab::default()
+        });
+        ui.open_terminal();
+
+        let mut connected = desktop::State::default();
+        connected.phase = desktop::Phase::Watching;
+        connected.view = Some(named_windows(&[(1, 1, "work"), (2, 2, "work")]));
+        connected.generation = 1;
+        ui.rebuild_layout(&connected);
+        assert!(ui.window.is_none());
+        assert!(!ui.window_available(&connected));
     }
 
     #[test]
@@ -3746,6 +3929,33 @@ mod tests {
             can_recreate_missing_session(&state, false),
             "a reachable rebooted server can explicitly recreate remembered windows"
         );
+
+        let mut watching = desktop::State::default();
+        watching.phase = desktop::Phase::Watching;
+        watching.discovery = Some(desktop::Discovery::Failed("stale lookup".into()));
+        assert!(
+            can_recreate_missing_session(&watching, true),
+            "a live server with a missing window recreates that window"
+        );
+    }
+
+    #[test]
+    fn create_is_blocked_when_the_name_already_exists() {
+        let mut unavailable = collections::BTreeSet::new();
+        unavailable.insert("open".to_owned());
+        let listing = sessions::Listing {
+            managed: vec![sessions::Summary {
+                id: tmuxctl::WindowId(1),
+                name: "work".into(),
+                panes: 1,
+            }],
+            other: Vec::new(),
+        };
+        assert!(create_name_taken("work", &unavailable, Some(&listing)));
+        assert!(create_name_taken("open", &unavailable, Some(&listing)));
+        assert!(create_name_taken(" work ", &unavailable, Some(&listing)));
+        assert!(!create_name_taken("fresh", &unavailable, Some(&listing)));
+        assert!(!create_name_taken("work", &unavailable, None));
     }
 
     #[test]

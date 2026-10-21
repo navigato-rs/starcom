@@ -751,10 +751,10 @@ impl Client {
         );
         anyhow::ensure!(!state.renaming, "a session rename is already running");
         anyhow::ensure!(
-            !state.view.as_ref().is_some_and(|view| {
-                view.window_named(name.as_str())
-                    .is_some_and(|existing| existing != window)
-            }),
+            !state
+                .view
+                .as_ref()
+                .is_some_and(|view| view.name_in_use(name.as_str(), Some(window))),
             "a logical session named '{}' already exists",
             name.as_str()
         );
@@ -773,10 +773,7 @@ impl Client {
     pub(crate) fn create_window(&self, name: core::SessionName) -> anyhow::Result<()> {
         let mut state = self.lock();
         anyhow::ensure!(
-            matches!(
-                state.phase,
-                Phase::Connecting | Phase::Watching | Phase::Resynchronizing | Phase::Reconnecting
-            ),
+            matches!(state.phase, Phase::Watching | Phase::Resynchronizing),
             "connect before creating another session"
         );
         anyhow::ensure!(
@@ -787,14 +784,14 @@ impl Client {
             state.create_window.is_none(),
             "a session is already being created"
         );
-        anyhow::ensure!(
-            state
-                .view
-                .as_ref()
-                .is_none_or(|view| view.window_named(name.as_str()).is_none()),
-            "a logical session named '{}' already exists",
-            name.as_str()
-        );
+        match state.view.as_ref() {
+            None => anyhow::bail!("connect before creating another session"),
+            Some(view) => anyhow::ensure!(
+                !view.name_in_use(name.as_str(), None),
+                "a logical session named '{}' already exists",
+                name.as_str()
+            ),
+        }
         state.create_window = Some(name);
         if let Some(ref wake) = state.io_wake {
             wake.notify();

@@ -1240,13 +1240,7 @@ impl Workspace {
             .tabs
             .iter()
             .filter(|tab| {
-                matches!(
-                    tab.client.phase(),
-                    desktop::Phase::Connecting
-                        | desktop::Phase::Watching
-                        | desktop::Phase::Resynchronizing
-                        | desktop::Phase::Reconnecting
-                ) && composer_server
+                composer_server
                     .as_ref()
                     .is_some_and(|server| tab.server.as_ref() == Some(server))
             })
@@ -1855,6 +1849,9 @@ impl Workspace {
                         };
                         if let Err(error) = result {
                             tab.client.lock().error = Some(error.to_string());
+                            if session_create {
+                                tab.ui.cancel_transient();
+                            }
                         }
                     }
                     if follow_input {
@@ -2171,6 +2168,135 @@ mod tests {
 
         assert!(workspace.tabs.is_empty());
         assert!(workspace.composer_open);
+    }
+
+    fn named_windows(windows: &[(u32, u32, &str)]) -> crate::snapshot::View {
+        let panes = windows
+            .iter()
+            .map(|(pane, window, _)| {
+                let state = crate::snapshot::State::parse(&format!(
+                    "%{pane}|@{window}|12|3|0|0|0|0|0|0|2000|||0|2|1|0|0|0|1|0|0|0|0|0|1|"
+                ))
+                .unwrap();
+                crate::snapshot::Pane::restore(
+                    state,
+                    &[String::new(), String::new(), String::new()],
+                    &[],
+                    &[],
+                    0,
+                )
+                .unwrap()
+            })
+            .collect();
+        let names = windows
+            .iter()
+            .map(|(_, window, name)| (tmuxctl::WindowId(*window), (*name).to_owned()))
+            .collect();
+        crate::snapshot::View::new_named(tmuxctl::SessionId(0), panes, names).unwrap()
+    }
+
+    #[test]
+    fn a_missing_window_does_not_fail_its_siblings() {
+        let mut workspace = Workspace::new(sync::Arc::new(|| {}), desktop::Startup::Demo).unwrap();
+        workspace.push_idle_tab().unwrap();
+        workspace.tabs[1].client = sync::Arc::clone(&workspace.tabs[0].client);
+        workspace.tabs[0].ui.restore(store::Tab {
+            session: "work".into(),
+            window: Some(1),
+            pane: Some(1),
+            ..store::Tab::default()
+        });
+        workspace.tabs[0].ui.open_terminal();
+        workspace.tabs[1].ui.restore(store::Tab {
+            session: "build".into(),
+            window: Some(2),
+            pane: Some(2),
+            ..store::Tab::default()
+        });
+        workspace.tabs[1].ui.open_terminal();
+        {
+            let mut state = workspace.tabs[0].client.lock();
+            state.phase = desktop::Phase::Watching;
+            state.view = Some(named_windows(&[(1, 1, "work"), (2, 2, "build")]));
+            state.generation = 1;
+        }
+
+        paint(&mut workspace);
+        assert_eq!(tab_phase(&workspace.tabs[0]), desktop::Phase::Watching);
+        assert_eq!(tab_phase(&workspace.tabs[1]), desktop::Phase::Watching);
+
+        {
+            let mut state = workspace.tabs[0].client.lock();
+            state.view = Some(named_windows(&[(1, 1, "work")]));
+            state.generation = 2;
+            state.phase = desktop::Phase::Watching;
+            state.failure = None;
+            state.error = None;
+        }
+        paint(&mut workspace);
+        assert_eq!(tab_phase(&workspace.tabs[0]), desktop::Phase::Watching);
+        assert_eq!(tab_phase(&workspace.tabs[1]), desktop::Phase::Failed);
+        assert_eq!(
+            workspace.tabs[0].client.phase(),
+            desktop::Phase::Watching,
+            "the shared server stays attached"
+        );
+    }
+
+    #[test]
+    fn a_missing_duplicate_named_window_does_not_fail_its_siblings() {
+        let mut workspace = Workspace::new(sync::Arc::new(|| {}), desktop::Startup::Demo).unwrap();
+        workspace.push_idle_tab().unwrap();
+        workspace.tabs[1].client = sync::Arc::clone(&workspace.tabs[0].client);
+        workspace.tabs[0].ui.restore(store::Tab {
+            session: "work".into(),
+            window: Some(1),
+            pane: Some(1),
+            ..store::Tab::default()
+        });
+        workspace.tabs[0].ui.open_terminal();
+        workspace.tabs[1].ui.restore(store::Tab {
+            session: "work".into(),
+            window: Some(2),
+            pane: Some(2),
+            ..store::Tab::default()
+        });
+        workspace.tabs[1].ui.open_terminal();
+        {
+            let mut state = workspace.tabs[0].client.lock();
+            state.phase = desktop::Phase::Watching;
+            state.view = Some(named_windows(&[(1, 1, "work"), (2, 2, "work")]));
+            state.generation = 1;
+        }
+
+        paint(&mut workspace);
+        assert_eq!(tab_phase(&workspace.tabs[0]), desktop::Phase::Watching);
+        assert_eq!(tab_phase(&workspace.tabs[1]), desktop::Phase::Watching);
+
+        {
+            let mut state = workspace.tabs[0].client.lock();
+            state.view = Some(named_windows(&[(1, 1, "work")]));
+            state.generation = 2;
+            state.phase = desktop::Phase::Watching;
+            state.failure = None;
+            state.error = None;
+        }
+        paint(&mut workspace);
+        assert_eq!(tab_phase(&workspace.tabs[0]), desktop::Phase::Watching);
+        assert_eq!(tab_phase(&workspace.tabs[1]), desktop::Phase::Failed);
+        assert_eq!(
+            workspace.tabs[0].ui.current_window(),
+            Some(tmuxctl::WindowId(1))
+        );
+        assert_eq!(
+            workspace.tabs[1].ui.current_window(),
+            Some(tmuxctl::WindowId(2))
+        );
+        assert_eq!(
+            workspace.tabs[0].client.phase(),
+            desktop::Phase::Watching,
+            "the shared server stays attached"
+        );
     }
 
     #[test]

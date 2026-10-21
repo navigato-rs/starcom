@@ -75,10 +75,13 @@ A logical tab owns:
 
 Window IDs are authoritative within a live tmux server. The saved name is the
 resume target. On reconnect, Starcom validates the saved ID and name against a
-fresh snapshot. A different server/session identity is a replacement; the same
-name with a new window ID on the same server means that logical session was
-replaced. Tmux permits duplicate window names, so Starcom must enforce unique
-names inside its managed session rather than accepting an ambiguous target.
+fresh snapshot. A different server/session identity is a replacement. Recreate,
+or a first attach with no saved window id, follows a unique name onto a new
+window id. A tab that already has a window id keeps it after that window
+disappears; Recreate is then the path onto a new window with that name. Tmux
+permits duplicate window names; Starcom refuses to create or rename into a
+collision. A duplicate that already exists on the host stays addressable by
+window ID so the rest of the workspace keeps its attachment.
 
 ## Lifecycle
 
