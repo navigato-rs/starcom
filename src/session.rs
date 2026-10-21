@@ -408,10 +408,7 @@ fn parse_windows(
             .context("invalid escaped tmux window name")?;
         let name = core::SessionName::new(decoded).ok();
         if let Some(ref name) = name {
-            anyhow::ensure!(
-                names.insert(name.as_str().to_owned()),
-                "duplicate tmux window name"
-            );
+            names.insert(name.as_str().to_owned());
         }
         parsed.push((id, name));
     }
@@ -487,5 +484,13 @@ mod tests {
         assert_eq!(windows[&tmuxctl::WindowId(1)], "work");
         assert_eq!(windows[&tmuxctl::WindowId(2)], "invalid-window-2-2");
         assert_eq!(windows[&tmuxctl::WindowId(3)], "invalid-window-2");
+    }
+
+    #[test]
+    fn duplicate_window_names_stay_addressable_by_id() {
+        let windows = parse_windows(&["@1|work".to_owned(), "@7|work".to_owned()]).unwrap();
+        assert_eq!(windows[&tmuxctl::WindowId(1)], "work");
+        assert_eq!(windows[&tmuxctl::WindowId(7)], "work");
+        assert_eq!(windows.len(), 2);
     }
 }

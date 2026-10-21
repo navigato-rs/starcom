@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Creating a session refuses a name that already exists on that server. Each
+  tab stays bound to its tmux window id, including when another window shares
+  the name.
+- A live server whose named window is gone paints only that tab red and offers
+  Recreate. The shared attachment stays up; sibling sessions stay green.
 - Automatic transport recovery now pauses after ten retries instead of looping
   forever. The frozen tabs remain available with an explicit Reconnect action;
   when a reachable host reports that tmux exited during a reboot, each remembered

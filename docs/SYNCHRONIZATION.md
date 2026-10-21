@@ -35,6 +35,13 @@ behavior is exercised against the 3.4 build the integration fixture uses. This i
 not a new atomic-snapshot guarantee in tmux's public API. Runtime ordering tests
 must pass on every advertised tmux version before it is called supported.
 
+tmux 3.2 through 3.7c need no extra Starcom flags. Control commands are
+newline-terminated. Snapshot capture still toggles client `no-output`; 3.7c
+fixed a hang on that path. Window identity is the tmux window id (`@N`). Names
+use `#{q:window_name}` as they have since the 3.2 quoting fix. 3.7 floating
+panes overlap tiled geometry and are shown as the largest pane, the same as a
+zoomed window.
+
 A yielding `after-capture-pane` hook can break the uninterrupted batch assumption.
 Preflight refuses configured snapshot-command hooks and overriding aliases without
 removing or executing those capture hooks. This check is not a configuration lock:

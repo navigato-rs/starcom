@@ -45,8 +45,10 @@ Session rows show only the tmux window name. A session row shows connection
 progress and then the terminal workspace. A failed attachment remains registered
 and turns red. An unreachable server offers **Reconnect** beside the leave button. A
 reachable server whose named window is missing offers **Recreate**, which creates
-an empty managed window with that same name and attaches to it. Selecting either
-action never deletes the tab.
+an empty managed window with that same name and attaches to it. If the server is
+already attached and only this window is gone, Recreate runs on that live client
+and sibling sessions stay green. Recreate stays disabled while that name still
+exists on the server. Selecting either action never deletes the tab.
 The recovery action and red leave icon float at the main area's bottom-right
 without changing terminal geometry. The leave icon or Ctrl-Shift-W/Cmd-W closes
 the registered tab; the shared control client detaches only after its last local
@@ -56,6 +58,9 @@ including while a pane layout is rebuilt, and yellow while connecting or
 reconnecting.
 
 A Starcom tab is one uniquely named window in the managed tmux session.
+**Create** is disabled when that name is already a managed window or an open
+tab. Each tab keeps its tmux window id, so close and input stay on that window
+when another client reuses the name.
 Double-click a connected tab to rename that tmux window. Enter confirms, Escape
 or clicking away cancels. The new
 name is written to the saved workspace after tmux accepts it, so a restart

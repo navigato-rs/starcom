@@ -417,7 +417,6 @@ fn parse(output: &str) -> anyhow::Result<Listing> {
     let mut managed = Vec::new();
     let mut other = collections::BTreeMap::<u32, OtherSession>::new();
     let mut managed_ids = collections::BTreeSet::new();
-    let mut managed_names = collections::BTreeSet::new();
     let mut rows = 0_usize;
     for line in output.lines() {
         if line.is_empty() {
@@ -484,10 +483,6 @@ fn parse(output: &str) -> anyhow::Result<Listing> {
         let attached = attached.parse().context("invalid attached-client count")?;
         if session_name.as_str() == MANAGED_SESSION {
             anyhow::ensure!(managed_ids.insert(window), "duplicate managed window id");
-            anyhow::ensure!(
-                managed_names.insert(window_name.as_str().to_owned()),
-                "duplicate managed window name"
-            );
             managed.push(Summary {
                 id: window,
                 name: window_name.as_str().to_owned(),
@@ -593,7 +588,6 @@ mod tests {
             "$0|starcom||0|0|@1|work",
             "$0|starcom||0|0|@1|work|1|extra",
             "$0|starcom||0|0|@1|work|not-a-number",
-            "$0|starcom||0|0|@1|work|1\n$0|starcom||0|1|@2|work|1",
             "$0|starcom||0|0|@1|work|1\n$0|starcom||0|1|@1|build|1",
         ] {
             assert!(parse(line).is_err(), "accepted {line:?}");
@@ -610,5 +604,25 @@ mod tests {
         .unwrap();
         assert_eq!(listing.managed.len(), 1);
         assert_eq!(listing.managed[0].name, "work");
+    }
+
+    #[test]
+    fn duplicate_managed_names_remain_listed() {
+        let listing = parse("$0|starcom||0|0|@1|work|1\n$0|starcom||0|1|@2|work|1").unwrap();
+        assert_eq!(
+            listing.managed,
+            [
+                Summary {
+                    id: tmuxctl::WindowId(1),
+                    name: "work".into(),
+                    panes: 1,
+                },
+                Summary {
+                    id: tmuxctl::WindowId(2),
+                    name: "work".into(),
+                    panes: 1,
+                },
+            ]
+        );
     }
 }
