@@ -199,6 +199,8 @@ pub(crate) struct InputBacklog {
     pub queued: usize,
     /// Actions dispatched to the control worker but not acknowledged by tmux.
     pub in_flight: usize,
+    /// The local queue cannot accept another action.
+    pub full: bool,
 }
 
 impl InputBacklog {
@@ -399,13 +401,22 @@ impl State {
                 .iter()
                 .map(|pending| pending.actions)
                 .sum(),
+            full: self.actions.len() >= MAX_PENDING_ACTIONS
+                || self.action_bytes >= MAX_PENDING_BYTES,
         }
     }
 
     pub(crate) fn input_wait(&self) -> Option<time::Duration> {
-        self.input_confirmations
+        let dispatched = self
+            .input_confirmations
             .front()
-            .map(|pending| pending.started_at.elapsed())
+            .map(|pending| pending.started_at);
+        let queued = self.actions.front().map(|pending| pending.queued_at);
+        [dispatched, queued]
+            .into_iter()
+            .flatten()
+            .min()
+            .map(|at| at.elapsed())
     }
 
     pub(crate) fn enqueue(&mut self, target: Target, action: input::Action) -> anyhow::Result<()> {
@@ -2496,6 +2507,10 @@ mod tests {
         state
             .enqueue(target, input::Action::Bytes(b"one".to_vec()))
             .unwrap();
+        assert!(
+            state.input_wait().is_some(),
+            "locally queued input starts the wait clock before dispatch"
+        );
         state
             .enqueue(target, input::Action::Bytes(b"two".to_vec()))
             .unwrap();
@@ -2521,6 +2536,7 @@ mod tests {
             InputBacklog {
                 queued: 2,
                 in_flight: 3,
+                full: false,
             }
         );
         assert_eq!(state.input_backlog().total(), 5);

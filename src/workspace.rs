@@ -610,6 +610,12 @@ impl Workspace {
         self.echo_until = Some(time::Instant::now() + self.repaint_interval());
     }
 
+    /// `apply` queued work after this frame was painted. The next frame draws
+    /// the updated header immediately.
+    pub(crate) fn wants_followup_paint(&self) -> bool {
+        self.local_dirty
+    }
+
     /// Report whether anything currently visible changed. Worker revisions for
     /// the selected terminal stay pending until `show` paints it; consuming
     /// them here made a later coalesced wake look like a duplicate and skip

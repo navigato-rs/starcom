@@ -2845,9 +2845,9 @@ enum ServerIndicator {
 }
 
 fn server_indicator(backlog: desktop::InputBacklog, warning: bool) -> ServerIndicator {
-    if warning {
+    if warning || backlog.full {
         ServerIndicator::Wait
-    } else if backlog.total() > 1 {
+    } else if backlog.total() > 0 {
         ServerIndicator::Backlog
     } else {
         ServerIndicator::Ping
@@ -2877,7 +2877,12 @@ pub(crate) fn paint_server_latency(ui: &mut egui::Ui, state: &desktop::State) {
             waiting.as_millis(),
             threshold.as_millis(),
         ));
-    } else if backlog.total() > 1 {
+    } else if backlog.full {
+        response.on_hover_text(format!(
+            "Input queue is full: {} queued locally, {} dispatched to the control stream",
+            backlog.queued, backlog.in_flight,
+        ));
+    } else if backlog.total() > 0 {
         response.on_hover_text(format!(
             "{} terminal input actions awaiting confirmation: {} queued locally, {} dispatched to the control stream",
             backlog.total(),
@@ -3018,18 +3023,39 @@ mod tests {
     }
 
     #[test]
-    fn server_indicator_prioritizes_wait_then_multi_action_backlog() {
-        let backlog = |total| desktop::InputBacklog {
-            queued: total,
-            in_flight: 0,
+    fn server_indicator_prioritizes_wait_then_any_outstanding_backlog() {
+        let backlog = |queued, in_flight, full| desktop::InputBacklog {
+            queued,
+            in_flight,
+            full,
         };
-        assert_eq!(server_indicator(backlog(0), false), ServerIndicator::Ping);
-        assert_eq!(server_indicator(backlog(1), false), ServerIndicator::Ping);
         assert_eq!(
-            server_indicator(backlog(2), false),
+            server_indicator(backlog(0, 0, false), false),
+            ServerIndicator::Ping
+        );
+        assert_eq!(
+            server_indicator(backlog(0, 1, false), false),
+            ServerIndicator::Backlog,
+            "one unacked keystroke replaces ping"
+        );
+        assert_eq!(
+            server_indicator(backlog(1, 0, false), false),
+            ServerIndicator::Backlog,
+            "a coalesced local burst replaces ping"
+        );
+        assert_eq!(
+            server_indicator(backlog(0, 2, false), false),
             ServerIndicator::Backlog
         );
-        assert_eq!(server_indicator(backlog(2), true), ServerIndicator::Wait);
+        assert_eq!(
+            server_indicator(backlog(1, 0, true), false),
+            ServerIndicator::Wait,
+            "a full local queue shows WAIT"
+        );
+        assert_eq!(
+            server_indicator(backlog(1, 0, false), true),
+            ServerIndicator::Wait
+        );
     }
 
     #[test]

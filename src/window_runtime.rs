@@ -435,6 +435,9 @@ impl winit::application::ApplicationHandler<Event> for App {
                         .as_mut()
                         .and_then(|runtime| runtime.input.clipboard_text())
                 });
+                if self.workspace.wants_followup_paint() {
+                    self.request_redraw();
+                }
             }
             _ => {}
         }

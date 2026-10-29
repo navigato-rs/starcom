@@ -277,17 +277,18 @@ intervening output volume, and maximum tmux `%extended-output` lag. Input that
 crosses 100 ms in any latency component is logged without recording the input
 or remote output itself.
 
-While ordinary input is waiting, narrow full-height strokes appear between the
-sidebar footer's refresh indicator and **Notes** button. Each three-point stroke
-is one coalesced terminal action for the selected server: dim strokes are still
-in Starcom's local queue and bright strokes have been dispatched to the control
-stream but not acknowledged by tmux. Space for four strokes is always reserved
-so normal interaction does not shift the footer; larger backlogs grow to a
-40-point cap. Hover it for exact counts.
+As soon as a key is queued, narrow full-height strokes replace the server
+header's latency label. Each stroke is one coalesced terminal action: dim
+strokes are still in Starcom's local queue and bright strokes have been
+dispatched to the control stream but not acknowledged by tmux. Space for four
+strokes is reserved inside the ping slot; larger backlogs grow to a 40-point
+cap. Hover it for exact counts. When the terminal echoes, the bars clear and
+ping returns.
 
-The latency field changes to red **WAIT** when the oldest dispatched input has
-not received its tmux acknowledgment within the greater of five times the last
-observed round trip and 50 ms. Hover **WAIT** for its current age and threshold.
+The latency field changes to red **WAIT** when the oldest queued or dispatched
+input has not been acknowledged within the greater of five times the last
+observed round trip and 50 ms, or when the local queue cannot accept more
+input. Hover **WAIT** for its age and threshold, or for the full-queue counts.
 This detects a stalled control request without adding a periodic network probe;
 an otherwise idle connection has no request whose latency can be measured.
 
