@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Typing replaces the server ping with input-backlog bars as soon as a key is
+  queued, and WAIT if that work stays unacknowledged or the queue is full.
 - A click copies an `http(s)` URL that a TUI wrapped inside a box, including
   when the break is at a hyphen and the next row starts with a `│` gutter.
 - Creating a session refuses a name that already exists on that server. Each
