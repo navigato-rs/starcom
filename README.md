@@ -103,9 +103,10 @@ events go to the application when it asked for mouse reports or
 uses the alternate screen; unmodified clicks go only when requested, while
 drags stay local selection. Focus a connected pane, then drop up to eight files
 onto the window to upload them over SFTP into `/tmp`. Large drops ask before
-uploading; an in-flight transfer can be cancelled.
-Transport loss reconnects automatically with visible, cancellable backoff and
-pauses after ten retries for an explicit retry rather than looping forever;
+uploading. Switching sessions keeps an in-flight transfer going; Cancel or
+closing that session stops it. Transport loss reconnects automatically with
+visible, cancellable backoff and pauses after ten retries for an explicit retry
+rather than looping forever;
 authentication, trust, and missing-session failures stop and wait for you.
 Red tabs distinguish recovery: an unreachable server offers **Reconnect**, while
 a reachable server with a missing named window or a rebooted tmux server offers

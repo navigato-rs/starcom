@@ -277,8 +277,10 @@ impl Terminal {
     /// Reconstruct an application-wrapped URL. Some TUIs print a newline and
     /// repeat their indentation, leaving WRAPLINE unset across the break.
     /// Vertical box gutters are stripped so a hyphenated URL inside a panel
-    /// still joins. Join only bounded, indented continuations after an
-    /// obviously unfinished URL or a row ending near the terminal margin.
+    /// still joins. A right-aligned clock after the URL (Grok's message
+    /// timestamp) counts as the end of the URL column. Join only bounded,
+    /// indented continuations after an obviously unfinished URL or a row
+    /// ending near the terminal margin.
     fn hard_wrapped_http_url(&self, point: index::Point, target: HardWrapTarget) -> Option<String> {
         use grid::Dimensions;
         const MAX_GROUPS: usize = 8;
@@ -553,9 +555,10 @@ fn http_url_from(text: &str) -> Option<&str> {
     (url.len() > min).then_some(url)
 }
 
-/// One URL-shaped token from a printed row and whether it reaches the row end
-/// without terminal punctuation. Unlike `http_url_from`, the first piece may
-/// be only `https://`; a later indented row supplies the host.
+/// One URL-shaped token from a printed row and whether it reaches the end of
+/// the URL column. Trailing spaces and a right-aligned message clock count as
+/// padding, so a wrap after `?` still joins. The first piece may be only
+/// `https://`; a later indented row supplies the host.
 fn url_line_piece(text: &str) -> Option<(&str, bool)> {
     let raw_len = text
         .find(|ch: char| {
@@ -565,8 +568,50 @@ fn url_line_piece(text: &str) -> Option<(&str, bool)> {
         })
         .unwrap_or(text.len());
     let raw = &text[..raw_len];
-    let piece = raw.trim_end_matches(['.', ',', ';', '!', '?']);
-    (!piece.is_empty()).then_some((piece, raw_len == text.len() && piece.len() == raw.len()))
+    let padding = url_tail_is_padding(&text[raw_len..]);
+    let piece = if padding {
+        raw.trim_end_matches(['.', ',', ';', '!'])
+    } else {
+        raw.trim_end_matches(['.', ',', ';', '!', '?'])
+    };
+    (!piece.is_empty()).then_some((piece, padding && piece.len() == raw.len()))
+}
+
+fn url_tail_is_padding(rest: &str) -> bool {
+    let rest = rest.trim();
+    rest.is_empty() || looks_like_clock(rest)
+}
+
+fn looks_like_clock(text: &str) -> bool {
+    let (time, suffix) = match text.split_once(char::is_whitespace) {
+        Some((time, rest)) => (time, rest.trim()),
+        None => (text, ""),
+    };
+    let Some((hours, minutes)) = time.split_once(':') else {
+        return false;
+    };
+    if hours.is_empty()
+        || hours.len() > 2
+        || minutes.len() != 2
+        || !hours.bytes().all(|b| b.is_ascii_digit())
+        || !minutes.bytes().all(|b| b.is_ascii_digit())
+    {
+        return false;
+    }
+    let Ok(hour) = hours.parse::<u8>() else {
+        return false;
+    };
+    let Ok(minute) = minutes.parse::<u8>() else {
+        return false;
+    };
+    if minute > 59 {
+        return false;
+    }
+    match suffix {
+        "" => hour <= 23,
+        "AM" | "PM" | "am" | "pm" | "Am" | "Pm" => hour <= 12,
+        _ => false,
+    }
 }
 
 fn is_box_gutter(ch: char) -> bool {
@@ -795,6 +840,74 @@ mod tests {
                 .as_deref(),
             Some(expected),
             "a short underlined affordance on the starting row uses the whole URL"
+        );
+    }
+
+    #[test]
+    fn grok_wraps_a_url_before_the_message_clock() {
+        let mut terminal = Terminal::new(core::Size::new(160, 6).unwrap(), 0);
+        let line1 = concat!(
+            "     The PR 338 watcher exited because that cohort finished. ",
+            "The writeup is already on PR 338 (https://github.com/kvark/meganeura/       12:23 AM",
+        );
+        terminal.feed(format!("{line1}\r\n     pull/338).\r\n").as_bytes());
+        let expected = "https://github.com/kvark/meganeura/pull/338";
+        let url_col = line1.find("https://").expect("url");
+        assert_eq!(
+            terminal
+                .link_destination(index::Point::new(index::Line(0), index::Column(url_col)))
+                .as_deref(),
+            Some(expected)
+        );
+        assert_eq!(
+            terminal
+                .link_destination(index::Point::new(index::Line(1), index::Column(5)))
+                .as_deref(),
+            Some(expected),
+            "the indented continuation after the clock belongs to the same URL"
+        );
+    }
+
+    #[test]
+    fn grok_can_hard_wrap_after_the_query_marker() {
+        let mut terminal = Terminal::new(core::Size::new(80, 6).unwrap(), 0);
+        terminal.feed(
+            concat!(
+                "  \x1b[4mcompare\x1b[0m (https://tclips.ap.tesla.services/viz?\r\n",
+                "  id=part-two&ids=three%2Cfour)\r\n",
+            )
+            .as_bytes(),
+        );
+        let expected = "https://tclips.ap.tesla.services/viz?id=part-two&ids=three%2Cfour";
+        assert_eq!(
+            terminal
+                .link_destination(index::Point::new(index::Line(0), index::Column(20)))
+                .as_deref(),
+            Some(expected)
+        );
+        assert_eq!(
+            terminal
+                .link_destination(index::Point::new(index::Line(1), index::Column(4)))
+                .as_deref(),
+            Some(expected),
+            "the query continues on the next indented row"
+        );
+        assert_eq!(
+            terminal
+                .link_destination(index::Point::new(index::Line(0), index::Column(4)))
+                .as_deref(),
+            Some(expected),
+            "a short underlined affordance on the starting row uses the whole URL"
+        );
+
+        let mut sentence = Terminal::new(core::Size::new(80, 4).unwrap(), 0);
+        sentence.feed(b"See https://example.com? Then continue.\r\n");
+        assert_eq!(
+            sentence
+                .link_destination(index::Point::new(index::Line(0), index::Column(10)))
+                .as_deref(),
+            Some("https://example.com"),
+            "a mid-line question mark is still sentence punctuation"
         );
     }
 

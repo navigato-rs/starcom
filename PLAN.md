@@ -170,9 +170,9 @@ terminal checkpoint.
 - A narrow vertical sidebar groups logical sessions beneath full-width server
   headers; `+` owns the only connection form, and a tab is registered on
   Connect. Failed first attachments return to `+`.
-- Normal terminal views have no permanent top or bottom bar. Window notes and
-  refresh state live in the sidebar; recovery/exit float above the terminal;
-  messages share their bottom overlay line without changing tmux geometry.
+- Normal terminal views have no permanent top or bottom bar. Window notes,
+  refresh state, recovery, and Leave live in the sidebar footer; messages share
+  their bottom overlay line without changing tmux geometry.
 - Host-first connection: known `Host` aliases, automatic session listing, first
   session selected, Connect without a separate list step.
 - One Starcom tab is one uniquely named window in the managed `starcom` tmux

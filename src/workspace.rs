@@ -1316,10 +1316,7 @@ impl Workspace {
                 }
                 paint_tab_fills(ui, idle_fill, idle_hover);
 
-                let session_controls = !self.composer_open && self.tabs.get(self.active).is_some();
-                let controls_height = if session_controls { 66.0 } else { 34.0 };
-                let footer_height =
-                    controls_height + if self.notice.is_some() { 26.0 } else { 0.0 };
+                let footer_height = 34.0 + if self.notice.is_some() { 26.0 } else { 0.0 };
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .max_height((ui.available_height() - footer_height).max(1.0))
@@ -1603,6 +1600,7 @@ impl Workspace {
         ) {
             // Switching tabs consumes the whole navigation frame. Keyboard and
             // clipboard events collected for the old tab cannot hit the new one.
+            self.pump_hidden_uploads(root.ctx(), None);
             return navigation;
         }
         let (id, action) = if self.composer_open || self.tabs.is_empty() {
@@ -1635,12 +1633,42 @@ impl Workspace {
             ack_painted(tab);
             (tab.id, action)
         };
+        self.pump_hidden_uploads(root.ctx(), Some(id));
         if !matches!(navigation, Action::None) {
             // The selected tab was still painted this frame, keeping its egui
             // ids alive until the navigation action is applied.
             return navigation;
         }
         Action::Tab(id, Box::new(action))
+    }
+
+    /// Finish SFTP uploads on tabs that are off-screen this frame so a
+    /// session switch still completes the transfer.
+    fn pump_hidden_uploads(&mut self, ctx: &egui::Context, skip: Option<u64>) {
+        let mut finished = Vec::new();
+        for tab in self
+            .tabs
+            .iter_mut()
+            .chain(std::iter::once(&mut self.composer))
+        {
+            if Some(tab.id) == skip {
+                continue;
+            }
+            if let Some((target, paths)) = tab.ui.poll_upload(ctx) {
+                finished.push((tab.id, target, paths));
+            }
+        }
+        for (id, target, paths) in finished {
+            let tab = if self.composer.id == id {
+                &mut self.composer
+            } else if let Some(index) = self.tabs.iter().position(|tab| tab.id == id) {
+                &mut self.tabs[index]
+            } else {
+                continue;
+            };
+            let steps = tab.ui.complete_upload(&tab.client.lock(), target, paths);
+            let _ = submit_frame(tab, steps, &mut || None);
+        }
     }
 
     /// Apply once, after egui finished its potentially repeated layout passes.
@@ -2073,6 +2101,44 @@ mod tests {
         assert_eq!(format_open(3720), "1h 2m");
         assert_eq!(format_open(86_400 * 2 + 3_600), "2d 1h");
     }
+
+    #[test]
+    fn switching_sessions_keeps_an_in_flight_upload() {
+        let mut workspace = Workspace::new(sync::Arc::new(|| {}), desktop::Startup::Demo).unwrap();
+        workspace.push_idle_tab().unwrap();
+        let first = workspace.tabs[0].id;
+        let second = workspace.tabs[1].id;
+        workspace.apply(Action::Select(first), || None);
+        let cancel = workspace.tabs[0].ui.arm_dummy_upload();
+        workspace.apply(Action::Select(second), || None);
+        assert_eq!(workspace.active, 1);
+        assert!(
+            !cancel.load(sync::atomic::Ordering::Acquire),
+            "switching sessions must keep the upload running"
+        );
+        assert!(
+            workspace
+                .tabs
+                .iter()
+                .find(|tab| tab.id == first)
+                .expect("source tab")
+                .ui
+                .has_in_flight_upload()
+        );
+
+        workspace.apply(Action::New, || None);
+        assert!(
+            !cancel.load(sync::atomic::Ordering::Acquire),
+            "opening + must keep the upload running"
+        );
+
+        workspace.apply(Action::Close(first), || None);
+        assert!(
+            cancel.load(sync::atomic::Ordering::Acquire),
+            "closing the uploading session stops the transfer"
+        );
+    }
+
     #[test]
     fn plus_opens_the_composer_without_a_new_tab() {
         let mut workspace = Workspace::new(sync::Arc::new(|| {}), desktop::Startup::Demo).unwrap();
@@ -3026,6 +3092,91 @@ mod tests {
         assert!(
             (170.0..200.0).contains(&sidebar_width),
             "session navigation must stay narrow, width was {sidebar_width}"
+        );
+    }
+
+    #[test]
+    fn sidebar_session_controls_share_one_icon_row() {
+        let ctx = egui::Context::default();
+        crate::window::configure(&ctx);
+        let mut workspace = Workspace::new(sync::Arc::new(|| {}), desktop::Startup::Demo).unwrap();
+        for pass in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1280.0, 760.0),
+                )),
+                time: Some(pass as f64 / 60.0),
+                ..Default::default()
+            };
+            let _ = ctx.run_ui(input, |root| {
+                workspace.show(root);
+            });
+        }
+        let ids = [
+            "sidebar-refresh",
+            "sidebar-settings",
+            "sidebar-notes",
+            "sidebar-leave",
+        ];
+        let rects: Vec<_> = ids
+            .iter()
+            .map(|id| {
+                ctx.read_response(egui::Id::new(*id))
+                    .unwrap_or_else(|| panic!("{id} missing from the sidebar footer"))
+                    .rect
+            })
+            .collect();
+        let y = rects[0].min.y;
+        for (id, rect) in ids.iter().zip(&rects) {
+            assert!(
+                (rect.min.y - y).abs() < 0.5,
+                "{id} left the footer row: {rects:?}"
+            );
+            assert!(
+                (24.0..=28.0).contains(&rect.height()),
+                "{id} should keep the footer height, was {rect:?}"
+            );
+            assert!(
+                rect.width() > 30.0,
+                "{id} should stretch across its footer slot, was {rect:?}"
+            );
+        }
+        assert!(rects[0].max.x <= rects[1].min.x);
+        assert!(rects[1].max.x <= rects[2].min.x);
+        assert!(rects[2].max.x <= rects[3].min.x);
+        let sidebar =
+            egui::containers::panel::PanelState::load(&ctx, egui::Id::new("session-sidebar"))
+                .expect("session sidebar")
+                .rect;
+        assert!(
+            (rects[0].left() - sidebar.left()).abs() < 12.0,
+            "footer buttons should start at the sidebar edge: {rects:?} in {sidebar:?}"
+        );
+        assert!(
+            (sidebar.right() - rects[3].right()).abs() < 12.0,
+            "footer buttons should reach the sidebar edge: {rects:?} in {sidebar:?}"
+        );
+
+        workspace.tabs[0].client.lock().phase = desktop::Phase::Failed;
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 760.0),
+            )),
+            time: Some(1.0),
+            ..Default::default()
+        };
+        let _ = ctx.run_ui(input, |root| {
+            workspace.show(root);
+        });
+        let recover = ctx
+            .read_response(egui::Id::new("sidebar-refresh"))
+            .expect("Reconnect replaces the refresh slot")
+            .rect;
+        assert!(
+            (recover.min.y - y).abs() < 0.5,
+            "Reconnect must stay on the footer row: {recover:?} vs {y}"
         );
     }
 
