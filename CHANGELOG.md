@@ -6,6 +6,14 @@
   queued, and WAIT if that work stays unacknowledged or the queue is full.
 - A click copies an `http(s)` URL that a TUI wrapped inside a box, including
   when the break is at a hyphen and the next row starts with a `│` gutter.
+- A click copies an `http(s)` URL that wraps after `?` or before a Grok
+  message clock, joining the continuation on the next indented row.
+- An in-flight file drop keeps uploading after you switch sessions. Cancel
+  or closing that session stops it.
+- The sidebar footer is one row of icon buttons for refresh activity,
+  Settings, Notes, and Leave. Recreate and Reconnect reuse the refresh slot.
+  Notes inverts while the editor is open and shows the note count on the
+  collapsed icon. The buttons stretch across the footer and lighten on hover.
 - Creating a session refuses a name that already exists on that server. Each
   tab stays bound to its tmux window id, including when another window shares
   the name.

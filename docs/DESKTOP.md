@@ -37,25 +37,25 @@ stream's latency. Long session lists scroll vertically while the selected
 session is kept visible. Drag the sidebar divider between 120 and 320 pixels;
 its width is restored on the next launch. Drag a server header to persistently
 reorder server groups, or drag a session row to reorder it within its server
-group. **Settings** at the bottom opens a modal with the
-icon, version, GitHub URL, total time Starcom has been open, and the workspace
-`fps` / `idle` / terminal-font settings.
+group. The **Settings** footer icon opens a modal with the icon, version,
+GitHub URL, total time Starcom has been open, and the workspace `fps` / `idle` /
+terminal-font settings.
 
 Session rows show only the tmux window name. A session row shows connection
 progress and then the terminal workspace. A failed attachment remains registered
-and turns red. An unreachable server offers **Reconnect** beside the leave button. A
-reachable server whose named window is missing offers **Recreate**, which creates
-an empty managed window with that same name and attaches to it. If the server is
-already attached and only this window is gone, Recreate runs on that live client
-and sibling sessions stay green. Recreate stays disabled while that name still
-exists on the server. Selecting either action never deletes the tab.
-The recovery action and red leave icon float at the main area's bottom-right
-without changing terminal geometry. The leave icon or Ctrl-Shift-W/Cmd-W closes
-the registered tab; the shared control client detaches only after its last local
-tab closes. The tmux server, windows, and remote jobs continue running. Tabs are
-green while connected,
-including while a pane layout is rebuilt, and yellow while connecting or
-reconnecting.
+and turns red. The sidebar footer is one row of icon buttons: refresh activity,
+**Settings**, **Notes**, and **Leave**. The buttons stretch across the footer
+width and lighten on hover. An unreachable server offers **Reconnect** in the
+refresh slot. A reachable server whose named window is missing offers
+**Recreate**, which creates an empty managed window with that same name and
+attaches to it. If the server is already attached and only this window is gone,
+Recreate runs on that live client and sibling sessions stay green. Recreate
+stays disabled while that name still exists on the server. Selecting either
+action never deletes the tab. Leave or Ctrl-Shift-W/Cmd-W closes the registered
+tab; the shared control client detaches only after its last local tab closes.
+The tmux server, windows, and remote jobs continue running. Tabs are green
+while connected, including while a pane layout is rebuilt, and yellow while
+connecting or reconnecting.
 
 A Starcom tab is one uniquely named window in the managed tmux session.
 **Create** is disabled when that name is already a managed window or an open
@@ -71,19 +71,18 @@ existing control attachment waits for tmux's reply, for at most five seconds.
 If tmux applies the rename but its completion reply is lost, Starcom discards
 that stream and reconnects once without retrying the non-idempotent command.
 
-The **Notes** toggle beneath **Settings** in the sidebar exposes key/value notes
-attached to the selected tmux window. A nonzero count is shown as **Notes(N)**;
-the empty state has no redundant zero. The editor grows upward from the bottom by
-exactly the rows it needs, up to the space needed to
-keep the terminal usable; larger sets scroll. This local editor does not resize
-the remote tmux client or rebuild its pane layout. Each row has a name, value,
-and delete button; the first empty row creates another note. The `@` prefix is
-implicit. Starcom accepts a
-nonempty name of up to 64 ASCII letters, digits, dots, underscores, and hyphens;
-spaces and other characters are dropped while typing. Values are single-line,
-control-free text up to 4096 bytes, including the empty string. The collapsed
-toggle retains the note count, and hovering a tab lists that window's note
-names.
+The **Notes** icon in the sidebar footer exposes key/value notes attached to
+the selected tmux window. Opening it inverts the notebook. A nonzero count is
+shown in the corner of the collapsed icon; an empty session shows no digit.
+The editor grows upward from the bottom by exactly the rows it needs, up to
+the space needed to keep the terminal usable; larger sets scroll. This local
+editor leaves the remote tmux client size and pane layout unchanged. Each row
+has a name, value, and delete button; the first empty row creates another note.
+The `@` prefix is implicit. Starcom accepts a nonempty name of up to 64 ASCII
+letters, digits, dots, underscores, and hyphens; spaces and other characters
+are dropped while typing. Values are single-line, control-free text up to 4096
+bytes, including the empty string. The collapsed icon retains the note count,
+and hovering a tab lists that window's note names.
 
 Notes are stored as server-side tmux user options, not in the saved Starcom
 workspace. Starcom refreshes its copy on attachment and periodically while
@@ -310,10 +309,11 @@ remotely.
 
 A click on a link copies its destination to the local clipboard: OSC 8 if the
 cell has one, otherwise an `http(s)` URL covering the cell (including when
-the URL is split across soft-wrapped rows or hard-wrapped inside a TUI box),
+the URL is split across soft-wrapped rows, hard-wrapped inside a TUI box, or
+hard-wrapped after `?` or a Grok message clock onto the next indented row),
 or — for a short underlined "click here to copy" affordance whose OSC 8 tmux
-has stripped — a URL on the same or an adjacent line. A long underlined run is treated as
-content, not a link. Hover shows the destination. A tiny pointer
+has stripped — a URL on the same or an adjacent line. A long underlined run is
+treated as content, not a link. Hover shows the destination. A tiny pointer
 move is not treated as a drag. Keyboard Space and Enter are not pointer
 clicks. When the live pane still has mouse reporting enabled and the
 click was not a link, an unmodified tap with no selected text is sent as
@@ -334,24 +334,20 @@ them over SFTP into the remote temp directory (`/tmp`), under unique
 temporary bottom row shows a progress bar while a large file is in flight, with a
 **Cancel** button. Non-regular files are rejected. A file larger than 32 MiB
 asks **Yes** / **No** in that row instead of being discarded. Switching
-tabs or closing the form cancels the upload; delayed completion never pastes
-into a replacement pane after a reconnect or layout change. The upload uses
-its own SSH connection, so it cannot stall the tmux control channel. On Wayland,
-Starcom binds
-`wl_data_device` itself because winit 0.30 does not; the bounded URI-list read
-runs off the event thread.
+sessions keeps the upload running; Cancel or closing that session stops it.
+Delayed completion never pastes into a replacement pane after a reconnect or
+layout change. The upload uses its own SSH connection, so it cannot stall the
+tmux control channel. On Wayland, Starcom binds `wl_data_device` itself because
+winit 0.30 does not; the bounded URI-list read runs off the event thread.
 
 The renderer paints only visible history rows. The workspace-wide terminal font
 size in **Settings** changes the cell metrics used both to paint and to tell tmux
 this client's size, so the remote grid matches the glyphs on screen.
 
-The sidebar footer's circular activity mark briefly sends a bright comet around
-its ring when the selected terminal refreshes or the user scrolls it, then stays
-still while idle. Fixed-width bars between that mark and **Notes** show input
-actions the selected server has not confirmed yet. The selected pane shows its
-dimensions and compact A/K/M
-alternate-screen, keyboard-input, and mouse-reporting state directly beneath its
-split controls.
+The footer refresh icon briefly sends a bright comet around its star when the
+selected terminal refreshes or the user scrolls it, then stays still while idle.
+The selected pane shows its dimensions and compact A/K/M alternate-screen,
+keyboard-input, and mouse-reporting state directly beneath its split controls.
 A fixed-size activity mark appears in a yellow connecting session row without
 changing its dimensions. When a recent small tmux command has finished, its
 round-trip time is shown in the corresponding server header. That is not a

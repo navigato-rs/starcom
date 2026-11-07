@@ -650,6 +650,7 @@ impl DesktopUi {
     pub(crate) fn return_to_form(&mut self) {
         self.screen = Screen::Connection;
         self.cancel_transient();
+        self.cancel_upload();
     }
 
     pub(crate) fn reset_client_size(&mut self) {
@@ -672,54 +673,14 @@ impl DesktopUi {
     ) -> bool {
         self.sync_option_rows(state);
         let mut settings_clicked = false;
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 4.0;
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
-                settings_clicked = settings_button(ui).clicked();
+        ui.horizontal(|ui| {
+            let available = ui.available_width();
+            let extra = (available - 4.0 * SIDEBAR_ICON).max(0.0);
+            let gap = SIDEBAR_ICON_GAP.min(extra / 3.0);
+            ui.spacing_mut().item_spacing.x = gap;
+            let cell = (available - 3.0 * gap) / 4.0;
 
-                let option_count = self
-                    .option_rows
-                    .iter()
-                    .filter(|row| !row.name.is_empty())
-                    .count();
-                let options_loaded = self
-                    .window
-                    .is_some_and(|window| state.window_options.contains_key(&window));
-                let label = if options_loaded && option_count != 0 {
-                    format!("Notes({option_count})")
-                } else {
-                    "Notes".to_owned()
-                };
-                let available = egui::vec2(ui.available_width(), 28.0);
-                let options = ui
-                    .allocate_ui_with_layout(
-                        available,
-                        egui::Layout::right_to_left(egui::Align::Center),
-                        |ui| {
-                            ui.add_enabled_ui(options_loaded, |ui| {
-                                tinted_button(
-                                    ui,
-                                    label,
-                                    self.options_open,
-                                    egui::Color32::from_rgb(105, 175, 245),
-                                )
-                            })
-                            .inner
-                        },
-                    )
-                    .inner;
-                if options
-                    .on_disabled_hover_text("Notes are not available yet")
-                    .on_hover_text("Show notes attached to this session")
-                    .clicked()
-                {
-                    self.options_open = !self.options_open;
-                }
-            });
-
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
+            sidebar_footer_slot(ui, cell, |ui| {
                 let logical_missing = !self.window_available(state)
                     && matches!(
                         state.phase,
@@ -735,75 +696,124 @@ impl DesktopUi {
                     desktop::Phase::Failed | desktop::Phase::Disconnected
                 ) || (logical_missing && recreate);
                 if recover {
-                    let label = if recreate {
-                        if state.changing_sessions {
-                            "Recreating…"
-                        } else {
-                            "Recreate"
-                        }
+                    let kind = if recreate {
+                        RecoverKind::Recreate
                     } else {
-                        "Reconnect"
+                        RecoverKind::Reconnect
                     };
                     let recreate_blocked = recreate && name_taken;
                     if ui
-                        .add_enabled(
-                            !state.changing_sessions && !recreate_blocked,
-                            egui::Button::new(label).min_size(egui::vec2(0.0, 28.0)),
-                        )
+                        .add_enabled_ui(!state.changing_sessions && !recreate_blocked, |ui| {
+                            sidebar_icon(
+                                ui,
+                                "sidebar-refresh",
+                                kind.glyph(),
+                                egui::Sense::click(),
+                                IconFill::Widget,
+                                kind.label(),
+                            )
+                        })
+                        .inner
                         .on_disabled_hover_text(if recreate_blocked {
                             "A logical session with this name already exists."
                         } else {
                             "Wait for the current request to finish."
                         })
-                        .on_hover_text(if recreate {
-                            "Create a new empty window with this session name on the same server."
-                        } else {
-                            "Attempt to reconnect to this server."
-                        })
+                        .on_hover_text(kind.hover())
                         .clicked()
                     {
-                        match self.form.connection() {
-                            Ok(connection) => {
-                                self.notice = None;
-                                if recreate {
-                                    self.start_creating(self.session_name().to_owned());
-                                    self.sidebar_action = Some(Action::CreateSession(connection));
-                                } else {
-                                    self.sidebar_action = Some(Action::Connect(connection));
-                                }
-                            }
-                            Err(error) => self.notice = Some(error.to_string()),
-                        }
+                        self.queue_sidebar_recover(kind);
                     }
-                } else if matches!(
-                    state.phase,
-                    desktop::Phase::Watching
-                        | desktop::Phase::Resynchronizing
-                        | desktop::Phase::Demo
-                ) {
-                    let (refresh_rect, refresh) =
-                        ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::hover());
-                    ui.painter()
-                        .rect_filled(refresh_rect, 4.0, ui.visuals().code_bg_color);
-                    paint_refresh_indicator(ui, refresh_rect.shrink(5.0), self.refresh_tick);
-                    refresh.on_hover_text("Terminal refresh activity");
+                } else {
+                    sidebar_icon(
+                        ui,
+                        "sidebar-refresh",
+                        SidebarGlyph::Refresh(self.refresh_tick),
+                        egui::Sense::hover(),
+                        IconFill::Widget,
+                        "Refresh",
+                    )
+                    .on_hover_text("Terminal refresh activity");
                 }
+            });
 
-                ui.allocate_ui_with_layout(
-                    egui::vec2(ui.available_width(), 28.0),
-                    egui::Layout::right_to_left(egui::Align::Center),
-                    |ui| {
-                        if tinted_button(ui, "Leave", false, egui::Color32::from_rgb(238, 105, 112))
-                            .on_hover_text("Close this session locally. Remote jobs keep running.")
-                            .clicked()
-                        {
-                            self.sidebar_action = Some(Action::Disconnect);
-                        }
+            sidebar_footer_slot(ui, cell, |ui| {
+                settings_clicked = settings_button(ui).clicked();
+            });
+
+            sidebar_footer_slot(ui, cell, |ui| {
+                let option_count = self
+                    .option_rows
+                    .iter()
+                    .filter(|row| !row.name.is_empty())
+                    .count();
+                let options_loaded = self
+                    .window
+                    .is_some_and(|window| state.window_options.contains_key(&window));
+                if ui
+                    .add_enabled_ui(options_loaded, |ui| {
+                        sidebar_icon(
+                            ui,
+                            "sidebar-notes",
+                            SidebarGlyph::Notes {
+                                open: self.options_open,
+                                count: option_count,
+                            },
+                            egui::Sense::click(),
+                            IconFill::Accent {
+                                color: NOTES_COLOR,
+                                selected: self.options_open,
+                            },
+                            "Notes",
+                        )
+                    })
+                    .inner
+                    .on_disabled_hover_text("Notes are not available yet")
+                    .on_hover_text("Show notes attached to this session")
+                    .clicked()
+                {
+                    self.options_open = !self.options_open;
+                }
+            });
+
+            sidebar_footer_slot(ui, cell, |ui| {
+                if sidebar_icon(
+                    ui,
+                    "sidebar-leave",
+                    SidebarGlyph::Leave,
+                    egui::Sense::click(),
+                    IconFill::Accent {
+                        color: LEAVE_COLOR,
+                        selected: false,
                     },
-                );
+                    "Leave",
+                )
+                .on_hover_text("Close this session locally. Remote jobs keep running.")
+                .clicked()
+                {
+                    self.sidebar_action = Some(Action::Disconnect);
+                }
             });
         });
         settings_clicked
+    }
+
+    fn queue_sidebar_recover(&mut self, kind: RecoverKind) {
+        match self.form.connection() {
+            Ok(connection) => {
+                self.notice = None;
+                match kind {
+                    RecoverKind::Recreate => {
+                        self.start_creating(self.session_name().to_owned());
+                        self.sidebar_action = Some(Action::CreateSession(connection));
+                    }
+                    RecoverKind::Reconnect => {
+                        self.sidebar_action = Some(Action::Connect(connection));
+                    }
+                }
+            }
+            Err(error) => self.notice = Some(error.to_string()),
+        }
     }
 
     pub(crate) fn show_sidebar_settings(ui: &mut egui::Ui) -> bool {
@@ -912,10 +922,32 @@ impl DesktopUi {
 
     pub fn cancel_transient(&mut self) {
         self.creating = None;
+        self.sidebar_action = None;
+    }
+
+    pub fn cancel_upload(&mut self) {
         self.upload = None;
         self.upload_progress = None;
         self.drop_prompt = None;
-        self.sidebar_action = None;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn arm_dummy_upload(&mut self) -> sync::Arc<sync::atomic::AtomicBool> {
+        let (tx, rx) = sync::mpsc::sync_channel(4);
+        std::mem::forget(tx);
+        let cancel = sync::Arc::new(sync::atomic::AtomicBool::new(false));
+        self.upload = Some(Upload {
+            events: rx,
+            target: desktop::Target::dummy(),
+            cancel: sync::Arc::clone(&cancel),
+        });
+        self.upload_progress = Some(("file.bin".to_owned(), 0, 1));
+        cancel
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_in_flight_upload(&self) -> bool {
+        self.upload.is_some()
     }
 
     pub(crate) fn session_name(&self) -> &str {
@@ -2052,25 +2084,7 @@ impl DesktopUi {
         let mut steps: Vec<Step> = Vec::new();
         let connection_epoch = state.epoch();
         if let Some((target, paths)) = self.poll_upload(root.ctx()) {
-            let n = paths.len();
-            let label = if n == 1 { "file" } else { "files" };
-            if state.target(target.pane()) == Some(target) {
-                self.notice = Some(format!("Uploaded {n} {label}."));
-                self.notice_until = Some(time::Instant::now() + time::Duration::from_secs(3));
-                match paste_remote_paths(&paths)
-                    .and_then(|text| terminal_input::Paste::new(&text).map_err(anyhow::Error::from))
-                {
-                    Ok(paste) => {
-                        steps.push(Step::Send(target, terminal_input::Action::Paste(paste)))
-                    }
-                    Err(error) => self.notice = Some(error.to_string()),
-                }
-            } else {
-                self.notice = Some(format!(
-                    "Uploaded {n} {label}, but the original pane changed; paths were not pasted."
-                ));
-                self.notice_until = Some(time::Instant::now() + time::Duration::from_secs(5));
-            }
+            steps.extend(self.complete_upload(state, target, paths));
         }
         self.sync_option_rows(state);
 
@@ -2509,7 +2523,10 @@ impl DesktopUi {
         }
     }
 
-    fn poll_upload(&mut self, ctx: &egui::Context) -> Option<(desktop::Target, Vec<String>)> {
+    pub(crate) fn poll_upload(
+        &mut self,
+        ctx: &egui::Context,
+    ) -> Option<(desktop::Target, Vec<String>)> {
         let upload = self.upload.as_ref()?;
         let target = upload.target;
         let mut last_progress = None;
@@ -2545,6 +2562,34 @@ impl DesktopUi {
         }
         ctx.request_repaint_after(time::Duration::from_millis(50));
         None
+    }
+
+    pub(crate) fn complete_upload(
+        &mut self,
+        state: &desktop::State,
+        target: desktop::Target,
+        paths: Vec<String>,
+    ) -> Vec<Step> {
+        let n = paths.len();
+        let label = if n == 1 { "file" } else { "files" };
+        if state.target(target.pane()) != Some(target) {
+            self.notice = Some(format!(
+                "Uploaded {n} {label}, but the original pane changed; paths were not pasted."
+            ));
+            self.notice_until = Some(time::Instant::now() + time::Duration::from_secs(5));
+            return Vec::new();
+        }
+        self.notice = Some(format!("Uploaded {n} {label}."));
+        self.notice_until = Some(time::Instant::now() + time::Duration::from_secs(3));
+        match paste_remote_paths(&paths)
+            .and_then(|text| terminal_input::Paste::new(&text).map_err(anyhow::Error::from))
+        {
+            Ok(paste) => vec![Step::Send(target, terminal_input::Action::Paste(paste))],
+            Err(error) => {
+                self.notice = Some(error.to_string());
+                Vec::new()
+            }
+        }
     }
 
     /// Keyboard copy prefers a live selection and otherwise copies the visible
@@ -2644,7 +2689,7 @@ pub(crate) fn paint_activity_indicator(ui: &egui::Ui, rect: egui::Rect, time: f6
 /// participates in one length-based trail rather than having one opacity.
 const REFRESH_STEP_INTERVAL: time::Duration = time::Duration::from_millis(850);
 
-fn paint_refresh_indicator(ui: &egui::Ui, rect: egui::Rect, tick: u64) {
+fn paint_refresh_indicator(ui: &egui::Ui, rect: egui::Rect, tick: u64, color: egui::Color32) {
     const EDGE_SEGMENTS: usize = 8;
     let center = rect.center();
     let radius = rect.width().min(rect.height()) * 0.42;
@@ -2654,7 +2699,6 @@ fn paint_refresh_indicator(ui: &egui::Ui, rect: egui::Rect, tick: u64) {
             center + egui::vec2(angle.cos(), angle.sin()) * radius
         })
         .collect();
-    let color = ui.visuals().strong_text_color();
     for vertex in &vertices {
         ui.painter()
             .circle_filled(*vertex, 1.15, color.gamma_multiply(0.24));
@@ -2683,76 +2727,322 @@ fn paint_refresh_indicator(ui: &egui::Ui, rect: egui::Rect, tick: u64) {
     }
 }
 
+/// Glyph size and footer row height. Each of the four buttons stretches
+/// across an equal share of the sidebar width.
+const SIDEBAR_ICON: f32 = 26.0;
+const SIDEBAR_ICON_GAP: f32 = 4.0;
+const NOTES_COLOR: egui::Color32 = egui::Color32::from_rgb(105, 175, 245);
+const LEAVE_COLOR: egui::Color32 = egui::Color32::from_rgb(238, 105, 112);
+
+#[derive(Clone, Copy)]
+enum RecoverKind {
+    Recreate,
+    Reconnect,
+}
+
+impl RecoverKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Recreate => "Recreate",
+            Self::Reconnect => "Reconnect",
+        }
+    }
+
+    fn hover(self) -> &'static str {
+        match self {
+            Self::Recreate => {
+                "Create a new empty window with this session name on the same server."
+            }
+            Self::Reconnect => "Attempt to reconnect to this server.",
+        }
+    }
+
+    fn glyph(self) -> SidebarGlyph {
+        match self {
+            Self::Recreate => SidebarGlyph::Recreate,
+            Self::Reconnect => SidebarGlyph::Reconnect,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum SidebarGlyph {
+    Refresh(u64),
+    Recreate,
+    Reconnect,
+    Settings,
+    Notes { open: bool, count: usize },
+    Leave,
+}
+
+#[derive(Clone, Copy)]
+enum IconFill {
+    Widget,
+    Accent {
+        color: egui::Color32,
+        selected: bool,
+    },
+}
+
+fn sidebar_footer_slot(ui: &mut egui::Ui, cell_w: f32, add: impl FnOnce(&mut egui::Ui)) {
+    ui.allocate_ui(egui::vec2(cell_w, SIDEBAR_ICON), add);
+}
+
 fn settings_button(ui: &mut egui::Ui) -> egui::Response {
-    let response = ui
-        .add(egui::Button::new("").min_size(egui::vec2(28.0, 28.0)))
-        .on_hover_text("Settings");
-    let center = response.rect.center();
-    let color = ui.visuals().strong_text_color();
-    let stroke = egui::Stroke::new(1.5_f32, color);
-    let teeth = (0..24)
-        .map(|index| {
-            let angle = index as f32 * std::f32::consts::TAU / 24.0 - std::f32::consts::FRAC_PI_2;
-            let radius = if matches!(index % 4, 1 | 2) { 7.8 } else { 6.1 };
-            center + egui::vec2(angle.cos(), angle.sin()) * radius
-        })
-        .collect();
-    ui.painter().add(egui::Shape::closed_line(teeth, stroke));
-    ui.painter().circle_stroke(center, 2.2, stroke);
+    sidebar_icon(
+        ui,
+        "sidebar-settings",
+        SidebarGlyph::Settings,
+        egui::Sense::click(),
+        IconFill::Widget,
+        "Settings",
+    )
+    .on_hover_text("Settings")
+}
+
+fn sidebar_icon(
+    ui: &mut egui::Ui,
+    id: &'static str,
+    glyph: SidebarGlyph,
+    sense: egui::Sense,
+    fill: IconFill,
+    label: &str,
+) -> egui::Response {
+    let width = ui.available_width().max(SIDEBAR_ICON);
+    let (_, rect) = ui.allocate_space(egui::vec2(width, SIDEBAR_ICON));
+    let response = ui.interact(rect, egui::Id::new(id), sense);
+    if sense.senses_click() && ui.is_enabled() && response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    paint_icon_chrome(ui, rect, &response, fill);
+    let color = sidebar_glyph_color(ui, fill, &response);
+    let glyph_rect =
+        egui::Rect::from_center_size(rect.center(), egui::vec2(SIDEBAR_ICON, SIDEBAR_ICON));
+    paint_sidebar_glyph(ui, glyph_rect, glyph, color);
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
+    });
     response
 }
 
-fn tinted_button(
-    ui: &mut egui::Ui,
-    text: impl Into<String>,
-    selected: bool,
-    color: egui::Color32,
-) -> egui::Response {
-    let text = text.into();
-    let normal = egui::WidgetText::from(text.clone()).into_galley(
-        ui,
-        Some(egui::TextWrapMode::Truncate),
-        96.0,
-        egui::TextStyle::Button,
-    );
-    let bold = egui::WidgetText::from(egui::RichText::new(text.clone()).strong()).into_galley(
-        ui,
-        Some(egui::TextWrapMode::Truncate),
-        96.0,
-        egui::TextStyle::Button,
-    );
-    let text_width = normal.size().x.max(bold.size().x);
-    let desired = egui::vec2((text_width + 16.0).clamp(44.0, 112.0), 28.0);
-    let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::click());
+fn lift_color(color: egui::Color32, by: u8) -> egui::Color32 {
+    egui::Color32::from_rgb(
+        color.r().saturating_add(by),
+        color.g().saturating_add(by),
+        color.b().saturating_add(by),
+    )
+}
+
+fn paint_icon_chrome(ui: &egui::Ui, rect: egui::Rect, response: &egui::Response, fill: IconFill) {
     let enabled = ui.is_enabled();
-    let emphasized = enabled && (response.hovered() || response.is_pointer_button_down_on());
-    let mut fill = color.gamma_multiply(if selected { 0.24 } else { 0.10 });
-    let mut stroke_color = color.gamma_multiply(0.72);
-    let mut text_color = color;
-    let galley = if emphasized { bold } else { normal };
-    if !enabled {
-        fill = ui.visuals().disable(fill);
-        stroke_color = ui.visuals().disable(stroke_color);
-        text_color = ui.visuals().disable(text_color);
+    let pressed = enabled && response.is_pointer_button_down_on();
+    let hovered = enabled && (response.hovered() || pressed);
+    let (fill, stroke) = match fill {
+        IconFill::Widget => {
+            let widgets = &ui.visuals().widgets;
+            let mut fill = widgets.inactive.bg_fill;
+            let mut stroke = widgets.inactive.bg_stroke;
+            if !enabled {
+                fill = ui.visuals().disable(fill);
+                stroke.color = ui.visuals().disable(stroke.color);
+            } else if pressed {
+                fill = lift_color(widgets.hovered.bg_fill, 24);
+                stroke = widgets.active.bg_stroke;
+            } else if hovered {
+                fill = lift_color(widgets.hovered.bg_fill, 20);
+                stroke = widgets.hovered.bg_stroke;
+            }
+            (fill, stroke)
+        }
+        IconFill::Accent { color, selected } => {
+            let mut fill = if selected {
+                if hovered {
+                    lift_color(color, 28)
+                } else {
+                    color
+                }
+            } else if hovered {
+                color.gamma_multiply(if pressed { 0.50 } else { 0.38 })
+            } else {
+                color.gamma_multiply(0.10)
+            };
+            let mut stroke = if selected || hovered {
+                color
+            } else {
+                color.gamma_multiply(0.72)
+            };
+            if !enabled {
+                fill = ui.visuals().disable(fill);
+                stroke = ui.visuals().disable(stroke);
+            }
+            (fill, egui::Stroke::new(1.0_f32, stroke))
+        }
+    };
+    ui.painter()
+        .rect(rect, 4.0, fill, stroke, egui::StrokeKind::Inside);
+}
+
+fn sidebar_glyph_color(ui: &egui::Ui, fill: IconFill, response: &egui::Response) -> egui::Color32 {
+    let enabled = ui.is_enabled();
+    let hovered = enabled && (response.hovered() || response.is_pointer_button_down_on());
+    let color = match fill {
+        IconFill::Widget => {
+            if hovered {
+                egui::Color32::WHITE
+            } else {
+                ui.visuals().strong_text_color()
+            }
+        }
+        IconFill::Accent { color, selected } => {
+            if selected {
+                color
+            } else if hovered {
+                lift_color(color, 24)
+            } else {
+                color
+            }
+        }
+    };
+    if enabled {
+        color
+    } else {
+        ui.visuals().disable(color)
     }
-    ui.painter().rect(
-        rect,
-        4.0,
-        fill,
-        egui::Stroke::new(1.0_f32, stroke_color),
-        egui::StrokeKind::Inside,
-    );
-    ui.painter().galley(
+}
+
+fn paint_sidebar_glyph(ui: &egui::Ui, rect: egui::Rect, glyph: SidebarGlyph, color: egui::Color32) {
+    let painter = ui.painter();
+    let stroke = egui::Stroke::new(1.5_f32, color);
+    match glyph {
+        SidebarGlyph::Refresh(tick) => {
+            paint_refresh_indicator(ui, rect.shrink(4.0), tick, color);
+        }
+        SidebarGlyph::Recreate => {
+            let window = rect.shrink2(egui::vec2(5.5, 5.0));
+            painter.rect_stroke(window, 1.5, stroke, egui::StrokeKind::Outside);
+            let center = rect.center();
+            let arm = 3.6;
+            painter.line_segment(
+                [
+                    egui::pos2(center.x - arm, center.y),
+                    egui::pos2(center.x + arm, center.y),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(center.x, center.y - arm),
+                    egui::pos2(center.x, center.y + arm),
+                ],
+                stroke,
+            );
+        }
+        SidebarGlyph::Reconnect => {
+            let center = rect.center();
+            let radius = rect.width().min(rect.height()) * 0.32;
+            let start = -0.75 * std::f32::consts::PI;
+            let sweep = 1.5 * std::f32::consts::PI;
+            const STEPS: i32 = 14;
+            let mut previous = None;
+            for step in 0..=STEPS {
+                let angle = start + sweep * (step as f32 / STEPS as f32);
+                let point = center + egui::vec2(angle.cos(), angle.sin()) * radius;
+                if let Some(previous) = previous {
+                    painter.line_segment([previous, point], stroke);
+                }
+                previous = Some(point);
+            }
+            let tip_angle = start + sweep;
+            let tip = center + egui::vec2(tip_angle.cos(), tip_angle.sin()) * radius;
+            let tangent = egui::vec2(-tip_angle.sin(), tip_angle.cos());
+            let normal = egui::vec2(tip_angle.cos(), tip_angle.sin());
+            painter.line_segment([tip, tip - tangent * 4.0 + normal * 2.2], stroke);
+            painter.line_segment([tip, tip - tangent * 3.2 - normal * 2.6], stroke);
+        }
+        SidebarGlyph::Settings => {
+            let center = rect.center();
+            let teeth = (0..24)
+                .map(|index| {
+                    let angle =
+                        index as f32 * std::f32::consts::TAU / 24.0 - std::f32::consts::FRAC_PI_2;
+                    let radius = if matches!(index % 4, 1 | 2) { 7.2 } else { 5.6 };
+                    center + egui::vec2(angle.cos(), angle.sin()) * radius
+                })
+                .collect();
+            painter.add(egui::Shape::closed_line(teeth, stroke));
+            painter.circle_stroke(center, 2.0, stroke);
+        }
+        SidebarGlyph::Notes { open, count } => {
+            paint_notes_glyph(ui, rect, color, open, count);
+        }
+        SidebarGlyph::Leave => {
+            let x = rect.shrink(7.0);
+            painter.line_segment([x.left_top(), x.right_bottom()], stroke);
+            painter.line_segment([x.right_top(), x.left_bottom()], stroke);
+        }
+    }
+}
+
+fn paint_notes_glyph(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    accent: egui::Color32,
+    open: bool,
+    count: usize,
+) {
+    let ink = if open {
+        ui.visuals().extreme_bg_color
+    } else {
+        accent
+    };
+    let stroke = egui::Stroke::new(1.5_f32, ink);
+    let page = egui::Rect::from_center_size(rect.center(), egui::vec2(12.0, 14.0));
+    let painter = ui.painter();
+    painter.rect_stroke(page, 1.5, stroke, egui::StrokeKind::Outside);
+    let count_text = if open { None } else { notes_count_text(count) };
+    let left = page.left() + 2.5;
+    let right = page.right() - 2.5;
+    let lines: &[f32] = if count_text.is_some() {
+        &[0.30, 0.50]
+    } else {
+        &[0.30, 0.50, 0.70]
+    };
+    for (index, fraction) in lines.iter().enumerate() {
+        let y = page.top() + page.height() * fraction;
+        let end = if count_text.is_none() && index == 2 {
+            left + (right - left) * 0.62
+        } else {
+            right
+        };
+        painter.line_segment([egui::pos2(left, y), egui::pos2(end, y)], stroke);
+    }
+    let Some(text) = count_text else {
+        return;
+    };
+    let size = if text.len() == 1 { 8.0 } else { 6.5 };
+    let galley = egui::WidgetText::from(egui::RichText::new(text).size(size).color(ink))
+        .into_galley(
+            ui,
+            Some(egui::TextWrapMode::Extend),
+            16.0,
+            egui::TextStyle::Small,
+        );
+    painter.galley(
         egui::pos2(
-            rect.center().x - galley.size().x * 0.5,
-            rect.center().y - galley.size().y * 0.5,
+            page.right() - 1.2 - galley.size().x,
+            page.bottom() - 0.6 - galley.size().y,
         ),
         galley,
-        text_color,
+        ink,
     );
-    response
-        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, text.clone()));
-    response
+}
+
+fn notes_count_text(count: usize) -> Option<String> {
+    match count {
+        0 => None,
+        1..=99 => Some(count.to_string()),
+        _ => Some("99".to_owned()),
+    }
 }
 
 fn paint_activity_dots(ui: &egui::Ui, rect: egui::Rect, step: u64) {
@@ -3010,6 +3300,16 @@ mod tests {
     /// `~/.ssh/<file>` after `expand_path`, including Windows separators.
     fn test_config(text: &str) -> ssh_config::Config {
         ssh_config::Config::parse(text, path::Path::new("/home/test")).unwrap()
+    }
+
+    #[test]
+    fn notes_count_text_omits_zero_and_caps_large_counts() {
+        assert_eq!(notes_count_text(0), None);
+        assert_eq!(notes_count_text(1).as_deref(), Some("1"));
+        assert_eq!(notes_count_text(9).as_deref(), Some("9"));
+        assert_eq!(notes_count_text(10).as_deref(), Some("10"));
+        assert_eq!(notes_count_text(99).as_deref(), Some("99"));
+        assert_eq!(notes_count_text(100).as_deref(), Some("99"));
     }
 
     #[test]

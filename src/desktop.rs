@@ -133,6 +133,15 @@ impl Target {
     pub fn pane(self) -> tmuxctl::PaneId {
         self.pane
     }
+
+    #[cfg(test)]
+    pub(crate) fn dummy() -> Self {
+        Self {
+            epoch: 1,
+            generation: 1,
+            pane: tmuxctl::PaneId(1),
+        }
+    }
 }
 
 struct Pending {
