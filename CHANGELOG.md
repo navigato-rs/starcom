@@ -14,6 +14,17 @@
   Settings, Notes, and Leave. Recreate and Reconnect reuse the refresh slot.
   Notes inverts while the editor is open and shows the note count on the
   collapsed icon. The buttons stretch across the footer and lighten on hover.
+- Settings chooses a screen effect: None, Wave, Matrix, or Retro. Wave,
+  Matrix, and Retro paint at 60 Hz. Wave bends light around the pointer; a
+  red or green line stays that color, and white light fringes. Matrix is a
+  green rain mask on light that is already there. Empty and near-black areas
+  stay as drawn. Retro draws the frame as a curved CRT with scanlines,
+  phosphor glow, flicker, and snow. The glass meets the middle of each edge,
+  and the corners past the tube are black. Pointer hits follow the curve.
+  The refresh star turns the Settings choice on and off. None leaves that
+  star hover-only.
+- Enter in the new-session field creates that window, the same as clicking
+  **Create**.
 - Creating a session refuses a name that already exists on that server. Each
   tab stays bound to its tmux window id, including when another window shares
   the name.

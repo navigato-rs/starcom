@@ -4,7 +4,7 @@ use blade_egui as be;
 use blade_graphics as bg;
 use std::{fs, io, path, sync, time};
 
-use crate::{desktop, ui, workspace};
+use crate::{desktop, store, ui, workspace};
 use anyhow::Context;
 
 #[path = "wake_flag.rs"]
@@ -31,6 +31,7 @@ struct Runtime {
     pending_view: Option<bg::TextureView>,
     painter: be::GuiPainter,
     grid: ui::grid::Renderer,
+    bend: ui::bend::Renderer,
     input: egui_winit::State,
     size: winit::dpi::PhysicalSize<u32>,
     #[cfg(target_os = "linux")]
@@ -99,6 +100,7 @@ impl Runtime {
         let surface_info = surface.info();
         let painter = be::GuiPainter::new(surface_info, &context);
         let grid = ui::grid::Renderer::new(surface_info, &context);
+        let bend = ui::bend::Renderer::new(surface_info, &context);
         let encoder = context.create_command_encoder(bg::CommandEncoderDesc {
             name: "starcom",
             buffer_count: 1,
@@ -123,6 +125,7 @@ impl Runtime {
             pending_view: None,
             painter,
             grid,
+            bend,
             input,
             size,
             #[cfg(target_os = "linux")]
@@ -164,7 +167,12 @@ impl Runtime {
         Ok(())
     }
 
-    fn paint(&mut self, ctx: &egui::Context, output: egui::FullOutput) -> anyhow::Result<()> {
+    fn paint(
+        &mut self,
+        ctx: &egui::Context,
+        output: egui::FullOutput,
+        bend: Option<ui::bend::Sample>,
+    ) -> anyhow::Result<()> {
         let _frame = navigato_support::timer(navigato_support::Metric::Frame);
         self.input
             .handle_platform_output(&self.window, output.platform_output);
@@ -190,18 +198,43 @@ impl Runtime {
                 subresources: &bg::TextureSubresources::default(),
             },
         );
-        {
-            let mut pass = self.encoder.render(
-                "starcom",
-                bg::RenderTargetSet {
-                    colors: &[bg::RenderTarget {
-                        view,
-                        init_op: bg::InitOp::Clear(bg::TextureColor::OpaqueBlack),
-                        finish_op: bg::FinishOp::Store,
-                    }],
-                    depth_stencil: None,
-                },
+        let clear = bg::RenderTargetSet {
+            colors: &[bg::RenderTarget {
+                view,
+                init_op: bg::InitOp::Clear(bg::TextureColor::OpaqueBlack),
+                finish_op: bg::FinishOp::Store,
+            }],
+            depth_stencil: None,
+        };
+        if let Some(sample) = bend {
+            let scene = self.bend.scene(
+                &mut self.encoder,
+                &self.context,
+                [self.size.width, self.size.height],
             );
+            {
+                let mut pass = self.encoder.render(
+                    "starcom",
+                    bg::RenderTargetSet {
+                        colors: &[bg::RenderTarget {
+                            view: scene,
+                            init_op: bg::InitOp::Clear(bg::TextureColor::OpaqueBlack),
+                            finish_op: bg::FinishOp::Store,
+                        }],
+                        depth_stencil: None,
+                    },
+                );
+                self.grid
+                    .paint(&mut pass, &mut self.painter, &jobs, &screen, &self.context);
+            }
+            let mut pass = self.encoder.render("light bend", clear);
+            self.bend.composite(
+                &mut pass,
+                sample,
+                [self.size.width as f32, self.size.height as f32],
+            );
+        } else {
+            let mut pass = self.encoder.render("starcom", clear);
             self.grid
                 .paint(&mut pass, &mut self.painter, &jobs, &screen, &self.context);
         }
@@ -226,6 +259,7 @@ impl Drop for Runtime {
         self.context.destroy_command_encoder(&mut self.encoder);
         self.painter.destroy(&self.context);
         self.grid.destroy(&self.context);
+        self.bend.destroy(&self.context);
     }
 }
 
@@ -418,13 +452,26 @@ impl winit::application::ApplicationHandler<Event> for App {
                 if runtime.size.width == 0 || runtime.size.height == 0 {
                     return;
                 }
-                let input = runtime.input.take_egui_input(&runtime.window);
+                let mut input = runtime.input.take_egui_input(&runtime.window);
+                if self.workspace.playing_effect() == store::PaintEffect::Retro
+                    && let Some(screen) = input.screen_rect
+                {
+                    ui::bend::warp_retro_pointer(&mut input.events, screen);
+                }
                 let mut action = workspace::Action::None;
                 let output = self.ctx.run_ui(input, |root| {
                     action = self.workspace.show(root);
                 });
+                let bend = {
+                    let runtime = self.runtime.as_ref().expect("checked above");
+                    self.workspace.effect_sample(
+                        output.pixels_per_point,
+                        self.ctx.input(|input| input.time),
+                        [runtime.size.width as f32, runtime.size.height as f32],
+                    )
+                };
                 let runtime = self.runtime.as_mut().expect("checked above");
-                if let Err(error) = runtime.paint(&self.ctx, output) {
+                if let Err(error) = runtime.paint(&self.ctx, output, bend) {
                     self.error = Some(error);
                     event_loop.exit();
                     return;

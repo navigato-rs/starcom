@@ -1,5 +1,6 @@
 //! Connection form and terminal workspace for one connection tab.
 
+pub(crate) mod bend;
 mod gesture;
 pub(crate) mod grid;
 pub(crate) mod input;
@@ -670,6 +671,9 @@ impl DesktopUi {
         &mut self,
         ui: &mut egui::Ui,
         state: &desktop::State,
+        effect: store::PaintEffect,
+        effect_on: bool,
+        toggle_effect: &mut bool,
     ) -> bool {
         self.sync_option_rows(state);
         let mut settings_clicked = false;
@@ -725,15 +729,35 @@ impl DesktopUi {
                         self.queue_sidebar_recover(kind);
                     }
                 } else {
-                    sidebar_icon(
+                    let chosen = effect.is_active();
+                    let running = chosen && effect_on;
+                    let response = sidebar_icon(
                         ui,
                         "sidebar-refresh",
-                        SidebarGlyph::Refresh(self.refresh_tick),
-                        egui::Sense::hover(),
-                        IconFill::Widget,
+                        SidebarGlyph::Refresh {
+                            tick: self.refresh_tick,
+                            active: running,
+                        },
+                        if chosen {
+                            egui::Sense::click()
+                        } else {
+                            egui::Sense::hover()
+                        },
+                        effect_color(effect)
+                            .filter(|_| running)
+                            .map(|color| IconFill::Accent {
+                                color,
+                                selected: true,
+                            })
+                            .unwrap_or(IconFill::Widget),
                         "Refresh",
-                    )
-                    .on_hover_text("Terminal refresh activity");
+                    );
+                    if response
+                        .on_hover_text(effect_hover(effect, running))
+                        .clicked()
+                    {
+                        *toggle_effect = true;
+                    }
                 }
             });
 
@@ -1444,12 +1468,17 @@ impl DesktopUi {
                                         _ => None,
                                     },
                                 );
+                                let create_enabled = idle
+                                    && !busy_here
+                                    && !self.create_name.trim().is_empty()
+                                    && !create_taken;
+                                // Single-line TextEdit surrenders focus on Enter.
+                                // That press is the same action as the button.
+                                let typed_enter = create.lost_focus()
+                                    && ui.input(|input| input.key_pressed(egui::Key::Enter));
                                 if ui
                                     .add_enabled(
-                                        idle
-                                            && !busy_here
-                                            && !self.create_name.trim().is_empty()
-                                            && !create_taken,
+                                        create_enabled,
                                         egui::Button::new("Create").sense(egui::Sense::CLICK),
                                     )
                                     .on_hover_text(
@@ -1463,6 +1492,7 @@ impl DesktopUi {
                                          This starts tmux if needed."
                                     })
                                     .clicked()
+                                    || typed_enter && create_enabled
                                 {
                                     match self.form.connection_named(self.create_name.trim()) {
                                         Ok(connection) => {
@@ -2689,7 +2719,13 @@ pub(crate) fn paint_activity_indicator(ui: &egui::Ui, rect: egui::Rect, time: f6
 /// participates in one length-based trail rather than having one opacity.
 const REFRESH_STEP_INTERVAL: time::Duration = time::Duration::from_millis(850);
 
-fn paint_refresh_indicator(ui: &egui::Ui, rect: egui::Rect, tick: u64, color: egui::Color32) {
+fn paint_refresh_indicator(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    tick: u64,
+    color: egui::Color32,
+    complete: bool,
+) {
     const EDGE_SEGMENTS: usize = 8;
     let center = rect.center();
     let radius = rect.width().min(rect.height()) * 0.42;
@@ -2703,25 +2739,39 @@ fn paint_refresh_indicator(ui: &egui::Ui, rect: egui::Rect, tick: u64, color: eg
         ui.painter()
             .circle_filled(*vertex, 1.15, color.gamma_multiply(0.24));
     }
-    // Draw the oldest first so the current edge wins at intersections.
-    for history in (0..3).rev() {
-        let edge =
-            (tick.wrapping_sub(1).wrapping_sub(history as u64) % vertices.len() as u64) as usize;
+    // The {7/3} star: each point joins the one three steps around.
+    // Activity shows a moving run of those edges. An enabled effect draws
+    // the whole star.
+    let edges: Vec<usize> = if complete {
+        (0..vertices.len()).collect()
+    } else {
+        (0..3)
+            .rev()
+            .map(|history| {
+                (tick.wrapping_sub(1).wrapping_sub(history as u64) % vertices.len() as u64) as usize
+            })
+            .collect()
+    };
+    for (drawn, edge) in edges.iter().copied().enumerate() {
         let start = (edge * 3) % vertices.len();
         let end = ((edge + 1) * 3) % vertices.len();
-        let trail_edge = 2 - history;
+        let trail_edge = if complete { 2 } else { drawn };
         for segment in 0..EDGE_SEGMENTS {
             let edge_start = segment as f32 / EDGE_SEGMENTS as f32;
             let edge_end = (segment + 1) as f32 / EDGE_SEGMENTS as f32;
-            let trail_position = (trail_edge as f32 + (edge_start + edge_end) * 0.5) / 3.0;
-            let strength = egui::lerp(0.08..=1.0, trail_position.powf(1.15));
+            let strength = if complete {
+                1.0
+            } else {
+                let trail_position = (trail_edge as f32 + (edge_start + edge_end) * 0.5) / 3.0;
+                egui::lerp(0.08..=1.0, trail_position.powf(1.15))
+            };
             let edge_vector = vertices[end] - vertices[start];
             ui.painter().line_segment(
                 [
                     vertices[start] + edge_vector * edge_start,
                     vertices[start] + edge_vector * edge_end,
                 ],
-                egui::Stroke::new(1.25_f32, color.gamma_multiply(strength)),
+                egui::Stroke::new(1.35_f32, color.gamma_multiply(strength)),
             );
         }
     }
@@ -2733,6 +2783,30 @@ const SIDEBAR_ICON: f32 = 26.0;
 const SIDEBAR_ICON_GAP: f32 = 4.0;
 const NOTES_COLOR: egui::Color32 = egui::Color32::from_rgb(105, 175, 245);
 const LEAVE_COLOR: egui::Color32 = egui::Color32::from_rgb(238, 105, 112);
+const LIGHT_BEND_COLOR: egui::Color32 = egui::Color32::from_rgb(72, 196, 232);
+const MATRIX_COLOR: egui::Color32 = egui::Color32::from_rgb(72, 210, 130);
+const RETRO_COLOR: egui::Color32 = egui::Color32::from_rgb(232, 164, 74);
+
+fn effect_color(effect: store::PaintEffect) -> Option<egui::Color32> {
+    match effect {
+        store::PaintEffect::None => None,
+        store::PaintEffect::Wave => Some(LIGHT_BEND_COLOR),
+        store::PaintEffect::Matrix => Some(MATRIX_COLOR),
+        store::PaintEffect::Retro => Some(RETRO_COLOR),
+    }
+}
+
+fn effect_hover(effect: store::PaintEffect, running: bool) -> &'static str {
+    match (effect, running) {
+        (store::PaintEffect::None, _) => "Terminal refresh activity.",
+        (store::PaintEffect::Wave, true) => "Wave at 60 Hz. Click to turn it off.",
+        (store::PaintEffect::Wave, false) => "Wave is off. Click to turn it on.",
+        (store::PaintEffect::Matrix, true) => "Matrix at 60 Hz. Click to turn it off.",
+        (store::PaintEffect::Matrix, false) => "Matrix is off. Click to turn it on.",
+        (store::PaintEffect::Retro, true) => "Retro CRT at 60 Hz. Click to turn it off.",
+        (store::PaintEffect::Retro, false) => "Retro CRT is off. Click to turn it on.",
+    }
+}
 
 #[derive(Clone, Copy)]
 enum RecoverKind {
@@ -2767,7 +2841,7 @@ impl RecoverKind {
 
 #[derive(Clone, Copy)]
 enum SidebarGlyph {
-    Refresh(u64),
+    Refresh { tick: u64, active: bool },
     Recreate,
     Reconnect,
     Settings,
@@ -2914,8 +2988,13 @@ fn paint_sidebar_glyph(ui: &egui::Ui, rect: egui::Rect, glyph: SidebarGlyph, col
     let painter = ui.painter();
     let stroke = egui::Stroke::new(1.5_f32, color);
     match glyph {
-        SidebarGlyph::Refresh(tick) => {
-            paint_refresh_indicator(ui, rect.shrink(4.0), tick, color);
+        SidebarGlyph::Refresh { tick, active } => {
+            let ink = if active {
+                ui.visuals().extreme_bg_color
+            } else {
+                color
+            };
+            paint_refresh_indicator(ui, rect.shrink(4.0), tick, ink, active);
         }
         SidebarGlyph::Recreate => {
             let window = rect.shrink2(egui::vec2(5.5, 5.0));
@@ -4296,6 +4375,76 @@ mod tests {
             ui.screen,
             Screen::Connection,
             "Connection settings must not be yanked back to the workspace"
+        );
+    }
+
+    #[test]
+    fn enter_in_the_new_session_field_creates_it() {
+        let ctx = egui::Context::default();
+        crate::window::configure(&ctx);
+        let mut ui = DesktopUi::default();
+        ui.form.destination = "zork".to_owned();
+        ui.form.host = "10.0.0.2".to_owned();
+        ui.listed_destination = "zork".to_owned();
+        ui.create_name = "fresh".to_owned();
+        let mut state = desktop::State::default();
+        state.discovery = Some(discovered(vec![]));
+        let show = |ui: &mut DesktopUi, state: &mut desktop::State, input: egui::RawInput| {
+            let mut action = Action::None;
+            let _ = ctx.run_ui(input, |root| {
+                action = ui.show(root, state);
+            });
+            action
+        };
+        let enter = || egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..screen_input()
+        };
+        assert!(
+            !matches!(show(&mut ui, &mut state, enter()), Action::CreateSession(_)),
+            "Enter outside the new-session field must not create"
+        );
+
+        let field = egui::Id::new("starcom-new-session");
+        ctx.memory_mut(|memory| memory.request_focus(field));
+        let _ = show(&mut ui, &mut state, screen_input());
+        assert!(
+            ctx.memory(|memory| memory.has_focus(field)),
+            "the new-session field must hold focus"
+        );
+        assert!(
+            matches!(
+                show(&mut ui, &mut state, enter()),
+                Action::CreateSession(connection) if connection.window.as_str() == "fresh"
+            ),
+            "Enter should create the named window"
+        );
+
+        ui.create_name.clear();
+        ctx.memory_mut(|memory| memory.request_focus(field));
+        let _ = show(&mut ui, &mut state, screen_input());
+        assert!(
+            !matches!(show(&mut ui, &mut state, enter()), Action::CreateSession(_)),
+            "an empty name must not create"
+        );
+
+        ui.create_name = "work".to_owned();
+        state.discovery = Some(discovered(vec![crate::sessions::Summary {
+            id: tmuxctl::WindowId(1),
+            name: "work".into(),
+            panes: 1,
+        }]));
+        ctx.memory_mut(|memory| memory.request_focus(field));
+        let _ = show(&mut ui, &mut state, screen_input());
+        assert!(
+            !matches!(show(&mut ui, &mut state, enter()), Action::CreateSession(_)),
+            "a name that already exists must not create"
         );
     }
 

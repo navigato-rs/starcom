@@ -17,6 +17,8 @@ idle 30
 sidebar-width 184
 # Workspace-wide terminal font size, in points (10..=28).
 font-size 14
+# Full-screen effect while painting at 60 Hz: none, wave, matrix, or retro.
+effect none
 
 [tab]
 model window

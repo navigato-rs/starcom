@@ -89,6 +89,13 @@ pub(crate) struct Workspace {
     /// After a keystroke, remote paint may run faster until this instant —
     /// one idle refresh interval, not a fixed window. None when idle.
     echo_until: Option<time::Instant>,
+    /// Effect chosen in Settings. The refresh star does not change this.
+    effect: store::PaintEffect,
+    /// Whether the chosen effect is currently painting. None ignores this.
+    effect_on: bool,
+    /// Last pointer, in egui points, so the wave stays put when the cursor
+    /// leaves the window.
+    effect_pointer: Option<egui::Pos2>,
     /// GUI-side copy of the last event-loop clock, used to notice a machine
     /// sleep while the SSH worker is blocked in poll.
     suspend_clock: reconnect::AliveClock,
@@ -450,6 +457,9 @@ impl Workspace {
             open_secs: 0,
             session_started: time::Instant::now(),
             echo_until: None,
+            effect: store::PaintEffect::None,
+            effect_on: false,
+            effect_pointer: None,
             suspend_clock: reconnect::AliveClock::now(),
             local_dirty: false,
             shut_down: false,
@@ -584,6 +594,8 @@ impl Workspace {
         self.composer_open = active_failure || self.tabs.is_empty();
         self.fps = store::clamp_fps(saved.fps);
         self.idle = saved.idle.min(store::MAX_IDLE);
+        self.effect = saved.effect;
+        self.effect_on = saved.effect.is_active();
         self.open_secs = saved.open_secs.min(store::MAX_OPEN_SECS);
         Ok(true)
     }
@@ -594,16 +606,54 @@ impl Workspace {
 
     /// Idle remote paint uses `fps` from the saved workspace. After a key, the
     /// next idle slot may run at up to 20 fps so echo is not a full cycle late.
+    /// Wave, Matrix, and Retro override both and paint at 60 Hz.
     pub(crate) fn paint_interval(&self) -> time::Duration {
         let idle = self.repaint_interval();
-        if self
+        let paced = if self
             .echo_until
             .is_some_and(|until| time::Instant::now() < until)
         {
             idle.min(time::Duration::from_millis(50))
         } else {
             idle
+        };
+        if self.playing_effect().is_active() {
+            paced.min(time::Duration::from_secs_f64(1.0 / 60.0))
+        } else {
+            paced
         }
+    }
+
+    /// The effect actually painting this frame. Settings picks which one; the
+    /// refresh star only turns that choice on or off.
+    pub(crate) fn playing_effect(&self) -> store::PaintEffect {
+        if self.effect_on && self.effect.is_active() {
+            self.effect
+        } else {
+            store::PaintEffect::None
+        }
+    }
+
+    /// Post effect for this frame. None keeps the ordinary single-pass paint.
+    pub(crate) fn effect_sample(
+        &self,
+        pixels_per_point: f32,
+        time: f64,
+        screen_px: [f32; 2],
+    ) -> Option<ui::bend::Sample> {
+        let effect = self.playing_effect();
+        if !effect.is_active() {
+            return None;
+        }
+        let pointer_px = self
+            .effect_pointer
+            .map(|point| [point.x * pixels_per_point, point.y * pixels_per_point])
+            .unwrap_or([screen_px[0] * 0.5, screen_px[1] * 0.5]);
+        Some(ui::bend::Sample {
+            pointer_px,
+            time: time as f32,
+            effect,
+        })
     }
 
     fn arm_echo(&mut self) {
@@ -687,6 +737,7 @@ impl Workspace {
         let mut idle = self.idle;
         let mut font_size = self.font_size;
         let mut restore_tabs = self.restore_tabs;
+        let mut effect = self.effect;
         let mut close = false;
         let open_for = format_open(self.open_secs_now());
         if self.about_icon.is_none()
@@ -759,6 +810,23 @@ impl Workspace {
                             );
                         });
                         ui.add_space(6.0);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label("Screen effect");
+                            for (value, label) in [
+                                (store::PaintEffect::None, "None"),
+                                (store::PaintEffect::Wave, "Wave"),
+                                (store::PaintEffect::Matrix, "Matrix"),
+                                (store::PaintEffect::Retro, "Retro"),
+                            ] {
+                                if ui.selectable_label(effect == value, label).clicked() {
+                                    effect = value;
+                                }
+                            }
+                        });
+                        ui.weak(
+                            "Wave bends light around the pointer. Matrix rains brightness and tint down the screen. Retro draws a curved CRT. The refresh star turns the chosen effect on and off.",
+                        );
+                        ui.add_space(6.0);
                         ui.checkbox(&mut restore_tabs, "Resume open tabs on startup");
                         ui.weak("Reconnects each saved host and tmux session automatically.");
                         ui.add_space(10.0);
@@ -779,11 +847,14 @@ impl Workspace {
             || idle.min(store::MAX_IDLE) != self.idle
             || store::clamp_font_size(font_size) != self.font_size
             || restore_tabs != self.restore_tabs
+            || effect != self.effect
         {
             self.fps = store::clamp_fps(fps);
             self.idle = idle.min(store::MAX_IDLE);
             self.font_size = store::clamp_font_size(font_size);
             self.restore_tabs = restore_tabs;
+            self.effect = effect;
+            self.effect_on = effect.is_active();
             self.persist();
         }
     }
@@ -821,6 +892,7 @@ impl Workspace {
             sidebar_width: store::clamp_sidebar_width(self.sidebar_width),
             font_size: store::clamp_font_size(self.font_size),
             open_secs: self.open_secs.min(store::MAX_OPEN_SECS),
+            effect: self.effect,
         };
         if let Err(error) = store::save(&file, &saved) {
             self.notice = Some(format!("Could not save tabs: {error:#}"));
@@ -1269,6 +1341,9 @@ impl Workspace {
         if root.input_mut(|input| input.consume_shortcut(&close)) {
             navigation = self.close_shortcut_action();
         }
+        let mut toggle_effect = false;
+        let effect = self.effect;
+        let effect_on = self.effect_on;
         let sidebar = egui::Panel::left("session-sidebar")
             .resizable(true)
             .default_size(f32::from(self.sidebar_width))
@@ -1555,13 +1630,25 @@ impl Workspace {
                 {
                     let client = sync::Arc::clone(&tab.client);
                     let state = client.lock();
-                    if tab.ui.show_sidebar_controls(ui, &state) {
+                    if tab.ui
+                        .show_sidebar_controls(ui, &state, effect, effect_on, &mut toggle_effect)
+                    {
                         self.about = true;
                     }
                 } else if ui::DesktopUi::show_sidebar_settings(ui) {
                     self.about = true;
                 }
             });
+        if toggle_effect && self.effect.is_active() {
+            self.effect_on = !self.effect_on;
+        }
+        if self.playing_effect().is_active() {
+            if let Some(pointer) = root.ctx().input(|input| input.pointer.latest_pos()) {
+                self.effect_pointer = Some(pointer);
+            }
+            root.ctx()
+                .request_repaint_after(time::Duration::from_secs_f64(1.0 / 60.0));
+        }
         let resize_id = egui::Id::new("session-sidebar").with("__resize");
         if let Some(response) = root.ctx().read_response(resize_id)
             && (response.dragged() || response.drag_stopped())
@@ -2551,6 +2638,7 @@ mod tests {
                 sidebar_width: store::DEFAULT_SIDEBAR_WIDTH,
                 font_size: store::DEFAULT_FONT_SIZE,
                 open_secs: 0,
+                effect: store::PaintEffect::None,
             },
         )
         .unwrap();
@@ -2887,6 +2975,9 @@ mod tests {
             open_secs: 0,
             session_started: time::Instant::now(),
             echo_until: None,
+            effect: store::PaintEffect::None,
+            effect_on: false,
+            effect_pointer: None,
             suspend_clock: reconnect::AliveClock::now(),
             local_dirty: false,
             shut_down: false,
@@ -3178,6 +3269,93 @@ mod tests {
             (recover.min.y - y).abs() < 0.5,
             "Reconnect must stay on the footer row: {recover:?} vs {y}"
         );
+    }
+
+    #[test]
+    fn clicking_the_refresh_star_bends_light_at_sixty_hertz() {
+        let ctx = egui::Context::default();
+        crate::window::configure(&ctx);
+        let mut workspace = Workspace::new(sync::Arc::new(|| {}), desktop::Startup::Demo).unwrap();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 760.0));
+        for pass in 0..3 {
+            let _ = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    time: Some(pass as f64 / 60.0),
+                    ..Default::default()
+                },
+                |root| {
+                    workspace.show(root);
+                },
+            );
+        }
+        assert_eq!(workspace.effect, store::PaintEffect::None);
+        assert!(!workspace.effect_on);
+        let rect = ctx
+            .read_response(egui::Id::new("sidebar-refresh"))
+            .expect("refresh star")
+            .rect;
+        let click = |pressed: bool, time: f64| egui::RawInput {
+            screen_rect: Some(screen),
+            time: Some(time),
+            events: vec![
+                egui::Event::PointerMoved(rect.center()),
+                egui::Event::PointerButton {
+                    pos: rect.center(),
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::default(),
+                },
+            ],
+            ..Default::default()
+        };
+        let mut stamp = 0.10;
+        let mut press = |workspace: &mut Workspace| {
+            let _ = ctx.run_ui(click(true, stamp), |root| {
+                workspace.show(root);
+            });
+            stamp += 0.02;
+            let _ = ctx.run_ui(click(false, stamp), |root| {
+                workspace.show(root);
+            });
+            stamp += 0.08;
+        };
+        press(&mut workspace);
+        assert_eq!(workspace.effect, store::PaintEffect::None);
+        assert!(!workspace.effect_on);
+        assert!(workspace.paint_interval() >= time::Duration::from_millis(100));
+
+        workspace.effect = store::PaintEffect::Wave;
+        workspace.effect_on = true;
+        let _ = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                time: Some(0.5),
+                events: vec![egui::Event::PointerMoved(rect.center())],
+                ..Default::default()
+            },
+            |root| {
+                workspace.show(root);
+            },
+        );
+        press(&mut workspace);
+        assert_eq!(
+            workspace.effect,
+            store::PaintEffect::Wave,
+            "the star must not switch effects"
+        );
+        assert!(!workspace.effect_on);
+        assert!(workspace.paint_interval() >= time::Duration::from_millis(100));
+
+        press(&mut workspace);
+        assert_eq!(workspace.effect, store::PaintEffect::Wave);
+        assert!(workspace.effect_on);
+        let fast = workspace.paint_interval().as_nanos();
+        assert!(
+            (16_000_000..=17_000_000).contains(&fast),
+            "the chosen effect paints at 60 Hz, interval was {fast} ns"
+        );
+        assert!(workspace.effect_pointer.is_some());
     }
 
     #[test]
