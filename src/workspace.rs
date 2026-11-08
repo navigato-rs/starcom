@@ -809,7 +809,7 @@ impl Workspace {
                                 store::PaintEffect::ALL.into_iter().map(Some),
                             ) {
                                 if ui
-                                    .selectable_label(effect == value, store::effect_label(value))
+                                    .selectable_label(effect == value, store::effect_name(value))
                                     .clicked()
                                 {
                                     effect = value;
