@@ -8,6 +8,10 @@ Built with Rust, Blade, egui, and Alacritty's terminal core.
 
 ![Starcom desktop attached to a remote tmux session](etc/screenshot.png)
 
+| Wave | Matrix | Retro |
+| --- | --- | --- |
+| ![Wave bends light around the pointer](etc/effects/wave.gif) | ![Matrix rains green over lit text](etc/effects/matrix.gif) | ![Retro draws a curved CRT](etc/effects/retro.gif) |
+
 ## Install
 
 Prebuilt binaries are attached to each [GitHub Release](https://github.com/navigato-rs/starcom/releases)
