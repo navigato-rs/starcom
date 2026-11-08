@@ -152,9 +152,10 @@ host, user, port, tmux socket, last-used session name, selected window and pane,
 history depth, whether it is interactive, whether it reconnects, an extra
 identity path if you typed one, the global redraw cap (`fps`, default 5), the
 sidebar width (`sidebar-width`, default 184), terminal font size (`font-size`,
-default 14), and how long a quiet connected tab waits before its row turns blue
+default 14), the screen effect (`effect`, `none`, `wave`, `matrix`, or
+`retro`), and how long a quiet connected tab waits before its row turns blue
 (`idle`, default 30 seconds, 0 off; see `etc/workspace.conf.example`). The
-redraw, font, and idle settings are also on the **Settings** panel. The
+redraw, font, effect, and idle settings are also on the **Settings** panel. The
 last-used session is the target used to resume that tab on startup.
 Nothing that would let a reader of that file connect is written: no keys, no
 passphrases, no host-key material, and no terminal contents. An identity entry
@@ -198,7 +199,8 @@ authentication and host-key failures could not list anyway, and the others
 already say what happened.
 
 The **new session** field beside the list, then **Create**, makes a named window
-and opens its tab. The first creation may start tmux and the managed `starcom`
+and opens its tab. Enter in that field does the same thing when **Create** is
+enabled. The first creation may start tmux and the managed `starcom`
 session; later creations issue `new-window` through the live control client. No
 failure path creates either one implicitly.
 
@@ -346,6 +348,19 @@ this client's size, so the remote grid matches the glyphs on screen.
 
 The footer refresh icon briefly sends a bright comet around its star when the
 selected terminal refreshes or the user scrolls it, then stays still while idle.
+**Settings** chooses None, Wave, Matrix, or Retro, and that choice is remembered.
+The refresh star turns the chosen effect on and off. None leaves the star as a
+hover-only activity mark. Wave, Matrix, and Retro paint at 60 Hz while the
+star is on.
+Wave bends light around the pointer: a saturated color such as red or green
+text stays that color, and white or gray light spreads into colored fringes.
+Matrix is a green rain mask on light that is already there. Outside a trail
+a lit pixel sits at about half its color. Inside a trail its green channel
+is lifted and red and blue stay lower. Empty and near-black areas are left
+as drawn. Retro curves the glass and lays scanlines, phosphor glow, a little
+flicker, and snow over the existing picture. The tube meets the middle of each
+edge, and the corners outside it are black. Pointer hits follow that curve.
+The star fills while an effect is on.
 The selected pane shows its dimensions and compact A/K/M alternate-screen,
 keyboard-input, and mouse-reporting state directly beneath its split controls.
 A fixed-size activity mark appears in a yellow connecting session row without
@@ -354,11 +369,13 @@ round-trip time is shown in the corresponding server header. That is not a
 probe: nothing extra is sent to measure it.
 
 Remote pane output is redrawn at most 5 times per second by default (`fps` in
-`workspace.conf`; `etc/workspace.conf.example` is the documented file). Buttons,
-hover, typing, and other local UI stay immediate. After keys or wheel are sent,
-the next idle refresh slot may run at up to 20 fps so the echo is not a full
-cycle late. Output in a hidden tab keeps that tab's activity/quiet state
-accurate but does not repaint an unchanged selected terminal. A remote wake
+`workspace.conf`; `etc/workspace.conf.example` is the documented file). Wave,
+Matrix, and Retro override that pace and paint at 60 Hz until the effect is
+None. Buttons, hover, typing, and other local UI stay immediate. After keys or
+wheel are sent, the next idle refresh slot may run at up to 20 fps so the echo
+is not a full cycle late. Output in a hidden tab keeps that tab's
+activity/quiet state accurate but does not repaint an unchanged selected
+terminal. A remote wake
 stays pending until the selected terminal is actually painted, and a deferred
 remote redraw is forced once the fps interval elapses, so an application that
 erases then redraws (OpenCode and other OpenTUI apps) cannot leave the empty

@@ -36,6 +36,51 @@ pub const MAX_SIDEBAR_WIDTH: u16 = 320;
 pub const DEFAULT_FONT_SIZE: u16 = 14;
 pub const MIN_FONT_SIZE: u16 = 10;
 pub const MAX_FONT_SIZE: u16 = 28;
+
+/// Full-screen paint played while the window runs at 60 Hz.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PaintEffect {
+    #[default]
+    None,
+    Wave,
+    Matrix,
+    Retro,
+}
+
+impl PaintEffect {
+    pub fn is_active(self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Wave => "wave",
+            Self::Matrix => "matrix",
+            Self::Retro => "retro",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "none" => Some(Self::None),
+            // Earlier builds saved this name.
+            "wave" | "ripples" => Some(Self::Wave),
+            "matrix" => Some(Self::Matrix),
+            "retro" => Some(Self::Retro),
+            _ => None,
+        }
+    }
+
+    /// Shader selector. Wave is 0, Matrix is 1, Retro is 2.
+    pub fn shader_mode(self) -> f32 {
+        match self {
+            Self::Matrix => 1.0,
+            Self::Retro => 2.0,
+            Self::None | Self::Wave => 0.0,
+        }
+    }
+}
 pub const DEFAULT_HISTORY: usize = 1000;
 /// Cumulative seconds the app has been open. Caps so a corrupt file cannot
 /// invent an absurd lifetime.
@@ -92,6 +137,7 @@ pub struct Workspace {
     pub sidebar_width: u16,
     pub font_size: u16,
     pub open_secs: u64,
+    pub effect: PaintEffect,
 }
 
 impl Default for Workspace {
@@ -105,6 +151,7 @@ impl Default for Workspace {
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             font_size: DEFAULT_FONT_SIZE,
             open_secs: 0,
+            effect: PaintEffect::None,
         }
     }
 }
@@ -232,6 +279,11 @@ fn parse(text: &str) -> anyhow::Result<Workspace> {
                     where_()
                 );
                 workspace.font_size = size;
+            }
+            None if key == "effect" => {
+                workspace.effect = PaintEffect::parse(value).with_context(|| {
+                    format!("{}: effect must be none, wave, matrix, or retro", where_())
+                })?;
             }
             None if key == "open" => {
                 let open: u64 = value.parse().with_context(where_)?;
@@ -365,6 +417,7 @@ pub fn render(workspace: &Workspace) -> String {
         "font-size {}\n",
         clamp_font_size(workspace.font_size)
     ));
+    out.push_str(&format!("effect {}\n", workspace.effect.as_str()));
     out.push_str(&format!(
         "open {}\n",
         workspace.open_secs.min(MAX_OPEN_SECS)
@@ -481,7 +534,26 @@ mod tests {
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             font_size: DEFAULT_FONT_SIZE,
             open_secs: 0,
+            effect: PaintEffect::None,
         }
+    }
+
+    #[test]
+    fn effect_is_a_file_level_setting() {
+        assert_eq!(parse("").unwrap().effect, PaintEffect::None);
+        let mut workspace = sample();
+        workspace.effect = PaintEffect::Matrix;
+        assert_eq!(
+            parse(&render(&workspace)).unwrap().effect,
+            PaintEffect::Matrix
+        );
+        assert_eq!(parse("effect wave\n").unwrap().effect, PaintEffect::Wave);
+        assert_eq!(parse("effect ripples\n").unwrap().effect, PaintEffect::Wave);
+        assert_eq!(parse("effect retro\n").unwrap().effect, PaintEffect::Retro);
+        let mut saved = sample();
+        saved.effect = PaintEffect::Retro;
+        assert!(render(&saved).contains("effect retro"));
+        assert!(parse("effect prism\n").is_err());
     }
 
     #[test]
