@@ -57,14 +57,6 @@ impl PaintEffect {
         }
     }
 
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Wave => "Wave",
-            Self::Matrix => "Matrix",
-            Self::Retro => "Retro",
-        }
-    }
-
     pub fn parse(value: &str) -> Option<Self> {
         Self::ALL
             .into_iter()
@@ -83,10 +75,6 @@ impl PaintEffect {
 
 pub fn effect_name(effect: Option<PaintEffect>) -> &'static str {
     effect.map(PaintEffect::as_str).unwrap_or("none")
-}
-
-pub fn effect_label(effect: Option<PaintEffect>) -> &'static str {
-    effect.map(PaintEffect::label).unwrap_or("None")
 }
 
 pub const DEFAULT_HISTORY: usize = 1000;

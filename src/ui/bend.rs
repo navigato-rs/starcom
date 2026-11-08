@@ -398,7 +398,7 @@ mod tests {
             0.4,
         );
         let mut saw_red = false;
-        for pixel in red.chunks_exact(4) {
+        for pixel in red.as_chunks::<4>().0 {
             let (r, g, b) = (pixel[0], pixel[1], pixel[2]);
             if r > 40 || g > 20 || b > 20 {
                 assert!(
@@ -419,7 +419,7 @@ mod tests {
             0.4,
         );
         let mut saw_green = false;
-        for pixel in green.chunks_exact(4) {
+        for pixel in green.as_chunks::<4>().0 {
             let (r, g, b) = (pixel[0], pixel[1], pixel[2]);
             if r > 20 || g > 40 || b > 20 {
                 assert!(
@@ -439,7 +439,7 @@ mod tests {
             false,
             0.4,
         );
-        let fringed = white.chunks_exact(4).any(|pixel| {
+        let fringed = white.as_chunks::<4>().0.iter().any(|pixel| {
             let (r, b) = (pixel[0] as i16, pixel[2] as i16);
             pixel[0].max(pixel[2]) > 40 && (r - b).abs() > 30
         });
@@ -532,7 +532,7 @@ mod tests {
         let mut max_g = 0u8;
         let mut saw_dim = false;
         let mut saw_bright = false;
-        for pixel in white.chunks_exact(4) {
+        for pixel in white.as_chunks::<4>().0 {
             min_g = min_g.min(pixel[1]);
             max_g = max_g.max(pixel[1]);
             if pixel[1] < 160 && pixel[0].abs_diff(pixel[1]) <= 12 {
@@ -554,7 +554,7 @@ mod tests {
             max_g > min_g + 40,
             "the rain should move brightness across existing pixels, {min_g}..={max_g}"
         );
-        for pixel in black.chunks_exact(4) {
+        for pixel in black.as_chunks::<4>().0 {
             assert!(
                 pixel[0] < 8 && pixel[1] < 8 && pixel[2] < 8,
                 "empty pixels stay empty: {pixel:?}"
@@ -568,7 +568,7 @@ mod tests {
             true,
             0.4,
         );
-        for pixel in dark.chunks_exact(4) {
+        for pixel in dark.as_chunks::<4>().0 {
             assert!(
                 pixel[0].abs_diff(6) <= 1 && pixel[1].abs_diff(7) <= 1 && pixel[2].abs_diff(8) <= 1,
                 "a near-black background stays as drawn: {pixel:?}"
@@ -650,7 +650,7 @@ mod tests {
             context,
         );
         let mut pixels = vec![0u8; (side * side * 4) as usize];
-        for pixel in pixels.chunks_exact_mut(4) {
+        for pixel in pixels.as_chunks_mut::<4>().0 {
             if solid {
                 pixel.copy_from_slice(&line);
             } else {
