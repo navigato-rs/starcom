@@ -90,8 +90,8 @@ pub(crate) struct Workspace {
     /// one idle refresh interval, not a fixed window. None when idle.
     echo_until: Option<time::Instant>,
     /// Effect chosen in Settings. The refresh star does not change this.
-    effect: store::PaintEffect,
-    /// Whether the chosen effect is currently painting. None ignores this.
+    effect: Option<store::PaintEffect>,
+    /// Whether the chosen effect is currently painting. An empty choice ignores this.
     effect_on: bool,
     /// Last pointer, in egui points, so the wave stays put when the cursor
     /// leaves the window.
@@ -457,7 +457,7 @@ impl Workspace {
             open_secs: 0,
             session_started: time::Instant::now(),
             echo_until: None,
-            effect: store::PaintEffect::None,
+            effect: None,
             effect_on: false,
             effect_pointer: None,
             suspend_clock: reconnect::AliveClock::now(),
@@ -595,7 +595,7 @@ impl Workspace {
         self.fps = store::clamp_fps(saved.fps);
         self.idle = saved.idle.min(store::MAX_IDLE);
         self.effect = saved.effect;
-        self.effect_on = saved.effect.is_active();
+        self.effect_on = saved.effect.is_some();
         self.open_secs = saved.open_secs.min(store::MAX_OPEN_SECS);
         Ok(true)
     }
@@ -617,7 +617,7 @@ impl Workspace {
         } else {
             idle
         };
-        if self.playing_effect().is_active() {
+        if self.playing_effect().is_some() {
             paced.min(time::Duration::from_secs_f64(1.0 / 60.0))
         } else {
             paced
@@ -626,12 +626,8 @@ impl Workspace {
 
     /// The effect actually painting this frame. Settings picks which one; the
     /// refresh star only turns that choice on or off.
-    pub(crate) fn playing_effect(&self) -> store::PaintEffect {
-        if self.effect_on && self.effect.is_active() {
-            self.effect
-        } else {
-            store::PaintEffect::None
-        }
+    pub(crate) fn playing_effect(&self) -> Option<store::PaintEffect> {
+        self.effect.filter(|_| self.effect_on)
     }
 
     /// Post effect for this frame. None keeps the ordinary single-pass paint.
@@ -641,10 +637,7 @@ impl Workspace {
         time: f64,
         screen_px: [f32; 2],
     ) -> Option<ui::bend::Sample> {
-        let effect = self.playing_effect();
-        if !effect.is_active() {
-            return None;
-        }
+        let effect = self.playing_effect()?;
         let pointer_px = self
             .effect_pointer
             .map(|point| [point.x * pixels_per_point, point.y * pixels_per_point])
@@ -812,13 +805,13 @@ impl Workspace {
                         ui.add_space(6.0);
                         ui.horizontal_wrapped(|ui| {
                             ui.label("Screen effect");
-                            for (value, label) in [
-                                (store::PaintEffect::None, "None"),
-                                (store::PaintEffect::Wave, "Wave"),
-                                (store::PaintEffect::Matrix, "Matrix"),
-                                (store::PaintEffect::Retro, "Retro"),
-                            ] {
-                                if ui.selectable_label(effect == value, label).clicked() {
+                            for value in [None].into_iter().chain(
+                                store::PaintEffect::ALL.into_iter().map(Some),
+                            ) {
+                                if ui
+                                    .selectable_label(effect == value, store::effect_name(value))
+                                    .clicked()
+                                {
                                     effect = value;
                                 }
                             }
@@ -854,7 +847,7 @@ impl Workspace {
             self.font_size = store::clamp_font_size(font_size);
             self.restore_tabs = restore_tabs;
             self.effect = effect;
-            self.effect_on = effect.is_active();
+            self.effect_on = effect.is_some();
             self.persist();
         }
     }
@@ -1639,10 +1632,10 @@ impl Workspace {
                     self.about = true;
                 }
             });
-        if toggle_effect && self.effect.is_active() {
+        if toggle_effect && self.effect.is_some() {
             self.effect_on = !self.effect_on;
         }
-        if self.playing_effect().is_active() {
+        if self.playing_effect().is_some() {
             if let Some(pointer) = root.ctx().input(|input| input.pointer.latest_pos()) {
                 self.effect_pointer = Some(pointer);
             }
@@ -2638,7 +2631,7 @@ mod tests {
                 sidebar_width: store::DEFAULT_SIDEBAR_WIDTH,
                 font_size: store::DEFAULT_FONT_SIZE,
                 open_secs: 0,
-                effect: store::PaintEffect::None,
+                effect: None,
             },
         )
         .unwrap();
@@ -2975,7 +2968,7 @@ mod tests {
             open_secs: 0,
             session_started: time::Instant::now(),
             echo_until: None,
-            effect: store::PaintEffect::None,
+            effect: None,
             effect_on: false,
             effect_pointer: None,
             suspend_clock: reconnect::AliveClock::now(),
@@ -3289,7 +3282,7 @@ mod tests {
                 },
             );
         }
-        assert_eq!(workspace.effect, store::PaintEffect::None);
+        assert_eq!(workspace.effect, None);
         assert!(!workspace.effect_on);
         let rect = ctx
             .read_response(egui::Id::new("sidebar-refresh"))
@@ -3321,11 +3314,11 @@ mod tests {
             stamp += 0.08;
         };
         press(&mut workspace);
-        assert_eq!(workspace.effect, store::PaintEffect::None);
+        assert_eq!(workspace.effect, None);
         assert!(!workspace.effect_on);
         assert!(workspace.paint_interval() >= time::Duration::from_millis(100));
 
-        workspace.effect = store::PaintEffect::Wave;
+        workspace.effect = Some(store::PaintEffect::Wave);
         workspace.effect_on = true;
         let _ = ctx.run_ui(
             egui::RawInput {
@@ -3341,14 +3334,14 @@ mod tests {
         press(&mut workspace);
         assert_eq!(
             workspace.effect,
-            store::PaintEffect::Wave,
+            Some(store::PaintEffect::Wave),
             "the star must not switch effects"
         );
         assert!(!workspace.effect_on);
         assert!(workspace.paint_interval() >= time::Duration::from_millis(100));
 
         press(&mut workspace);
-        assert_eq!(workspace.effect, store::PaintEffect::Wave);
+        assert_eq!(workspace.effect, Some(store::PaintEffect::Wave));
         assert!(workspace.effect_on);
         let fast = workspace.paint_interval().as_nanos();
         assert!(
