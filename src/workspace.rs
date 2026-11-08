@@ -809,7 +809,7 @@ impl Workspace {
                                 store::PaintEffect::ALL.into_iter().map(Some),
                             ) {
                                 if ui
-                                    .selectable_label(effect == value, store::effect_name(value))
+                                    .selectable_label(effect == value, store::effect_label(value))
                                     .clicked()
                                 {
                                     effect = value;
@@ -817,7 +817,7 @@ impl Workspace {
                             }
                         });
                         ui.weak(
-                            "Wave bends light around the pointer. Matrix rains brightness and tint down the screen. Retro draws a curved CRT. The refresh star turns the chosen effect on and off.",
+                            "Wave bends light around the pointer. Matrix is a green rain mask on lit pixels. Retro draws a curved CRT. The refresh star turns the chosen effect on and off.",
                         );
                         ui.add_space(6.0);
                         ui.checkbox(&mut restore_tabs, "Resume open tabs on startup");
