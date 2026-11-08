@@ -453,7 +453,7 @@ impl winit::application::ApplicationHandler<Event> for App {
                     return;
                 }
                 let mut input = runtime.input.take_egui_input(&runtime.window);
-                if self.workspace.playing_effect() == store::PaintEffect::Retro
+                if self.workspace.playing_effect() == Some(store::PaintEffect::Retro)
                     && let Some(screen) = input.screen_rect
                 {
                     ui::bend::warp_retro_pointer(&mut input.events, screen);

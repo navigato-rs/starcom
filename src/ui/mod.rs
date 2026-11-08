@@ -671,7 +671,7 @@ impl DesktopUi {
         &mut self,
         ui: &mut egui::Ui,
         state: &desktop::State,
-        effect: store::PaintEffect,
+        effect: Option<store::PaintEffect>,
         effect_on: bool,
         toggle_effect: &mut bool,
     ) -> bool {
@@ -729,7 +729,7 @@ impl DesktopUi {
                         self.queue_sidebar_recover(kind);
                     }
                 } else {
-                    let chosen = effect.is_active();
+                    let chosen = effect.is_some();
                     let running = chosen && effect_on;
                     let response = sidebar_icon(
                         ui,
@@ -2787,24 +2787,24 @@ const LIGHT_BEND_COLOR: egui::Color32 = egui::Color32::from_rgb(72, 196, 232);
 const MATRIX_COLOR: egui::Color32 = egui::Color32::from_rgb(72, 210, 130);
 const RETRO_COLOR: egui::Color32 = egui::Color32::from_rgb(232, 164, 74);
 
-fn effect_color(effect: store::PaintEffect) -> Option<egui::Color32> {
+fn effect_color(effect: Option<store::PaintEffect>) -> Option<egui::Color32> {
     match effect {
-        store::PaintEffect::None => None,
-        store::PaintEffect::Wave => Some(LIGHT_BEND_COLOR),
-        store::PaintEffect::Matrix => Some(MATRIX_COLOR),
-        store::PaintEffect::Retro => Some(RETRO_COLOR),
+        None => None,
+        Some(store::PaintEffect::Wave) => Some(LIGHT_BEND_COLOR),
+        Some(store::PaintEffect::Matrix) => Some(MATRIX_COLOR),
+        Some(store::PaintEffect::Retro) => Some(RETRO_COLOR),
     }
 }
 
-fn effect_hover(effect: store::PaintEffect, running: bool) -> &'static str {
+fn effect_hover(effect: Option<store::PaintEffect>, running: bool) -> &'static str {
     match (effect, running) {
-        (store::PaintEffect::None, _) => "Terminal refresh activity.",
-        (store::PaintEffect::Wave, true) => "Wave at 60 Hz. Click to turn it off.",
-        (store::PaintEffect::Wave, false) => "Wave is off. Click to turn it on.",
-        (store::PaintEffect::Matrix, true) => "Matrix at 60 Hz. Click to turn it off.",
-        (store::PaintEffect::Matrix, false) => "Matrix is off. Click to turn it on.",
-        (store::PaintEffect::Retro, true) => "Retro CRT at 60 Hz. Click to turn it off.",
-        (store::PaintEffect::Retro, false) => "Retro CRT is off. Click to turn it on.",
+        (None, _) => "Terminal refresh activity.",
+        (Some(store::PaintEffect::Wave), true) => "Wave at 60 Hz. Click to turn it off.",
+        (Some(store::PaintEffect::Wave), false) => "Wave is off. Click to turn it on.",
+        (Some(store::PaintEffect::Matrix), true) => "Matrix at 60 Hz. Click to turn it off.",
+        (Some(store::PaintEffect::Matrix), false) => "Matrix is off. Click to turn it on.",
+        (Some(store::PaintEffect::Retro), true) => "Retro CRT at 60 Hz. Click to turn it off.",
+        (Some(store::PaintEffect::Retro), false) => "Retro CRT is off. Click to turn it on.",
     }
 }
 
