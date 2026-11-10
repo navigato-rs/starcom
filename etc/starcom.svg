@@ -1,16 +1,171 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#1c2434"/>
-      <stop offset="1" stop-color="#242f44"/>
+    <linearGradient id="bg" x1="0" y1="8" x2="0" y2="248" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3a4c64"/>
+      <stop offset="1" stop-color="#161c2a"/>
     </linearGradient>
+    <linearGradient id="mark" gradientUnits="userSpaceOnUse" x1="0" y1="83" x2="0" y2="173">
+      <stop offset="0" stop-color="#b4e8f0"/>
+      <stop offset="1" stop-color="#2c8694"/>
+    </linearGradient>
+    <clipPath id="plate">
+      <rect x="8" y="8" width="240" height="240" rx="0" fill="#fff"/>
+    </clipPath>
+    <mask id="cast1" maskContentUnits="userSpaceOnUse">
+      <rect width="256" height="256" fill="#000"/>
+    <g transform="translate(4.25 4.25)">
+      <g fill="none" stroke="#fff" stroke-width="26" stroke-linecap="butt" stroke-linejoin="miter">
+      <path d="M36.2487 87.879 L86.4 128 L36.2487 168.121"/>
+      <path d="M219.751 87.879 L169.6 128 L219.751 168.121"/>
+      </g>
+      <rect x="112" y="112" width="32" height="32" rx="0" fill="#fff"/>
+    </g>
+    <g>
+      <g fill="none" stroke="#000" stroke-width="26" stroke-linecap="butt" stroke-linejoin="miter">
+      <path d="M36.2487 87.879 L86.4 128 L36.2487 168.121"/>
+      <path d="M219.751 87.879 L169.6 128 L219.751 168.121"/>
+      </g>
+      <rect x="112" y="112" width="32" height="32" rx="0" fill="#000"/>
+    </g>
+    </mask>
+    <mask id="cast2" maskContentUnits="userSpaceOnUse">
+      <rect width="256" height="256" fill="#000"/>
+    <g transform="translate(8.5 8.5)">
+      <g fill="none" stroke="#fff" stroke-width="26" stroke-linecap="butt" stroke-linejoin="miter">
+      <path d="M36.2487 87.879 L86.4 128 L36.2487 168.121"/>
+      <path d="M219.751 87.879 L169.6 128 L219.751 168.121"/>
+      </g>
+      <rect x="112" y="112" width="32" height="32" rx="0" fill="#fff"/>
+    </g>
+    <g transform="translate(4.25 4.25)">
+      <g fill="none" stroke="#000" stroke-width="26" stroke-linecap="butt" stroke-linejoin="miter">
+      <path d="M36.2487 87.879 L86.4 128 L36.2487 168.121"/>
+      <path d="M219.751 87.879 L169.6 128 L219.751 168.121"/>
+      </g>
+      <rect x="112" y="112" width="32" height="32" rx="0" fill="#000"/>
+    </g>
+    </mask>
+    <mask id="cast3" maskContentUnits="userSpaceOnUse">
+      <rect width="256" height="256" fill="#000"/>
+    <g transform="translate(12.75 12.75)">
+      <g fill="none" stroke="#fff" stroke-width="26" stroke-linecap="butt" stroke-linejoin="miter">
+      <path d="M36.2487 87.879 L86.4 128 L36.2487 168.121"/>
+      <path d="M219.751 87.879 L169.6 128 L219.751 168.121"/>
+      </g>
+      <rect x="112" y="112" width="32" height="32" rx="0" fill="#fff"/>
+    </g>
+    <g transform="translate(8.5 8.5)">
+      <g fill="none" stroke="#000" stroke-width="26" stroke-linecap="butt" stroke-linejoin="miter">
+      <path d="M36.2487 87.879 L86.4 128 L36.2487 168.121"/>
+      <path d="M219.751 87.879 L169.6 128 L219.751 168.121"/>
+      </g>
+      <rect x="112" y="112" width="32" height="32" rx="0" fill="#000"/>
+    </g>
+    </mask>
+    <mask id="cast4" maskContentUnits="userSpaceOnUse">
+      <rect width="256" height="256" fill="#000"/>
+    <g transform="translate(17 17)">
+      <g fill="none" stroke="#fff" stroke-width="26" stroke-linecap="butt" stroke-linejoin="miter">
+      <path d="M36.2487 87.879 L86.4 128 L36.2487 168.121"/>
+      <path d="M219.751 87.879 L169.6 128 L219.751 168.121"/>
+      </g>
+      <rect x="112" y="112" width="32" height="32" rx="0" fill="#fff"/>
+    </g>
+    <g transform="translate(12.75 12.75)">
+      <g fill="none" stroke="#000" stroke-width="26" stroke-linecap="butt" stroke-linejoin="miter">
+      <path d="M36.2487 87.879 L86.4 128 L36.2487 168.121"/>
+      <path d="M219.751 87.879 L169.6 128 L219.751 168.121"/>
+      </g>
+      <rect x="112" y="112" width="32" height="32" rx="0" fill="#000"/>
+    </g>
+    </mask>
+    <mask id="cast5" maskContentUnits="userSpaceOnUse">
+      <rect width="256" height="256" fill="#000"/>
+    <g transform="translate(21.25 21.25)">
+      <g fill="none" stroke="#fff" stroke-width="26" stroke-linecap="butt" stroke-linejoin="miter">
+      <path d="M36.2487 87.879 L86.4 128 L36.2487 168.121"/>
+      <path d="M219.751 87.879 L169.6 128 L219.751 168.121"/>
+      </g>
+      <rect x="112" y="112" width="32" height="32" rx="0" fill="#fff"/>
+    </g>
+    <g transform="translate(17 17)">
+      <g fill="none" stroke="#000" stroke-width="26" stroke-linecap="butt" stroke-linejoin="miter">
+      <path d="M36.2487 87.879 L86.4 128 L36.2487 168.121"/>
+      <path d="M219.751 87.879 L169.6 128 L219.751 168.121"/>
+      </g>
+      <rect x="112" y="112" width="32" height="32" rx="0" fill="#000"/>
+    </g>
+    </mask>
+    <mask id="cast6" maskContentUnits="userSpaceOnUse">
+      <rect width="256" height="256" fill="#000"/>
+    <g transform="translate(25.5 25.5)">
+      <g fill="none" stroke="#fff" stroke-width="26" stroke-linecap="butt" stroke-linejoin="miter">
+      <path d="M36.2487 87.879 L86.4 128 L36.2487 168.121"/>
+      <path d="M219.751 87.879 L169.6 128 L219.751 168.121"/>
+      </g>
+      <rect x="112" y="112" width="32" height="32" rx="0" fill="#fff"/>
+    </g>
+    <g transform="translate(21.25 21.25)">
+      <g fill="none" stroke="#000" stroke-width="26" stroke-linecap="butt" stroke-linejoin="miter">
+      <path d="M36.2487 87.879 L86.4 128 L36.2487 168.121"/>
+      <path d="M219.751 87.879 L169.6 128 L219.751 168.121"/>
+      </g>
+      <rect x="112" y="112" width="32" height="32" rx="0" fill="#000"/>
+    </g>
+    </mask>
+    <mask id="cast7" maskContentUnits="userSpaceOnUse">
+      <rect width="256" height="256" fill="#000"/>
+    <g transform="translate(29.75 29.75)">
+      <g fill="none" stroke="#fff" stroke-width="26" stroke-linecap="butt" stroke-linejoin="miter">
+      <path d="M36.2487 87.879 L86.4 128 L36.2487 168.121"/>
+      <path d="M219.751 87.879 L169.6 128 L219.751 168.121"/>
+      </g>
+      <rect x="112" y="112" width="32" height="32" rx="0" fill="#fff"/>
+    </g>
+    <g transform="translate(25.5 25.5)">
+      <g fill="none" stroke="#000" stroke-width="26" stroke-linecap="butt" stroke-linejoin="miter">
+      <path d="M36.2487 87.879 L86.4 128 L36.2487 168.121"/>
+      <path d="M219.751 87.879 L169.6 128 L219.751 168.121"/>
+      </g>
+      <rect x="112" y="112" width="32" height="32" rx="0" fill="#000"/>
+    </g>
+    </mask>
+    <mask id="cast8" maskContentUnits="userSpaceOnUse">
+      <rect width="256" height="256" fill="#000"/>
+    <g transform="translate(34 34)">
+      <g fill="none" stroke="#fff" stroke-width="26" stroke-linecap="butt" stroke-linejoin="miter">
+      <path d="M36.2487 87.879 L86.4 128 L36.2487 168.121"/>
+      <path d="M219.751 87.879 L169.6 128 L219.751 168.121"/>
+      </g>
+      <rect x="112" y="112" width="32" height="32" rx="0" fill="#fff"/>
+    </g>
+    <g transform="translate(29.75 29.75)">
+      <g fill="none" stroke="#000" stroke-width="26" stroke-linecap="butt" stroke-linejoin="miter">
+      <path d="M36.2487 87.879 L86.4 128 L36.2487 168.121"/>
+      <path d="M219.751 87.879 L169.6 128 L219.751 168.121"/>
+      </g>
+      <rect x="112" y="112" width="32" height="32" rx="0" fill="#000"/>
+    </g>
+    </mask>
   </defs>
-  <rect x="8" y="8" width="240" height="240" rx="24" fill="url(#bg)" stroke="#0f1624" stroke-width="8"/>
-  <g fill="none" stroke="#56b6c2" stroke-width="26" stroke-linecap="round">
-    <path d="M46.4 96 L86.4 128"/>
-    <path d="M46.4 160 L86.4 128"/>
-    <path d="M209.6 96 L169.6 128"/>
-    <path d="M209.6 160 L169.6 128"/>
+  <rect x="8" y="8" width="240" height="240" rx="0" fill="url(#bg)"/>
+  <g clip-path="url(#plate)">
+    <rect width="256" height="256" fill="#10141c" opacity="0.515625" mask="url(#cast1)"/>
+    <rect width="256" height="256" fill="#10141c" opacity="0.446875" mask="url(#cast2)"/>
+    <rect width="256" height="256" fill="#10141c" opacity="0.378125" mask="url(#cast3)"/>
+    <rect width="256" height="256" fill="#10141c" opacity="0.309375" mask="url(#cast4)"/>
+    <rect width="256" height="256" fill="#10141c" opacity="0.240625" mask="url(#cast5)"/>
+    <rect width="256" height="256" fill="#10141c" opacity="0.171875" mask="url(#cast6)"/>
+    <rect width="256" height="256" fill="#10141c" opacity="0.103125" mask="url(#cast7)"/>
+    <rect width="256" height="256" fill="#10141c" opacity="0.034375" mask="url(#cast8)"/>
+    <rect x="8" y="8" width="240" height="2" fill="#fff" opacity="0.32"/>
+    <rect x="8" y="246" width="240" height="2" fill="#000" opacity="0.35"/>
+    <g>
+      <g fill="none" stroke="url(#mark)" stroke-width="26" stroke-linecap="butt" stroke-linejoin="miter">
+      <path d="M36.2487 87.879 L86.4 128 L36.2487 168.121"/>
+      <path d="M219.751 87.879 L169.6 128 L219.751 168.121"/>
+      </g>
+      <rect x="112" y="112" width="32" height="32" rx="0" fill="url(#mark)"/>
+    </g>
   </g>
-  <rect x="112" y="112" width="32" height="32" rx="6" fill="#56b6c2"/>
 </svg>
