@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Emoji and other symbols that are wider or taller than their cell are scaled
+  into that cell, so the whole glyph is drawn instead of being clipped.
+  ASCII stays as laid out, and the next column does not move.
+- The mouse pointer matches a normal terminal. It is an I-beam over text, and
+  an arrow while the application is tracking the mouse. OSC 22 overrides that:
+  a hand where the application marks a control clickable, and an I-beam where
+  it asks for text. A link still shows a hand.
 - The app icon is a square tile. The chevrons are mitered with flat ends,
   lighter at the top, and cast a long shadow down and to the right.
 - Typing replaces the server ping with input-backlog bars as soon as a key is

@@ -40,6 +40,8 @@ pub struct Terminal {
     history_limit: usize,
     /// Remote bytes held back while the user is drag-selecting.
     held_output: Option<Vec<u8>>,
+    /// OSC 22 stacks. Scanned from the same bytes as the grid parser.
+    shapes: crate::pointer::Shapes,
 }
 
 impl Terminal {
@@ -58,6 +60,7 @@ impl Terminal {
             size,
             history_limit: history_lines,
             held_output: None,
+            shapes: crate::pointer::Shapes::default(),
         }
     }
 
@@ -72,6 +75,10 @@ impl Terminal {
         // OpenTUI/Grok use DECSET 2026. VTE buffers those bytes until ESU or
         // the 150ms timeout; Alacritty's PTY loop calls stop_sync, we must too.
         let flushed = self.flush_expired_sync();
+        // Scan before the grid parser. VTE swallows OSC 22, and a DECSET 2026
+        // update can stay buffered for 150ms; the pointer still follows the
+        // bytes in order, including which screen they belonged to.
+        self.shapes.scan(bytes);
         self.parser.advance(&mut self.model, bytes);
         flushed || !self.sync_pending()
     }
@@ -112,6 +119,7 @@ impl Terminal {
         if let Some(held) = self.held_output.take()
             && !held.is_empty()
         {
+            self.shapes.scan(&held);
             self.parser.advance(&mut self.model, &held);
         }
     }
@@ -476,6 +484,12 @@ impl Terminal {
         self.model.mode().contains(term::TermMode::ALT_SCREEN)
     }
 
+    /// OSC 22 shape for the visible screen. `None` means the terminal chooses:
+    /// an arrow while the application is tracking the mouse, otherwise an I-beam.
+    pub fn pointer_shape(&self) -> Option<crate::pointer::Shape> {
+        self.shapes.get(self.is_alternate_screen())
+    }
+
     /// Application cursor keys (DECCKM) or application keypad (DECKPAM).
     pub fn app_keyboard(&self) -> bool {
         self.model
@@ -721,6 +735,41 @@ mod tests {
                 .hyperlink_at(index::Point::new(index::Line(0), index::Column(4)))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn osc22_pointer_shape_follows_the_visible_screen() {
+        let mut terminal = Terminal::new(core::Size::new(20, 4).unwrap(), 0);
+        terminal.feed(b"\x1b]22;pointer\x1b\\");
+        assert_eq!(
+            terminal.pointer_shape(),
+            Some(crate::pointer::Shape::Pointer)
+        );
+
+        // Held output is not applied until the drag ends.
+        terminal.hold_output(true);
+        terminal.feed(b"\x1b]22;text\x1b\\");
+        assert_eq!(
+            terminal.pointer_shape(),
+            Some(crate::pointer::Shape::Pointer)
+        );
+        terminal.hold_output(false);
+        assert_eq!(terminal.pointer_shape(), Some(crate::pointer::Shape::Text));
+
+        // A synchronized update may still be buffered, but the shape is recorded
+        // on the screen the sequence belonged to.
+        terminal.feed(b"\x1b[?2026h\x1b[?1049h\x1b]22;pointer\x1b\\");
+        assert!(terminal.sync_pending());
+        assert!(!terminal.is_alternate_screen());
+        assert_eq!(terminal.pointer_shape(), Some(crate::pointer::Shape::Text));
+        terminal.feed(b"\x1b[?2026l");
+        assert!(terminal.is_alternate_screen());
+        assert_eq!(
+            terminal.pointer_shape(),
+            Some(crate::pointer::Shape::Pointer)
+        );
+        terminal.feed(b"\x1b[?1049l");
+        assert_eq!(terminal.pointer_shape(), Some(crate::pointer::Shape::Text));
     }
 
     #[test]
