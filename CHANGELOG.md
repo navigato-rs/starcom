@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The app icon is a square tile. The chevrons are mitered with flat ends,
+  lighter at the top, and cast a long shadow down and to the right.
 - Typing replaces the server ping with input-backlog bars as soon as a key is
   queued, and WAIT if that work stays unacknowledged or the queue is full.
 - A click copies an `http(s)` URL that a TUI wrapped inside a box, including
