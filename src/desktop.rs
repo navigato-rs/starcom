@@ -24,6 +24,8 @@ pub struct Connection {
     /// Retry transport loss automatically. Only transport loss: authentication,
     /// trust, missing-session, and detach never retry regardless of this.
     pub reconnect: bool,
+    /// When true, connect to local tmux server instead of via SSH.
+    pub local: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1467,13 +1469,17 @@ fn watch(
     backoff: &mut reconnect::Backoff,
 ) -> anyhow::Result<Outcome> {
     let connection_timer = navigato_support::timer(navigato_support::Metric::Connection);
-    let attached = session::Session::attach_with_access(
-        &connection.options,
-        &connection.session,
-        connection.socket.as_deref(),
-        connection.history,
-        connection.access,
-    )?;
+    let attached = if connection.local {
+        anyhow::bail!("local tmux session attachment not yet fully supported; use --ssh for full functionality");
+    } else {
+        session::Session::attach_with_access(
+            &connection.options,
+            &connection.session,
+            connection.socket.as_deref(),
+            connection.history,
+            connection.access,
+        )?
+    };
     let (mut inspector, mut view) = attached.into_parts();
     let session_id = view.session;
     // Attaching is by name, so a restarted server hands back a session that
