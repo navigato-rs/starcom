@@ -20,6 +20,44 @@ fn scroll_id(generation: u64, pane: tmuxctl::PaneId) -> egui::Id {
     egui::Id::new(("starcom-scroll", generation, pane.0))
 }
 
+/// Pointer for a hovered pane. A link is handled by the caller and always
+/// wins over this. `None` is the terminal's own choice.
+fn pane_pointer(shape: Option<crate::pointer::Shape>, mouse: bool) -> egui::CursorIcon {
+    use crate::pointer::Shape;
+    match shape {
+        Some(Shape::Pointer) => egui::CursorIcon::PointingHand,
+        Some(Shape::Text) => egui::CursorIcon::Text,
+        Some(Shape::VerticalText) => egui::CursorIcon::VerticalText,
+        Some(Shape::Crosshair) | Some(Shape::Cell) => egui::CursorIcon::Crosshair,
+        Some(Shape::Alias) => egui::CursorIcon::Alias,
+        Some(Shape::Copy) => egui::CursorIcon::Copy,
+        Some(Shape::Grab) => egui::CursorIcon::Grab,
+        Some(Shape::Grabbing) => egui::CursorIcon::Grabbing,
+        Some(Shape::Help) => egui::CursorIcon::Help,
+        Some(Shape::Move) => egui::CursorIcon::Move,
+        Some(Shape::NoDrop) => egui::CursorIcon::NoDrop,
+        Some(Shape::NotAllowed) => egui::CursorIcon::NotAllowed,
+        Some(Shape::Progress) => egui::CursorIcon::Progress,
+        Some(Shape::Wait) => egui::CursorIcon::Wait,
+        Some(Shape::ZoomIn) => egui::CursorIcon::ZoomIn,
+        Some(Shape::ZoomOut) => egui::CursorIcon::ZoomOut,
+        Some(Shape::EastWest) => egui::CursorIcon::ResizeHorizontal,
+        Some(Shape::NorthSouth) => egui::CursorIcon::ResizeVertical,
+        Some(Shape::NorthEastSouthWest) => egui::CursorIcon::ResizeNeSw,
+        Some(Shape::NorthWestSouthEast) => egui::CursorIcon::ResizeNwSe,
+        Some(Shape::East) => egui::CursorIcon::ResizeEast,
+        Some(Shape::West) => egui::CursorIcon::ResizeWest,
+        Some(Shape::North) => egui::CursorIcon::ResizeNorth,
+        Some(Shape::South) => egui::CursorIcon::ResizeSouth,
+        Some(Shape::NorthEast) => egui::CursorIcon::ResizeNorthEast,
+        Some(Shape::NorthWest) => egui::CursorIcon::ResizeNorthWest,
+        Some(Shape::SouthEast) => egui::CursorIcon::ResizeSouthEast,
+        Some(Shape::SouthWest) => egui::CursorIcon::ResizeSouthWest,
+        None if mouse => egui::CursorIcon::Default,
+        None => egui::CursorIcon::Text,
+    }
+}
+
 /// Font cell size used both to paint and to tell tmux the client size.
 pub(crate) fn cell_metrics(ui: &mut egui::Ui, font_size: f32) -> (f32, f32) {
     let font = egui::FontId::monospace(font_size);
@@ -380,9 +418,7 @@ impl PaneUi {
                     let interact =
                         terminal_interact_rect(content, ui.clip_rect(), floating_scrollbar);
                     let row_origin = range.start as i64 - history as i64;
-                    let response = ui
-                        .interact(interact, id, egui::Sense::click_and_drag())
-                        .on_hover_cursor(egui::CursorIcon::Text);
+                    let response = ui.interact(interact, id, egui::Sense::click_and_drag());
                     let point_at = |position: egui::Pos2| {
                         let row = (range.start as isize
                             + ((position.y - content.top()) / row_height).floor() as isize)
@@ -483,13 +519,22 @@ impl PaneUi {
                         .or_else(|| ui.input(|input| input.pointer.latest_pos()))
                         .or_else(|| response.hover_pos())
                         .or(origin_pos);
-                    // Hover feedback: a link cell shows a hand and its target.
-                    if let Some(pos) = response.hover_pos() {
-                        let (point, _) = point_at(pos);
-                        if let Some(uri) = pane.terminal.link_destination(point) {
-                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                            response.clone().on_hover_text(uri);
-                        }
+                    // Hover feedback. A link wins, then an OSC 22 shape, then the
+                    // terminal default: an arrow while the application tracks the
+                    // mouse (clicks belong to it) and an I-beam over ordinary text.
+                    if response.hovered() {
+                        let icon = if let Some(pos) = response.hover_pos() {
+                            let (point, _) = point_at(pos);
+                            if let Some(uri) = pane.terminal.link_destination(point) {
+                                response.clone().on_hover_text(uri);
+                                egui::CursorIcon::PointingHand
+                            } else {
+                                pane_pointer(pane.terminal.pointer_shape(), mouse)
+                            }
+                        } else {
+                            pane_pointer(pane.terminal.pointer_shape(), mouse)
+                        };
+                        ui.ctx().set_cursor_icon(icon);
                     }
                     // Snapshot the selection before this frame mutates it: the
                     // forward-vs-copy split and the drag-release copy both key
@@ -1188,6 +1233,25 @@ fn indexed(index: usize, colors: &term::color::Colors) -> egui::Color32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_pointer_is_an_arrow_while_the_application_tracks_the_mouse() {
+        use crate::pointer::Shape;
+        assert_eq!(pane_pointer(None, false), egui::CursorIcon::Text);
+        assert_eq!(pane_pointer(None, true), egui::CursorIcon::Default);
+        assert_eq!(
+            pane_pointer(Some(Shape::Pointer), true),
+            egui::CursorIcon::PointingHand
+        );
+        assert_eq!(
+            pane_pointer(Some(Shape::Text), true),
+            egui::CursorIcon::Text
+        );
+        assert_eq!(
+            pane_pointer(Some(Shape::EastWest), false),
+            egui::CursorIcon::ResizeHorizontal
+        );
+    }
+
     #[test]
     fn indexed_rgb_and_inverse_colors_are_preserved() {
         let colors = term::color::Colors::default();

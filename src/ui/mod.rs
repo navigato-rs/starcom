@@ -275,6 +275,7 @@ impl Form {
                 session::Access::ReadOnly
             },
             reconnect: self.reconnect,
+            local: self.host.trim().is_empty(),
         })
     }
 }

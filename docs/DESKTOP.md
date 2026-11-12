@@ -315,9 +315,18 @@ the URL is split across soft-wrapped rows, hard-wrapped inside a TUI box, or
 hard-wrapped after `?` or a Grok message clock onto the next indented row),
 or — for a short underlined "click here to copy" affordance whose OSC 8 tmux
 has stripped — a URL on the same or an adjacent line. A long underlined run is
-treated as content, not a link. Hover shows the destination. A tiny pointer
-move is not treated as a drag. Keyboard Space and Enter are not pointer
-clicks. When the live pane still has mouse reporting enabled and the
+treated as content, not a link. Hover shows the destination.
+
+The pointer follows the pane. Over ordinary text it is an I-beam. While the
+application has mouse reporting on, it is an arrow, because clicks belong to
+the application. OSC 22 overrides that per screen: `pointer` is a hand, `text`
+is an I-beam, and `default` or an empty sequence hands the choice back. A link
+still shows a hand, whether or not the application set a shape. The main and
+alternate screens keep separate shapes. A full reset clears both. Hovering a
+link still wins.
+
+A tiny pointer move is not treated as a drag. Keyboard Space and Enter are not
+pointer clicks. When the live pane still has mouse reporting enabled and the
 click was not a link, an unmodified tap with no selected text is sent as
 a paired press and release so the application still sees the click; a
 drag that produced a selection copies on release. Snapshot mouse flags
@@ -344,7 +353,9 @@ winit 0.30 does not; the bounded URI-list read runs off the event thread.
 
 The renderer paints only visible history rows. The workspace-wide terminal font
 size in **Settings** changes the cell metrics used both to paint and to tell tmux
-this client's size, so the remote grid matches the glyphs on screen.
+this client's size, so the remote grid matches the glyphs on screen. A glyph
+that does not fit its cell, such as an emoji drawn into one column, is scaled
+down and centered in that cell. The neighboring column stays where it is.
 
 The footer refresh icon briefly sends a bright comet around its star when the
 selected terminal refreshes or the user scrolls it, then stays still while idle.

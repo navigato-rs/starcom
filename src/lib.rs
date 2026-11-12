@@ -9,6 +9,7 @@ pub mod core;
 pub mod input;
 #[cfg(feature = "ssh")]
 pub mod inspect;
+mod pointer;
 pub mod reconnect;
 pub mod replay;
 #[cfg(feature = "ssh")]

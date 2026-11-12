@@ -74,10 +74,11 @@ tmux, not this frontend, owns the application-side terminal connection.
 Stock tmux does not expose every detail needed for an exact Alacritty checkpoint.
 This implementation does not recover the current SGR drawing pen, arbitrary
 saved DEC cursor state, the complete charset/parser state, origin mode, palette
-changes, hyperlinks, terminal graphics, or all extended keyboard modes. It resets
-the unobservable drawing pen rather than pretending the last captured cell is the
-current pen. Later output can therefore differ until the application resets or
-redraws the relevant state. Initial cell attributes are distinct from that pen.
+changes, hyperlinks, pointer shapes, terminal graphics, or all extended
+keyboard modes. It resets the unobservable drawing pen rather than pretending
+the last captured cell is the current pen. Later output can therefore differ
+until the application resets or redraws the relevant state. Initial cell
+attributes are distinct from that pen.
 
 A full-screen program's conversation history is not necessarily terminal
 scrollback. History is bounded locally and remotely. Alternate-screen panes

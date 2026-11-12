@@ -69,6 +69,7 @@ fn desktop_worker_publishes_live_view_and_rejects_cancelled_requests() {
         history: 20,
         access: session::Access::Interactive,
         reconnect: false,
+        local: false,
     };
     client.connect(connection.clone()).unwrap();
     let deadline = time::Instant::now() + time::Duration::from_secs(10);
@@ -121,6 +122,7 @@ fn desktop_worker_sets_and_deletes_window_options_without_stalling() {
             history: 20,
             access: session::Access::Interactive,
             reconnect: false,
+        local: false,
         })
         .unwrap();
     wait_until(20, "worker did not attach for option edit", || {
@@ -262,6 +264,7 @@ exec sleep 600
         history: 50,
         access: session::Access::Interactive,
         reconnect: false,
+        local: false,
     };
     client.connect(connection.clone()).unwrap();
     let attach_deadline = time::Instant::now() + time::Duration::from_secs(10);
@@ -454,6 +457,7 @@ fn desktop_worker_moves_a_pane_to_a_fresh_window() {
             history: 20,
             access: session::Access::Interactive,
             reconnect: false,
+        local: false,
         })
         .unwrap();
     wait_until(20, "worker did not attach for pane move", || {
@@ -544,6 +548,7 @@ fn transport_loss_reattaches_without_replaying_input_or_creating_a_session() {
             history: 20,
             access: session::Access::Interactive,
             reconnect: true,
+            local: false,
         })
         .unwrap();
     wait_until(20, "worker did not attach", || {
@@ -694,6 +699,7 @@ fn a_destroyed_session_stops_instead_of_reattaching() {
             history: 20,
             access: session::Access::ReadOnly,
             reconnect: true,
+            local: false,
         })
         .unwrap();
     wait_until(20, "worker did not attach", || {
@@ -771,6 +777,7 @@ fn loss_during_a_paste_never_delivers_it_twice() {
             history: 40,
             access: session::Access::Interactive,
             reconnect: true,
+            local: false,
         })
         .unwrap();
 
@@ -828,6 +835,7 @@ fn loss_during_a_remote_layout_change_reconstructs_the_new_layout() {
             history: 20,
             access: session::Access::ReadOnly,
             reconnect: true,
+            local: false,
         })
         .unwrap();
     wait_until(30, "worker did not attach", || {
@@ -954,6 +962,7 @@ fn a_restarted_server_is_reported_as_a_replacement() {
             history: 20,
             access: session::Access::ReadOnly,
             reconnect: true,
+            local: false,
         })
         .unwrap();
     wait_until(30, "worker did not attach", || {
@@ -1079,6 +1088,7 @@ fn a_missing_session_lists_what_the_host_does_have() {
             history: 20,
             access: session::Access::ReadOnly,
             reconnect: true,
+            local: false,
         })
         .unwrap();
 
