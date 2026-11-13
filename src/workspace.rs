@@ -257,12 +257,40 @@ fn lift(color: egui::Color32, by: u8) -> egui::Color32 {
     )
 }
 
-fn tab_color(phase: desktop::Phase, idle: egui::Color32, quiet: bool) -> egui::Color32 {
+fn mix_rgb(from: egui::Color32, to: egui::Color32, t: f32) -> egui::Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let mix = |from: u8, to: u8| (from as f32 + (to as f32 - from as f32) * t).round() as u8;
+    egui::Color32::from_rgb(
+        mix(from.r(), to.r()),
+        mix(from.g(), to.g()),
+        mix(from.b(), to.b()),
+    )
+}
+
+/// Quiet rows age from green toward purple. A tab that just went quiet is
+/// greenish; about eight hours with no output it is purple.
+fn quiet_color(age: time::Duration, idle_after: time::Duration) -> egui::Color32 {
+    let extra = age.saturating_sub(idle_after).as_secs_f32();
+    let hours = extra / 3600.0;
+    let t = ((1.0 + hours).ln() / 9.0f32.ln()).clamp(0.0, 1.0);
+    mix_rgb(
+        egui::Color32::from_rgb(28, 122, 96),
+        egui::Color32::from_rgb(112, 62, 158),
+        t,
+    )
+}
+
+fn tab_color(
+    phase: desktop::Phase,
+    idle: egui::Color32,
+    quiet_for: Option<time::Duration>,
+    idle_after: time::Duration,
+) -> egui::Color32 {
     match phase {
         desktop::Phase::Watching | desktop::Phase::Demo | desktop::Phase::Resynchronizing
-            if quiet =>
+            if let Some(age) = quiet_for =>
         {
-            egui::Color32::from_rgb(36, 88, 148)
+            quiet_color(age, idle_after)
         }
         desktop::Phase::Watching | desktop::Phase::Demo | desktop::Phase::Resynchronizing => {
             egui::Color32::from_rgb(38, 98, 58)
@@ -786,7 +814,7 @@ impl Workspace {
                             );
                         });
                         ui.horizontal(|ui| {
-                            ui.label("Turn a quiet tab blue after");
+                            ui.label("Shade a quiet tab after");
                             ui.add(
                                 egui::DragValue::new(&mut idle)
                                     .range(0..=store::MAX_IDLE)
@@ -1480,19 +1508,24 @@ impl Workspace {
                                     }
 
                                     let selected = !self.composer_open && index == self.active;
-                                    let quiet = self.idle > 0
-                                        && live_phase(phase)
-                                        && now.saturating_duration_since(
-                                            self.tabs[index].last_output,
-                                        ) >= idle_after;
-                                    if !quiet && self.idle > 0 && live_phase(phase) {
-                                        ui.ctx().request_repaint_after(idle_after.saturating_sub(
-                                            now.saturating_duration_since(
-                                                self.tabs[index].last_output,
-                                            ),
-                                        ));
+                                    let since = now.saturating_duration_since(
+                                        self.tabs[index].last_output,
+                                    );
+                                    let quiet = self.idle > 0 && live_phase(phase) && since >= idle_after;
+                                    if self.idle > 0 && live_phase(phase) {
+                                        let wait = if quiet {
+                                            time::Duration::from_secs(60)
+                                        } else {
+                                            idle_after.saturating_sub(since)
+                                        };
+                                        ui.ctx().request_repaint_after(wait);
                                     }
-                                    let color = tab_color(phase, idle_fill, quiet);
+                                    let color = tab_color(
+                                        phase,
+                                        idle_fill,
+                                        quiet.then_some(since),
+                                        idle_after,
+                                    );
                                     let text = egui::RichText::new(compact_tab_title(
                                         &self.tabs[index].label,
                                     ))
@@ -2154,20 +2187,29 @@ mod tests {
     #[test]
     fn a_quiet_connected_tab_turns_blue() {
         let idle = egui::Color32::from_rgb(40, 40, 40);
-        let live = tab_color(desktop::Phase::Watching, idle, false);
-        let quiet = tab_color(desktop::Phase::Watching, idle, true);
-        assert_ne!(live, quiet);
+        let after = time::Duration::from_secs(30);
+        let live = tab_color(desktop::Phase::Watching, idle, None, after);
+        let fresh = tab_color(desktop::Phase::Watching, idle, Some(after), after);
+        let old = tab_color(
+            desktop::Phase::Watching,
+            idle,
+            Some(after + time::Duration::from_secs(8 * 3600)),
+            after,
+        );
+        assert_ne!(live, fresh);
+        assert!(fresh.g() > old.g(), "a fresh quiet tab stays greener");
+        assert!(old.r() > fresh.r(), "an old quiet tab moves toward purple");
         assert_ne!(
-            tab_color(desktop::Phase::Failed, idle, false),
-            tab_color(desktop::Phase::Reconnecting, idle, false),
+            tab_color(desktop::Phase::Failed, idle, None, after),
+            tab_color(desktop::Phase::Reconnecting, idle, None, after),
             "a broken tab is red, not the reconnecting yellow"
         );
         assert_eq!(
-            tab_color(desktop::Phase::Failed, idle, false),
-            tab_color(desktop::Phase::Disconnected, idle, false),
+            tab_color(desktop::Phase::Failed, idle, Some(after), after),
+            tab_color(desktop::Phase::Disconnected, idle, None, after),
         );
         assert_eq!(
-            tab_color(desktop::Phase::Resynchronizing, idle, false),
+            tab_color(desktop::Phase::Resynchronizing, idle, None, after),
             live,
             "a layout rebuild is not a yellow reconnect"
         );
