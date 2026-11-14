@@ -27,8 +27,9 @@
   star hover-only.
 - Dragging a server header moves that server as the pointer crosses another
   server. Closing one session keeps the rest of that server where it was.
-- A quiet session row ages from green toward purple. A tab that just went
-  quiet is greenish; about eight hours with no output it is purple.
+- Quiet session rows spread from green to purple between the newest and
+  oldest quiet tab, on a log scale. Five quiet days and ten sit close
+  together when a much newer tab is also quiet.
 - Enter in the new-session field creates that window, the same as clicking
   **Create**.
 - Creating a session refuses a name that already exists on that server. Each
