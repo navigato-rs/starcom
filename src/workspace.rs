@@ -288,16 +288,28 @@ fn mix_rgb(from: egui::Color32, to: egui::Color32, t: f32) -> egui::Color32 {
     )
 }
 
-/// Quiet rows age from green toward purple. A tab that just went quiet is
-/// greenish; about eight hours with no output it is purple.
-fn quiet_color(age: time::Duration, idle_after: time::Duration) -> egui::Color32 {
-    let extra = age.saturating_sub(idle_after).as_secs_f32();
-    let hours = extra / 3600.0;
-    let t = ((1.0 + hours).ln() / 9.0f32.ln()).clamp(0.0, 1.0);
+/// Place `age` on a log scale from the newest quiet tab (0, green) to the
+/// oldest (1, purple). Five days and ten days stay close when a much newer
+/// tab sets the other end of the scale.
+fn quiet_place(age: time::Duration, newest: time::Duration, oldest: time::Duration) -> f32 {
+    let newest = newest.as_secs_f32().max(1.0);
+    let oldest = oldest.as_secs_f32().max(newest);
+    let age = age.as_secs_f32().clamp(newest, oldest);
+    if oldest <= newest {
+        return 0.0;
+    }
+    ((age / newest).ln() / (oldest / newest).ln()).clamp(0.0, 1.0)
+}
+
+fn quiet_color(
+    age: time::Duration,
+    newest: time::Duration,
+    oldest: time::Duration,
+) -> egui::Color32 {
     mix_rgb(
         egui::Color32::from_rgb(28, 122, 96),
         egui::Color32::from_rgb(112, 62, 158),
-        t,
+        quiet_place(age, newest, oldest),
     )
 }
 
@@ -305,13 +317,14 @@ fn tab_color(
     phase: desktop::Phase,
     idle: egui::Color32,
     quiet_for: Option<time::Duration>,
-    idle_after: time::Duration,
+    newest: time::Duration,
+    oldest: time::Duration,
 ) -> egui::Color32 {
     match phase {
         desktop::Phase::Watching | desktop::Phase::Demo | desktop::Phase::Resynchronizing
             if let Some(age) = quiet_for =>
         {
-            quiet_color(age, idle_after)
+            quiet_color(age, newest, oldest)
         }
         desktop::Phase::Watching | desktop::Phase::Demo | desktop::Phase::Resynchronizing => {
             egui::Color32::from_rgb(38, 98, 58)
@@ -1484,6 +1497,18 @@ impl Workspace {
                 }
                 paint_tab_fills(ui, idle_fill, idle_hover);
 
+                let (newest_quiet, oldest_quiet) = if self.idle == 0 {
+                    (time::Duration::ZERO, time::Duration::ZERO)
+                } else {
+                    let ages = self.tabs.iter().filter_map(|tab| {
+                        let since = now.saturating_duration_since(tab.last_output);
+                        (live_phase(tab_phase(tab)) && since >= idle_after).then_some(since)
+                    });
+                    ages.fold(
+                        (time::Duration::MAX, time::Duration::ZERO),
+                        |(newest, oldest), age| (newest.min(age), oldest.max(age)),
+                    )
+                };
                 let footer_height = 34.0 + if self.notice.is_some() { 26.0 } else { 0.0 };
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
@@ -1587,7 +1612,8 @@ impl Workspace {
                                         phase,
                                         idle_fill,
                                         quiet.then_some(since),
-                                        idle_after,
+                                        newest_quiet,
+                                        oldest_quiet,
                                     );
                                     let text = egui::RichText::new(compact_tab_title(
                                         &self.tabs[index].label,
@@ -2247,29 +2273,53 @@ mod tests {
     #[test]
     fn a_quiet_connected_tab_turns_blue() {
         let idle = egui::Color32::from_rgb(40, 40, 40);
-        let after = time::Duration::from_secs(30);
-        let live = tab_color(desktop::Phase::Watching, idle, None, after);
-        let fresh = tab_color(desktop::Phase::Watching, idle, Some(after), after);
+        let recent = time::Duration::from_secs(30);
+        let old_age = time::Duration::from_secs(10 * 24 * 3600);
+        let live = tab_color(desktop::Phase::Watching, idle, None, recent, old_age);
+        let fresh = tab_color(
+            desktop::Phase::Watching,
+            idle,
+            Some(recent),
+            recent,
+            old_age,
+        );
         let old = tab_color(
             desktop::Phase::Watching,
             idle,
-            Some(after + time::Duration::from_secs(8 * 3600)),
-            after,
+            Some(old_age),
+            recent,
+            old_age,
         );
         assert_ne!(live, fresh);
-        assert!(fresh.g() > old.g(), "a fresh quiet tab stays greener");
-        assert!(old.r() > fresh.r(), "an old quiet tab moves toward purple");
+        assert!(fresh.g() > old.g(), "the newest quiet tab stays greener");
+        assert!(
+            old.r() > fresh.r(),
+            "the oldest quiet tab moves toward purple"
+        );
+        let five_days = time::Duration::from_secs(5 * 24 * 3600);
+        let ten_days = old_age;
+        let five = quiet_color(five_days, recent, ten_days);
+        let ten = quiet_color(ten_days, recent, ten_days);
+        let channel = |color: egui::Color32| {
+            i32::from(color.r()) + i32::from(color.g()) + i32::from(color.b())
+        };
+        let span = (channel(fresh) - channel(old)).abs();
+        let decade = (channel(five) - channel(ten)).abs();
+        assert!(
+            decade * 3 < span,
+            "five quiet days and ten stay close on the log scale: {decade} vs {span}"
+        );
         assert_ne!(
-            tab_color(desktop::Phase::Failed, idle, None, after),
-            tab_color(desktop::Phase::Reconnecting, idle, None, after),
+            tab_color(desktop::Phase::Failed, idle, None, recent, old_age),
+            tab_color(desktop::Phase::Reconnecting, idle, None, recent, old_age),
             "a broken tab is red, not the reconnecting yellow"
         );
         assert_eq!(
-            tab_color(desktop::Phase::Failed, idle, Some(after), after),
-            tab_color(desktop::Phase::Disconnected, idle, None, after),
+            tab_color(desktop::Phase::Failed, idle, Some(recent), recent, old_age),
+            tab_color(desktop::Phase::Disconnected, idle, None, recent, old_age),
         );
         assert_eq!(
-            tab_color(desktop::Phase::Resynchronizing, idle, None, after),
+            tab_color(desktop::Phase::Resynchronizing, idle, None, recent, old_age),
             live,
             "a layout rebuild is not a yellow reconnect"
         );
