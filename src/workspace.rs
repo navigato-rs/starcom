@@ -59,9 +59,6 @@ pub(crate) enum Action {
     Tab(u64, Box<ui::Action>),
 }
 
-#[derive(Clone, Copy)]
-struct ServerDrag(u64);
-
 pub(crate) struct Workspace {
     tabs: Vec<Tab>,
     active: usize,
@@ -134,6 +131,30 @@ fn server_groups(tabs: &[Tab]) -> Vec<Vec<usize>> {
         }
     }
     groups
+}
+
+/// Where a dragged server lands. `y` is compared with each group's block.
+/// The upper half inserts before that server, the lower half after it.
+/// Hovering the dragged server's own block leaves the order alone.
+fn server_drag_target(spans: &[(u64, egui::Rect)], dragged: u64, y: f32) -> Option<(u64, bool)> {
+    if spans.len() < 2 {
+        return None;
+    }
+    let from = spans.iter().position(|(id, _)| *id == dragged)?;
+    let (index, after) = if y >= spans.last()?.1.bottom() {
+        (spans.len() - 1, true)
+    } else {
+        let index = spans.iter().position(|(_, rect)| y < rect.bottom())?;
+        (index, y >= spans[index].1.center().y)
+    };
+    if index == from {
+        return None;
+    }
+    let mut desired = if after { index + 1 } else { index };
+    if from < desired {
+        desired -= 1;
+    }
+    (desired != from).then_some((spans[index].0, after))
 }
 
 fn format_open(secs: u64) -> String {
@@ -967,16 +988,49 @@ impl Workspace {
         }
     }
 
-    fn reorder_server(&mut self, id: u64, target: u64, after: bool) {
+    /// Gather each server's sessions into one block, in the sidebar's current
+    /// order. A new session of an existing server is stored at the end of the
+    /// tab list, and packing puts it back with that server before a close.
+    fn pack_server_groups(&mut self) {
+        let active_id = self.tabs.get(self.active).map(|tab| tab.id);
+        let order: Vec<_> = server_groups(&self.tabs)
+            .into_iter()
+            .map(|group| self.tabs[group[0]].server.clone())
+            .collect();
+        let before: Vec<_> = self.tabs.iter().map(|tab| tab.id).collect();
+        self.tabs.sort_by_key(|tab| {
+            order
+                .iter()
+                .position(|server| server == &tab.server)
+                .unwrap_or(usize::MAX)
+        });
+        if self
+            .tabs
+            .iter()
+            .map(|tab| tab.id)
+            .eq(before.iter().copied())
+        {
+            return;
+        }
+        if let Some(active_id) = active_id {
+            self.active = self
+                .tabs
+                .iter()
+                .position(|tab| tab.id == active_id)
+                .unwrap_or(0);
+        }
+    }
+
+    fn reorder_server(&mut self, id: u64, target: u64, after: bool) -> bool {
         let active_id = self.tabs.get(self.active).map(|tab| tab.id);
         let Some(source) = self.tabs.iter().find(|tab| tab.id == id) else {
-            return;
+            return false;
         };
         let Some(target) = self.tabs.iter().find(|tab| tab.id == target) else {
-            return;
+            return false;
         };
         if source.server == target.server {
-            return;
+            return false;
         }
         let source_server = source.server.clone();
         let target_server = target.server.clone();
@@ -985,13 +1039,20 @@ impl Workspace {
             .map(|group| self.tabs[group[0]].server.clone())
             .collect();
         let Some(source_index) = order.iter().position(|server| *server == source_server) else {
-            return;
+            return false;
         };
         let moved = order.remove(source_index);
         let Some(target_index) = order.iter().position(|server| *server == target_server) else {
-            return;
+            return false;
         };
         order.insert(target_index + usize::from(after), moved);
+        let unchanged = server_groups(&self.tabs)
+            .into_iter()
+            .map(|group| self.tabs[group[0]].server.clone())
+            .eq(order.iter().cloned());
+        if unchanged {
+            return false;
+        }
         self.tabs.sort_by_key(|tab| {
             order
                 .iter()
@@ -1005,6 +1066,7 @@ impl Workspace {
                 .position(|tab| tab.id == active_id)
                 .unwrap_or(0);
         }
+        true
     }
 
     fn open_composer(&mut self) {
@@ -1058,6 +1120,13 @@ impl Workspace {
     }
 
     fn remove_tab(&mut self, index: usize) {
+        let Some(id) = self.tabs.get(index).map(|tab| tab.id) else {
+            return;
+        };
+        self.pack_server_groups();
+        let Some(index) = self.tabs.iter().position(|tab| tab.id == id) else {
+            return;
+        };
         self.cancel_transient();
         // The shared client drops only with its final logical tab; that drop
         // invalidates tokens and wakes the one server worker.
@@ -1249,8 +1318,11 @@ impl Workspace {
         if remove.is_empty() {
             return;
         }
-        for index in remove.into_iter().rev() {
-            self.remove_tab(index);
+        let ids: Vec<_> = remove.iter().map(|&index| self.tabs[index].id).collect();
+        for id in ids {
+            if let Some(index) = self.tabs.iter().position(|tab| tab.id == id) {
+                self.remove_tab(index);
+            }
         }
         self.persist();
     }
@@ -1419,8 +1491,9 @@ impl Workspace {
                     .show(ui, |ui| {
                         ui.set_min_width(ui.available_width());
                         let mut server_reorder = None;
+                        let mut dragging_server = None;
+                        let mut server_spans = Vec::new();
                         let groups = server_groups(&self.tabs);
-                        let last_server = groups.last().map(|group| self.tabs[group[0]].id);
                         for group in groups {
                             let first = group[0];
                             let first_id = self.tabs[first].id;
@@ -1428,29 +1501,19 @@ impl Workspace {
                             let server = if server.is_empty() { "Demo" } else { server };
                             let drag_id = ui.id().with(("server-drag", first_id));
                             let header = ui
-                                .dnd_drag_source(drag_id, ServerDrag(first_id), |ui| {
+                                .dnd_drag_source(drag_id, (), |ui| {
                                     let state = self.tabs[first].client.lock();
                                     server_header(ui, server, &state);
                                 })
                                 .response
                                 .on_hover_text("Drag to reorder servers");
+                            let group_top = header.rect.top();
+                            let group_left = header.rect.left();
+                            let group_right = header.rect.right();
                             if ui.ctx().is_being_dragged(drag_id) {
+                                dragging_server = Some(first_id);
                                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
                                 ui.ctx().request_repaint();
-                            }
-                            if let Some(dragged) = header.dnd_hover_payload::<ServerDrag>()
-                                && dragged.0 != first_id
-                            {
-                                // A server owns all following session rows, so
-                                // its only meaningful header target is before
-                                // the complete group. The end target below the
-                                // list handles moving a group to the bottom.
-                                paint_drop_marker(ui, header.rect, false);
-                                if let Some(dragged) =
-                                    header.dnd_release_payload::<ServerDrag>()
-                                {
-                                    server_reorder = Some((dragged.0, first_id, false));
-                                }
                             }
 
                             for index in group {
@@ -1618,24 +1681,20 @@ impl Workspace {
                                 });
                             }
                             ui.add_space(4.0);
+                            server_spans.push((
+                                first_id,
+                                egui::Rect::from_min_max(
+                                    egui::pos2(group_left, group_top),
+                                    egui::pos2(group_right, ui.cursor().min.y),
+                                ),
+                            ));
                         }
-                        if let Some(last_server) = last_server {
-                            let (end_rect, end_target) = ui.allocate_exact_size(
-                                egui::vec2(ui.available_width(), 12.0),
-                                egui::Sense::hover(),
-                            );
-                            if let Some(dragged) =
-                                end_target.dnd_hover_payload::<ServerDrag>()
-                                && dragged.0 != last_server
-                            {
-                                paint_drop_marker(ui, end_rect, false);
-                                if let Some(dragged) =
-                                    end_target.dnd_release_payload::<ServerDrag>()
-                                {
-                                    server_reorder =
-                                        Some((dragged.0, last_server, true));
-                                }
-                            }
+                        if let Some(dragged) = dragging_server
+                            && let Some(pointer) = ui.input(|input| input.pointer.interact_pos())
+                            && let Some((target, after)) =
+                                server_drag_target(&server_spans, dragged, pointer.y)
+                        {
+                            server_reorder = Some((dragged, target, after));
                         }
                         if let Some((id, target, after)) = server_reorder {
                             navigation = Action::ReorderServer { id, target, after };
@@ -1814,8 +1873,9 @@ impl Workspace {
                     self.persist();
                 }
                 Action::ReorderServer { id, target, after } => {
-                    self.reorder_server(id, target, after);
-                    self.persist();
+                    if self.reorder_server(id, target, after) {
+                        self.persist();
+                    }
                 }
                 Action::Close(id) => {
                     if let Some(index) = self.tabs.iter().position(|tab| tab.id == id) {
@@ -2592,6 +2652,49 @@ mod tests {
             vec![only_b, first_a, second_a]
         );
         assert_eq!(workspace.tabs[workspace.active].id, second_a);
+    }
+
+    #[test]
+    fn closing_one_session_keeps_its_server_in_place() {
+        let mut workspace = Workspace::new(sync::Arc::new(|| {}), desktop::Startup::Demo).unwrap();
+        workspace.push_idle_tab().unwrap();
+        workspace.push_idle_tab().unwrap();
+        let first_a = workspace.tabs[0].id;
+        let only_b = workspace.tabs[1].id;
+        let second_a = workspace.tabs[2].id;
+        workspace.tabs[0].server = Some(test_server("a.example.test"));
+        workspace.tabs[1].server = Some(test_server("b.example.test"));
+        workspace.tabs[2].server = Some(test_server("a.example.test"));
+
+        workspace.apply(Action::Close(first_a), || None);
+
+        assert_eq!(
+            workspace.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>(),
+            vec![second_a, only_b]
+        );
+    }
+
+    #[test]
+    fn server_drag_moves_when_the_pointer_crosses_another_group() {
+        let spans = [
+            (
+                1,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(100.0, 40.0)),
+            ),
+            (
+                2,
+                egui::Rect::from_min_max(egui::pos2(0.0, 40.0), egui::pos2(100.0, 80.0)),
+            ),
+            (
+                3,
+                egui::Rect::from_min_max(egui::pos2(0.0, 80.0), egui::pos2(100.0, 120.0)),
+            ),
+        ];
+        assert_eq!(server_drag_target(&spans, 1, 50.0), None);
+        assert_eq!(server_drag_target(&spans, 1, 70.0), Some((2, true)));
+        assert_eq!(server_drag_target(&spans, 1, 90.0), Some((3, false)));
+        assert_eq!(server_drag_target(&spans, 1, 130.0), Some((3, true)));
+        assert_eq!(server_drag_target(&spans, 2, 60.0), None);
     }
 
     #[test]

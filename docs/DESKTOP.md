@@ -35,11 +35,11 @@ the header's contrasting band and stronger text provide the hierarchy without
 spending width on indentation. Each server header shows that shared control
 stream's latency. Long session lists scroll vertically while the selected
 session is kept visible. Drag the sidebar divider between 120 and 320 pixels;
-its width is restored on the next launch. Drag a server header to persistently
-reorder server groups, or drag a session row to reorder it within its server
-group. The **Settings** footer icon opens a modal with the icon, version,
-GitHub URL, total time Starcom has been open, and the workspace `fps` / `idle` /
-terminal-font settings.
+its width is restored on the next launch. Drag a server header and the group
+moves as the pointer crosses another server. Drag a session row to reorder it
+within its server group. The **Settings** footer icon opens a modal with the
+icon, version, GitHub URL, total time Starcom has been open, and the workspace
+`fps` / `idle` / terminal-font settings.
 
 Session rows show only the tmux window name. A session row shows connection
 progress and then the terminal workspace. A failed attachment remains registered

@@ -25,6 +25,8 @@
   and the corners past the tube are black. Pointer hits follow the curve.
   The refresh star turns the Settings choice on and off. None leaves that
   star hover-only.
+- Dragging a server header moves that server as the pointer crosses another
+  server. Closing one session keeps the rest of that server where it was.
 - A quiet session row ages from green toward purple. A tab that just went
   quiet is greenish; about eight hours with no output it is purple.
 - Enter in the new-session field creates that window, the same as clicking
