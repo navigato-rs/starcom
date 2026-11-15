@@ -540,7 +540,14 @@ impl winit::application::ApplicationHandler<Event> for App {
 }
 
 fn app_icon() -> Option<winit::window::Icon> {
+    // X11 uses this bitmap. Wayland and the Linux menus use etc/starcom.svg.
+    // macOS ignores a window icon; the dock uses the bundle icon.
+    #[cfg(windows)]
+    const PNG: &[u8] = include_bytes!("../etc/windows/icon.png");
+    #[cfg(target_os = "macos")]
     const PNG: &[u8] = include_bytes!("../etc/macos/icon.png");
+    #[cfg(not(any(windows, target_os = "macos")))]
+    const PNG: &[u8] = include_bytes!("../etc/linux/icon.png");
     let mut reader = png::Decoder::new(io::Cursor::new(PNG)).read_info().ok()?;
     let mut pixels = vec![0_u8; reader.output_buffer_size()?];
     let info = reader.next_frame(&mut pixels).ok()?;

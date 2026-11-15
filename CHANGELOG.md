@@ -4,6 +4,9 @@
 
 - The app icon is a square tile. The chevrons are mitered with flat ends,
   lighter at the top, and cast a long shadow down and to the right.
+- macOS uses a Liquid Glass icon clipped to Apple's squircle. The chevrons
+  and the cursor share one blue and the same light from above. Windows uses
+  a Fluent rounded tile in that same blue. Linux keeps the square tile.
 - Typing replaces the server ping with input-backlog bars as soon as a key is
   queued, and WAIT if that work stays unacknowledged or the queue is full.
 - A click copies an `http(s)` URL that a TUI wrapped inside a box, including

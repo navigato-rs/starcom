@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!-- Liquid Glass inside Apple's squircle. Chevrons and cursor share one blue. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#9ec4e6"/>
+      <stop offset="1" stop-color="#162844"/>
+    </linearGradient>
+    <radialGradient id="pool" cx="50%" cy="8%" r="58%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="lip" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="frost" gradientUnits="userSpaceOnUse" x1="0" y1="50" x2="0" y2="206">
+      <stop offset="0" stop-color="#39a3f1"/>
+      <stop offset="1" stop-color="#319bee"/>
+    </linearGradient>
+    <filter id="soft" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="6"/>
+    </filter>
+    <clipPath id="squircle">
+      <path d="M256 128 L255.89 170.998 L255.561 184.688 L255.01 194.574 L254.237 202.543 L253.238 209.292 L252.01 215.166 L250.547 220.362 L248.843 225.006 L246.891 229.183 L244.68 232.952 L242.198 236.357 L239.43 239.43 L236.357 242.198 L232.952 244.68 L229.183 246.891 L225.006 248.843 L220.362 250.547 L215.166 252.01 L209.292 253.238 L202.543 254.237 L194.574 255.01 L184.688 255.561 L170.998 255.89 L128 256 L85.0019 255.89 L71.3123 255.561 L61.4261 255.01 L53.4567 254.237 L46.7077 253.238 L40.8343 252.01 L35.6382 250.547 L30.9941 248.843 L26.8175 246.891 L23.0485 244.68 L19.6434 242.198 L16.5695 239.43 L13.8016 236.357 L11.3199 232.952 L9.10913 229.183 L7.1568 225.006 L5.45311 220.362 L3.99017 215.166 L2.76171 209.292 L1.76276 202.543 L0.989523 194.574 L0.439152 184.688 L0.109694 170.998 L0 128 L0.109694 85.0019 L0.439152 71.3123 L0.989523 61.4261 L1.76276 53.4567 L2.76171 46.7077 L3.99017 40.8343 L5.45311 35.6382 L7.1568 30.9941 L9.10913 26.8175 L11.3199 23.0485 L13.8016 19.6434 L16.5695 16.5695 L19.6434 13.8016 L23.0485 11.3199 L26.8175 9.10913 L30.9941 7.1568 L35.6382 5.45311 L40.8343 3.99017 L46.7077 2.76171 L53.4567 1.76276 L61.4261 0.989523 L71.3123 0.439152 L85.0019 0.109694 L128 0 L170.998 0.109694 L184.688 0.439152 L194.574 0.989523 L202.543 1.76276 L209.292 2.76171 L215.166 3.99017 L220.362 5.45311 L225.006 7.1568 L229.183 9.10913 L232.952 11.3199 L236.357 13.8016 L239.43 16.5695 L242.198 19.6434 L244.68 23.0485 L246.891 26.8175 L248.843 30.9941 L250.547 35.6382 L252.01 40.8343 L253.238 46.7077 L254.237 53.4567 L255.01 61.4261 L255.561 71.3123 L255.89 85.0019 Z"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#squircle)">
+  <rect width="256" height="256" fill="url(#bg)"/>
+  <rect width="256" height="256" fill="url(#pool)"/>
+  <rect width="256" height="46" fill="url(#lip)"/>
+  <g opacity="0.40" transform="translate(0 14)" filter="url(#soft)">
+  <path d="M36 70 L74 128 L36 186" fill="none" stroke="#061428" stroke-width="40" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M220 70 L182 128 L220 186" fill="none" stroke="#061428" stroke-width="40" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <path d="M36 70 L74 128 L36 186" fill="none" stroke="url(#frost)" stroke-width="40" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M220 70 L182 128 L220 186" fill="none" stroke="url(#frost)" stroke-width="40" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="110" y="110" width="36" height="36" rx="12" fill="url(#frost)"/>
+  </g>
+</svg>
