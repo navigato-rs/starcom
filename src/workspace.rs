@@ -149,7 +149,12 @@ fn format_open(secs: u64) -> String {
 }
 
 fn about_icon() -> Option<egui::ColorImage> {
-    const PNG: &[u8] = include_bytes!("../etc/macos/icon_128.png");
+    #[cfg(windows)]
+    const PNG: &[u8] = include_bytes!("../etc/windows/icon.png");
+    #[cfg(target_os = "macos")]
+    const PNG: &[u8] = include_bytes!("../etc/macos/icon.png");
+    #[cfg(not(any(windows, target_os = "macos")))]
+    const PNG: &[u8] = include_bytes!("../etc/linux/icon.png");
     let mut reader = png::Decoder::new(io::Cursor::new(PNG)).read_info().ok()?;
     let mut pixels = vec![0_u8; reader.output_buffer_size()?];
     let info = reader.next_frame(&mut pixels).ok()?;

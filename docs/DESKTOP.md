@@ -508,9 +508,14 @@ On macOS Launchpad does not read `.desktop` files. `scripts/macos-app.sh` builds
 family (`iconutil` + ad-hoc `codesign`, no cargo-bundle). The bundle goes to
 `~/Applications` when `PREFIX` is under `$HOME`, and `/Applications` otherwise.
 
-Window chrome uses `etc/macos/icon.png`; the Windows PE resource uses
-`etc/windows/icon.ico`. Regenerate both from `scripts/generate-icons.py` if the
-SVG geometry changes. macOS `.app` / `.dmg` and the Linux AppImage come from
+Linux menus use `etc/starcom.svg`. The X11 window icon is `etc/linux/icon.png`.
+macOS Launchpad uses the Liquid Glass family in `etc/macos/`, clipped to
+Apple's squircle (`icon.png` is also the about-dialog preview). The chevrons
+and the cursor share one blue and the same light from above, on that icon
+and on the Windows tile. The Windows PE resource and window icon use
+`etc/windows/icon.ico` and `etc/windows/icon.png`. Regenerate them from
+`scripts/generate-icons.py` if the mark geometry changes. macOS `.app` / `.dmg`
+and the Linux AppImage come from
 `cargo-bundle` metadata in `Cargo.toml`. GitHub Release jobs run on `v*` tags;
 those builds are not notarized or Authenticode-signed.
 
