@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Emoji and other symbols that are wider or taller than their cell are scaled
+  into that cell, so the whole glyph is drawn instead of being clipped.
+  ASCII stays as laid out, and the next column does not move.
 - The app icon is a square tile. The chevrons are mitered with flat ends,
   lighter at the top, and cast a long shadow down and to the right.
 - macOS uses a Liquid Glass icon clipped to Apple's squircle. The chevrons

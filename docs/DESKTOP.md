@@ -346,7 +346,9 @@ winit 0.30 does not; the bounded URI-list read runs off the event thread.
 
 The renderer paints only visible history rows. The workspace-wide terminal font
 size in **Settings** changes the cell metrics used both to paint and to tell tmux
-this client's size, so the remote grid matches the glyphs on screen.
+this client's size, so the remote grid matches the glyphs on screen. A glyph
+that does not fit its cell, such as an emoji drawn into one column, is scaled
+down and centered in that cell. The neighboring column stays where it is.
 
 The footer refresh icon briefly sends a bright comet around its star when the
 selected terminal refreshes or the user scrolls it, then stays still while idle.

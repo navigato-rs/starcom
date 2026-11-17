@@ -228,7 +228,9 @@ impl<'a> Builder<'a> {
 
     /// Paint a character cluster in a cell, the way a galley at
     /// `cell.left()`, centered in the row, would paint it. `clip` is the cell
-    /// span the glyph may not spill out of.
+    /// span the glyph may not spill out of. A symbol whose ink is larger than
+    /// that span is scaled down into it, so an emoji is drawn whole instead of
+    /// sliced at the column edge. ASCII is left as egui laid it out.
     pub fn text(
         &mut self,
         ui: &egui::Ui,
@@ -276,14 +278,30 @@ impl<'a> Builder<'a> {
             pixel / self.pixels_per_point,
             top.round_to_pixels(self.pixels_per_point),
         );
+        // One ASCII byte already fits the column. Scaling it would move the
+        // italic overhang the grid test pins inside the cell.
+        let fit = (!cluster.is_ascii() || cluster.len() != 1)
+            .then(|| fit_into_cell(&shaped.quads, origin, cell))
+            .flatten();
         for glyph in &shaped.quads {
+            let rect = egui::Rect::from_min_max(glyph.min + origin, glyph.max + origin);
+            let (rect, skew) = match fit {
+                Some((from, to, scale)) => (
+                    egui::Rect::from_min_max(
+                        map_point(rect.min, from, to, scale),
+                        map_point(rect.max, from, to, scale),
+                    ),
+                    glyph.skew * scale,
+                ),
+                None => (rect, glyph.skew),
+            };
             push(
                 &mut self.quads,
                 self.clip,
-                egui::Rect::from_min_max(glyph.min + origin, glyph.max + origin),
+                rect,
                 egui::Rect::from_min_max(glyph.uv_min, glyph.uv_max),
                 clip,
-                glyph.skew,
+                skew,
                 color,
             );
         }
@@ -340,6 +358,49 @@ fn push(
         skew,
         padding: [0.0; 2],
     });
+}
+
+/// `(ink center, cell center, scale)` when the glyph does not sit inside the
+/// cell. Scale is never above 1, so a mark that already fits is not enlarged.
+fn fit_into_cell(
+    quads: &[GlyphQuad],
+    origin: egui::Vec2,
+    cell: egui::Rect,
+) -> Option<(egui::Pos2, egui::Pos2, f32)> {
+    let mut ink: Option<egui::Rect> = None;
+    for glyph in quads {
+        let min = glyph.min + origin;
+        let max = glyph.max + origin;
+        let left = min.x + glyph.skew.min(0.0);
+        let right = max.x + glyph.skew.max(0.0);
+        let rect = egui::Rect::from_min_max(egui::pos2(left, min.y), egui::pos2(right, max.y));
+        ink = Some(match ink {
+            Some(have) => have.union(rect),
+            None => rect,
+        });
+    }
+    let ink = ink.filter(|ink| ink.is_positive())?;
+    let slack = 0.25;
+    let hangs = ink.min.x < cell.min.x - slack
+        || ink.min.y < cell.min.y - slack
+        || ink.max.x > cell.max.x + slack
+        || ink.max.y > cell.max.y + slack;
+    if !hangs {
+        return None;
+    }
+    // The shader drops fragments on the clip's max edge, so fit just inside it.
+    let target = cell.shrink(0.05);
+    if !target.is_positive() {
+        return None;
+    }
+    let scale = (target.width() / ink.width())
+        .min(target.height() / ink.height())
+        .min(1.0);
+    Some((ink.center(), cell.center(), scale))
+}
+
+fn map_point(point: egui::Pos2, from: egui::Pos2, to: egui::Pos2, scale: f32) -> egui::Pos2 {
+    to + (point - from) * scale
 }
 
 /// Lay out a cluster at a subpixel bin through egui, which rasterizes it into
@@ -794,5 +855,56 @@ mod tests {
         });
         // 'M', nothing for the space, '_' plus its underline.
         assert_eq!(quads, 3);
+    }
+
+    #[test]
+    fn symbols_that_overflow_a_cell_are_drawn_inside_it() {
+        let ctx = egui::Context::default();
+        let mut glyphs = Glyphs::default();
+        let pane = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(400.0, 80.0));
+        frame(&ctx, |ui| {
+            let font = egui::FontId::monospace(14.0);
+            let (width, height) = ui.fonts_mut(|fonts| {
+                (
+                    fonts.glyph_width(&font, 'M'),
+                    fonts.row_height(&font).ceil() + 2.0,
+                )
+            });
+            let cell = egui::Rect::from_min_size(egui::pos2(8.0, 4.0), egui::vec2(width, height));
+            let pixels = ui.ctx().pixels_per_point();
+            let mut builder = Builder::new(ui, &mut glyphs, font.clone(), pane);
+            let mut overflowed = false;
+            for cluster in ["⚠", "✅", "😀", "⭐", "✓", "✗"] {
+                let shaped = layout(ui, &font, pixels, cluster, false, 0);
+                let top = cell.top() + (cell.height() - shaped.height) * 0.5;
+                let origin = egui::vec2(cell.left(), top);
+                if fit_into_cell(&shaped.quads, origin, cell).is_some() {
+                    overflowed = true;
+                }
+                builder.quads.clear();
+                builder.text(
+                    ui,
+                    cluster,
+                    cell,
+                    cell,
+                    Style::default(),
+                    egui::Color32::WHITE,
+                );
+                assert!(!builder.quads.is_empty(), "{cluster} produced no glyph");
+                for quad in &builder.quads {
+                    assert!(
+                        quad.min[0] >= cell.left() - 0.05 && quad.max[0] <= cell.right() + 0.05,
+                        "{cluster} x {:?} outside {cell:?}",
+                        (quad.min[0], quad.max[0])
+                    );
+                    assert!(
+                        quad.min[1] >= cell.top() - 0.05 && quad.max[1] <= cell.bottom() + 0.05,
+                        "{cluster} y {:?} outside {cell:?}",
+                        (quad.min[1], quad.max[1])
+                    );
+                }
+            }
+            assert!(overflowed, "expected a symbol glyph larger than one cell");
+        });
     }
 }
