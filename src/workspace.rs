@@ -2169,6 +2169,7 @@ mod tests {
             history: 1,
             access: crate::session::Access::Interactive,
             reconnect: true,
+            local: false,
         }
         .server_key()
     }

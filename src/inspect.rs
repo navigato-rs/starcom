@@ -1550,7 +1550,7 @@ fn attach_command(session: &core::SessionName, socket: Option<&str>) -> anyhow::
     attach_command_with_access(session, socket, session::Access::ReadOnly)
 }
 
-fn attach_command_with_access(
+pub(crate) fn attach_command_with_access(
     session: &core::SessionName,
     socket: Option<&str>,
     access: session::Access,
