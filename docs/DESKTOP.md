@@ -155,8 +155,8 @@ sidebar width (`sidebar-width`, default 184), terminal font size (`font-size`,
 default 14), the screen effect (`effect`, `none`, `wave`, `matrix`, or
 `retro`), and how long a quiet connected tab waits before its row leaves the
 active green (`idle`, default 30 seconds, 0 off; see
-`etc/workspace.conf.example`). Quiet rows then spread from green toward purple
-between the newest and oldest quiet tab, on a log scale. The
+`etc/workspace.conf.example`). Quiet rows then spread from green toward dark
+blue between the newest and oldest quiet tab, on a log scale. The
 redraw, font, effect, and idle settings are also on the **Settings** panel. The
 last-used session is the target used to resume that tab on startup.
 Nothing that would let a reader of that file connect is written: no keys, no
