@@ -161,9 +161,10 @@ terminal checkpoint.
   in order, `IdentitiesOnly`, one `UserKnownHostsFile`, and OpenSSH's default
   `id_ed25519` / `id_ecdsa` / `id_rsa` when `IdentityFile` is omitted. Files
   are offered first, then the agent; `IdentitiesOnly` restricts its offered keys.
-- Flat ProxyJump chains use `sunset-client`; every hop has independent trust and
-  identity policy. `Match`, nested routes, ProxyCommand, certificates, custom agents,
-  and security-algorithm overrides are reported as unsupported rather than ignored.
+- ProxyJump chains use `sunset-client`, including a hop whose own block has
+  ProxyJump. Every hop has independent trust and identity policy. `Match`,
+  ProxyCommand, certificates, custom agents, and security-algorithm overrides
+  are reported as unsupported rather than ignored.
 
 ### Desktop
 

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Sunset is pinned to `navigato-rs/sunset` `17ea6221`. A hop's own ProxyJump
+  is expanded into the chain. An unusable known-hosts path is treated as empty.
 - The app icon is a square tile. The chevrons are mitered with flat ends,
   lighter at the top, and cast a long shadow down and to the right.
 - macOS uses a Liquid Glass icon clipped to Apple's squircle. The chevrons
