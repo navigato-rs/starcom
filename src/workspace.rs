@@ -2297,7 +2297,10 @@ mod tests {
         );
         assert_ne!(live, fresh);
         assert!(fresh.g() > old.g(), "the newest quiet tab stays greener");
-        assert!(old.b() > fresh.b(), "the oldest quiet tab moves toward blue");
+        assert!(
+            old.b() > fresh.b(),
+            "the oldest quiet tab moves toward blue"
+        );
         let five_days = time::Duration::from_secs(5 * 24 * 3600);
         let ten_days = old_age;
         let five = quiet_color(five_days, recent, ten_days);
