@@ -676,8 +676,14 @@ impl View {
             tmuxctl::Notification::LayoutChange { window, .. } => {
                 self.invalidate_window(window);
             }
-            tmuxctl::Notification::WindowAdd(_)
-            | tmuxctl::Notification::Pause(_)
+            // A new window needs a snapshot. The other windows did not produce
+            // output, so their activity counters stay.
+            tmuxctl::Notification::WindowAdd(_) => {
+                if self.status == Status::Watching {
+                    self.status = Status::NeedsResync;
+                }
+            }
+            tmuxctl::Notification::Pause(_)
             | tmuxctl::Notification::Continue(_)
             | tmuxctl::Notification::SessionChanged(..)
             | tmuxctl::Notification::Unknown(_) => {
@@ -961,7 +967,13 @@ mod tests {
     fn layout_change_stops_output_until_resync() {
         let pane = Pane::restore(state(12, 3), &lines(&["before", "", ""]), &[], &[], 0).unwrap();
         let mut view = View::new(tmuxctl::SessionId(0), vec![pane]).unwrap();
+        let seq = view.window_display_seq(tmuxctl::WindowId(2));
         view.apply(tmuxctl::Notification::WindowAdd(tmuxctl::WindowId(9)));
+        assert_eq!(
+            view.window_display_seq(tmuxctl::WindowId(2)),
+            seq,
+            "adding a window leaves the existing window's activity alone"
+        );
         view.apply(tmuxctl::Notification::Output {
             pane: tmuxctl::PaneId(1),
             bytes: b"bad".to_vec(),
@@ -1040,6 +1052,14 @@ mod tests {
         });
         assert_eq!(view.window_display_seq(tmuxctl::WindowId(2)), 1);
         assert_eq!(view.window_display_seq(tmuxctl::WindowId(3)), 0);
+
+        let work = view.window_display_seq(tmuxctl::WindowId(2));
+        view.apply(tmuxctl::Notification::WindowClose(tmuxctl::WindowId(3)));
+        assert_eq!(
+            view.window_display_seq(tmuxctl::WindowId(2)),
+            work,
+            "closing one window leaves the other window's activity alone"
+        );
     }
 
     #[test]

@@ -294,7 +294,7 @@ fn mix_rgb(from: egui::Color32, to: egui::Color32, t: f32) -> egui::Color32 {
 }
 
 /// Place `age` on a log scale from the newest quiet tab (0, green) to the
-/// oldest (1, purple). Five days and ten days stay close when a much newer
+/// oldest (1, dark blue). Five days and ten days stay close when a much newer
 /// tab sets the other end of the scale.
 fn quiet_place(age: time::Duration, newest: time::Duration, oldest: time::Duration) -> f32 {
     let newest = newest.as_secs_f32().max(1.0);
@@ -313,7 +313,7 @@ fn quiet_color(
 ) -> egui::Color32 {
     mix_rgb(
         egui::Color32::from_rgb(28, 122, 96),
-        egui::Color32::from_rgb(112, 62, 158),
+        egui::Color32::from_rgb(18, 46, 120),
         quiet_place(age, newest, oldest),
     )
 }
@@ -2297,10 +2297,7 @@ mod tests {
         );
         assert_ne!(live, fresh);
         assert!(fresh.g() > old.g(), "the newest quiet tab stays greener");
-        assert!(
-            old.r() > fresh.r(),
-            "the oldest quiet tab moves toward purple"
-        );
+        assert!(old.b() > fresh.b(), "the oldest quiet tab moves toward blue");
         let five_days = time::Duration::from_secs(5 * 24 * 3600);
         let ten_days = old_age;
         let five = quiet_color(five_days, recent, ten_days);
