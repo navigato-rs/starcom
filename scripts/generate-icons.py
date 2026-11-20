@@ -493,35 +493,99 @@ def check_square(rgba: bytes, size: int) -> None:
         raise SystemExit(f"linux: plate is not lighter at the top {top} vs {below}")
 
 
-# Round slabs for the platform icons. Linux keeps the mitered mark above.
-# (outer upper, tip, outer lower, stroke radius)
-PLATFORM_CHEVRONS = (
-    ((36.0, 70.0), (74.0, 128.0), (36.0, 186.0), 20.0),
-    ((220.0, 70.0), (182.0, 128.0), (220.0, 186.0), 20.0),
-)
-PLATFORM_CURSOR = (110.0, 110.0, 146.0, 146.0)
-
-# Windows 11 Fluent. Rounded mica tile, shadow falls straight down.
-WIN_PLATE = (10.0, 8.0, 246.0, 234.0)
-WIN_PLATE_R = 44.0
-WIN_BG_TOP = (0x3E, 0x44, 0x4C)
-WIN_BG_BOT = (0x1A, 0x1C, 0x20)
-# One blue for the chevrons and the cursor. The top stays blue, not white.
-WIN_SLAB_HI = (0x5E, 0xC4, 0xFF)
-WIN_SLAB_LO = (0x00, 0x62, 0xC0)
-WIN_CURSOR_R = 8.0
-
-# Liquid Glass. Light comes from above, across the whole mark.
-GLASS_BG_TOP = (0x9E, 0xC4, 0xE6)
-GLASS_BG_BOT = (0x16, 0x28, 0x44)
-# Chevrons and cursor share this blue. Highlights stay a pale blue, not white.
-GLASS_CHEV_HI = (0x6A, 0xD0, 0xFF)
-GLASS_CHEV_LO = (0x00, 0x6E, 0xE0)
-GLASS_CURSOR_R = 12.0
+# OG logo for macOS and Windows (before platform-specific redesigns).
+OG_BG_TOP = (0x1C, 0x24, 0x34)
+OG_BG_BOT = (0x24, 0x2F, 0x44)
+OG_STROKE = (0x0F, 0x16, 0x24)
+OG_CYAN = (0x56, 0xB6, 0xC2)
+OG_CHEVRON_SPAN = 32.0
+OG_CHEVRON_RADIUS = 13.0
+OG_CHEVRON_LEFT = 64.0
+OG_CHEVRON_RIGHT = 192.0
+OG_CURSOR = (112.0, 112.0, 144.0, 144.0)
+OG_CURSOR_RADIUS = 6.0
+OG_MID_Y = 128.0
 
 
-def pack_rgba(pixels: list[list[list[float]]]) -> bytes:
-    out = bytearray(len(pixels) * len(pixels[0]) * 4)
+def og_svg_text() -> str:
+    span = OG_CHEVRON_SPAN
+    left_back_x = OG_CHEVRON_LEFT - span * 0.55
+    left_tip_x = OG_CHEVRON_LEFT + span * 0.7
+    right_back_x = OG_CHEVRON_RIGHT + span * 0.55
+    right_tip_x = OG_CHEVRON_RIGHT - span * 0.7
+    top_y = OG_MID_Y - span
+    bot_y = OG_MID_Y + span
+    x0, y0, x1, y1 = OG_CURSOR
+    stroke = fmt(OG_CHEVRON_RADIUS * 2)
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1c2434"/>
+      <stop offset="1" stop-color="#242f44"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="24" fill="url(#bg)" stroke="#0f1624" stroke-width="8"/>
+  <g fill="none" stroke="#56b6c2" stroke-width="{stroke}" stroke-linecap="round">
+    <path d="M{fmt(left_back_x)} {fmt(top_y)} L{fmt(left_tip_x)} {fmt(OG_MID_Y)}"/>
+    <path d="M{fmt(left_back_x)} {fmt(bot_y)} L{fmt(left_tip_x)} {fmt(OG_MID_Y)}"/>
+    <path d="M{fmt(right_back_x)} {fmt(top_y)} L{fmt(right_tip_x)} {fmt(OG_MID_Y)}"/>
+    <path d="M{fmt(right_back_x)} {fmt(bot_y)} L{fmt(right_tip_x)} {fmt(OG_MID_Y)}"/>
+  </g>
+  <rect x="{fmt(x0)}" y="{fmt(y0)}" width="{fmt(x1 - x0)}" height="{fmt(y1 - y0)}" rx="{fmt(OG_CURSOR_RADIUS)}" fill="#56b6c2"/>
+</svg>
+"""
+
+
+def og_sd_capsule(px, py, ax, ay, bx, by, radius):
+    abx, aby = bx - ax, by - ay
+    denom = abx * abx + aby * aby
+    t = 0.0 if denom == 0 else max(0.0, min(1.0, ((px - ax) * abx + (py - ay) * aby) / denom))
+    return math.hypot(px - (ax + t * abx), py - (ay + t * aby)) - radius
+
+
+def og_chevron_gt(px, py, cx, cy, span, radius):
+    return min(
+        og_sd_capsule(px, py, cx - span * 0.55, cy - span, cx + span * 0.7, cy, radius),
+        og_sd_capsule(px, py, cx - span * 0.55, cy + span, cx + span * 0.7, cy, radius),
+    )
+
+
+def og_chevron_lt(px, py, cx, cy, span, radius):
+    return min(
+        og_sd_capsule(px, py, cx + span * 0.55, cy - span, cx - span * 0.7, cy, radius),
+        og_sd_capsule(px, py, cx + span * 0.55, cy + span, cx - span * 0.7, cy, radius),
+    )
+
+
+def og_glyph(px, py):
+    return min(
+        og_chevron_gt(px, py, OG_CHEVRON_LEFT, OG_MID_Y, OG_CHEVRON_SPAN, OG_CHEVRON_RADIUS),
+        sd_round_box(px, py, *OG_CURSOR, OG_CURSOR_RADIUS),
+        og_chevron_lt(px, py, OG_CHEVRON_RIGHT, OG_MID_Y, OG_CHEVRON_SPAN, OG_CHEVRON_RADIUS),
+    )
+
+
+def og_render(size):
+    scale = size / VIEW
+    pixels = [[[0.0, 0.0, 0.0, 0.0] for _ in range(size)] for _ in range(size)]
+    for y in range(size):
+        py = (y + 0.5) / scale
+        t = (py - 8) / 240
+        fill = lerp(OG_BG_TOP, OG_BG_BOT, t)
+        row = pixels[y]
+        for x in range(size):
+            px = (x + 0.5) / scale
+            signed = sd_round_box(px, py, 8, 8, 248, 248, 24)
+            alpha = coverage(signed * scale)
+            if alpha:
+                over(row[x], fill[0], fill[1], fill[2], alpha)
+            edge = coverage((abs(signed) - 4) * scale)
+            if edge:
+                over(row[x], float(OG_STROKE[0]), float(OG_STROKE[1]), float(OG_STROKE[2]), edge)
+            mark = coverage(og_glyph(px, py) * scale)
+            if mark:
+                over(row[x], float(OG_CYAN[0]), float(OG_CYAN[1]), float(OG_CYAN[2]), mark)
+    out = bytearray(size * size * 4)
     i = 0
     for row in pixels:
         for red, green, blue, alpha in row:
@@ -533,347 +597,6 @@ def pack_rgba(pixels: list[list[list[float]]]) -> bytes:
     return bytes(out)
 
 
-def platform_chevron_sd(px: float, py: float, spec: tuple) -> float:
-    (ax, ay), (bx, by), (cx, cy), radius = spec
-    return min(
-        _segment_distance(px, py, ax, ay, bx, by),
-        _segment_distance(px, py, bx, by, cx, cy),
-    ) - radius
-
-
-def platform_cursor_sd(px: float, py: float, radius: float) -> float:
-    return sd_round_box(px, py, *PLATFORM_CURSOR, radius)
-
-
-def facing(sd_at, px: float, py: float, eps: float = 6.0) -> tuple[float, float]:
-    # Wide sample so the join of the two arms does not crease.
-    # Screen-up is negative y, so a top rim has gy < 0.
-    gx = sd_at(px + eps, py) - sd_at(px - eps, py)
-    gy = sd_at(px, py + eps) - sd_at(px, py - eps)
-    scale = 1.0 / (math.hypot(gx, gy) or 1.0)
-    return max(0.0, -gy * scale), max(0.0, gy * scale)
-
-
-def mark_t(py: float) -> float:
-    ys = [y - radius for (_a, y), _tip, (_c, _cy), radius in PLATFORM_CHEVRONS]
-    ys += [y + radius for (_a, _ay), _tip, (_c, y), radius in PLATFORM_CHEVRONS]
-    y0, y1 = min(ys), max(ys)
-    t = (py - y0) / (y1 - y0)
-    return 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
-
-
-def mark_mix(t: float) -> float:
-    # A tall gradient made the upper arm light, the lower arm dark, and the
-    # square a third shade. Keep one blue. The rim carries the light.
-    return 0.46 + 0.08 * t
-
-
-def cast_shadow(point: list[float], px: float, py: float, sd_at, scale: float, plate: float = 1.0) -> None:
-    for dy, alpha in ((16.0, 0.11), (9.0, 0.16), (4.0, 0.20)):
-        shade = coverage(sd_at(px, py - dy) * scale * 0.42)
-        if shade:
-            over(point, 6.0, 14.0, 28.0, shade * alpha * plate)
-
-
-def render_windows(size: int) -> bytes:
-    scale = size / VIEW
-    plate = WIN_PLATE
-    pixels = [[[0.0, 0.0, 0.0, 0.0] for _ in range(size)] for _ in range(size)]
-    px0, py0, px1, py1 = plate
-    slabs = [
-        (spec, lambda qx, qy, spec=spec: platform_chevron_sd(qx, qy, spec)) for spec in PLATFORM_CHEVRONS
-    ]
-    cursor_at = lambda qx, qy: platform_cursor_sd(qx, qy, WIN_CURSOR_R)
-    for y in range(size):
-        py = (y + 0.5) / scale
-        row = pixels[y]
-        plate_rgb = lerp(WIN_BG_TOP, WIN_BG_BOT, (py - py0) / (py1 - py0))
-        for x in range(size):
-            px = (x + 0.5) / scale
-            point = row[x]
-            for dy, alpha in ((4.0, 0.22), (9.0, 0.16), (15.0, 0.10)):
-                shade = coverage(sd_round_box(px, py - dy, *plate, WIN_PLATE_R) * scale)
-                if shade:
-                    over(point, 0.0, 0.0, 0.0, shade * alpha)
-            plate_sd = sd_round_box(px, py, *plate, WIN_PLATE_R)
-            plate_alpha = coverage(plate_sd * scale)
-            if plate_alpha:
-                over(point, *plate_rgb, plate_alpha)
-                if -1.6 < plate_sd < 0.4:
-                    edge = 1.0 - abs(plate_sd + 0.6) / 1.0
-                    if edge > 0.0:
-                        over(point, 255.0, 255.0, 255.0, 0.28 * edge * plate_alpha)
-                sheen_t = (py - py0) / (py1 - py0)
-                if sheen_t < 0.22:
-                    over(point, 255.0, 255.0, 255.0, 0.16 * (1.0 - sheen_t / 0.22) * plate_alpha)
-                for _spec, sd_at in slabs:
-                    cast_shadow(point, px, py, sd_at, scale, plate_alpha)
-                cast_shadow(point, px, py, cursor_at, scale, plate_alpha)
-            for _spec, sd_at in slabs:
-                paint_mark(point, px, py, sd_at, scale, plate_alpha, WIN_SLAB_HI, WIN_SLAB_LO)
-            paint_mark(point, px, py, cursor_at, scale, plate_alpha, WIN_SLAB_HI, WIN_SLAB_LO)
-    return pack_rgba(pixels)
-
-
-def paint_mark(point, px, py, sd_at, scale, cover, hi, lo) -> None:
-    sd = sd_at(px, py)
-    cov = coverage(sd * scale) * cover
-    if sd > 1.2 or cov <= 0.0:
-        return
-    red, green, blue = lerp(hi, lo, mark_mix(mark_t(py)))
-    over(point, red, green, blue, cov)
-    if -2.6 < sd < 0.7:
-        up, down = facing(sd_at, px, py)
-        closeness = 1.0 - abs(sd + 0.95) / 1.65
-        if closeness <= 0.0:
-            return
-        # Same catch-light on every shape. Strength does not depend on height.
-        if up > 0.25:
-            over(point, 186.0, 230.0, 255.0, 0.55 * closeness * up * cov)
-        if down > 0.25:
-            over(point, 0.0, 40.0, 110.0, 0.42 * closeness * down * cov)
-
-
-def glass_background(px: float, py: float) -> tuple[float, float, float]:
-    base = lerp(GLASS_BG_TOP, GLASS_BG_BOT, (py / VIEW) ** 0.9)
-    dx = (px - 128.0) / 108.0
-    dy = (py - 24.0) / 88.0
-    pool = max(0.0, 1.0 - (dx * dx * 0.7 + dy * dy))
-    return (
-        base[0] + (255.0 - base[0]) * pool * 0.62,
-        base[1] + (255.0 - base[1]) * pool * 0.55,
-        base[2] + (255.0 - base[2]) * pool * 0.38,
-    )
-
-
-def render_glass(size: int) -> bytes:
-    scale = size / VIEW
-    slabs = [(spec, lambda qx, qy, spec=spec: platform_chevron_sd(qx, qy, spec)) for spec in PLATFORM_CHEVRONS]
-    cursor_at = lambda qx, qy: platform_cursor_sd(qx, qy, GLASS_CURSOR_R)
-    pixels = [[[0.0, 0.0, 0.0, 0.0] for _ in range(size)] for _ in range(size)]
-    for y in range(size):
-        py = (y + 0.5) / scale
-        row = pixels[y]
-        for x in range(size):
-            px = (x + 0.5) / scale
-            point = row[x]
-            over(point, *glass_background(px, py), 1.0)
-            if py < 42.0:
-                over(point, 255.0, 255.0, 255.0, 0.48 * (1.0 - py / 42.0) ** 1.35)
-            for _spec, sd_at in slabs:
-                cast_shadow(point, px, py, sd_at, scale)
-            cast_shadow(point, px, py, cursor_at, scale)
-            for _spec, sd_at in slabs:
-                paint_mark(point, px, py, sd_at, scale, 1.0, GLASS_CHEV_HI, GLASS_CHEV_LO)
-            paint_mark(point, px, py, cursor_at, scale, 1.0, GLASS_CHEV_HI, GLASS_CHEV_LO)
-    mask_squircle(pixels, size)
-    return pack_rgba(pixels)
-
-
-def squircle_sd(px: float, py: float) -> float:
-    # Apple's icon is a quintic superellipse, not a rounded rectangle.
-    n = 5.0
-    half = 128.0
-    x = abs(px - 128.0) / half
-    y = abs(py - 128.0) / half
-    field = (x**n if x else 0.0) + (y**n if y else 0.0)
-    return (field ** (1.0 / n) - 1.0) * half
-
-
-def mask_squircle(pixels: list[list[list[float]]], size: int) -> None:
-    scale = size / VIEW
-    for y in range(size):
-        py = (y + 0.5) / scale
-        row = pixels[y]
-        for x in range(size):
-            cover = coverage(squircle_sd((x + 0.5) / scale, py) * scale)
-            if cover < 1.0:
-                row[x][3] *= cover
-
-
-def squircle_path() -> str:
-    half = 128.0
-    steps = 96
-    coords = []
-    for i in range(steps):
-        theta = 2.0 * math.pi * i / steps
-        c = math.cos(theta)
-        s = math.sin(theta)
-        x = 128.0 + half * math.copysign(abs(c) ** 0.4, c)
-        y = 128.0 + half * math.copysign(abs(s) ** 0.4, s)
-        coords.append(f"{fmt(x)} {fmt(y)}")
-    return "M" + " L".join(coords) + " Z"
-
-
-def round_chevrons(stroke: str, width: float, extra: str = "") -> str:
-    paths = []
-    for (ax, ay), (bx, by), (cx, cy), _radius in PLATFORM_CHEVRONS:
-        paths.append(
-            f'<path d="M{fmt(ax)} {fmt(ay)} L{fmt(bx)} {fmt(by)} L{fmt(cx)} {fmt(cy)}" '
-            f'fill="none" stroke="{stroke}" stroke-width="{fmt(width)}" '
-            f'stroke-linecap="round" stroke-linejoin="round"{extra}/>'
-        )
-    return "\n  ".join(paths)
-
-
-def body_stops(hi: tuple[int, int, int], lo: tuple[int, int, int]) -> str:
-    top = tuple(int(channel + 0.5) for channel in lerp(hi, lo, mark_mix(0.0)))
-    bot = tuple(int(channel + 0.5) for channel in lerp(hi, lo, mark_mix(1.0)))
-    return (
-        f'<stop offset="0" stop-color="{hex_rgb(top)}"/>\n'
-        f'      <stop offset="1" stop-color="{hex_rgb(bot)}"/>'
-    )
-
-
-def glass_svg() -> str:
-    x0, y0, x1, y1 = PLATFORM_CURSOR
-    body = round_chevrons("url(#frost)", 40.0)
-    shadow = round_chevrons("#061428", 40.0)
-    return f"""\
-<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
-  <!-- Liquid Glass inside Apple's squircle. Chevrons and cursor share one blue. -->
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="{hex_rgb(GLASS_BG_TOP)}"/>
-      <stop offset="1" stop-color="{hex_rgb(GLASS_BG_BOT)}"/>
-    </linearGradient>
-    <radialGradient id="pool" cx="50%" cy="8%" r="58%">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.9"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
-    </radialGradient>
-    <linearGradient id="lip" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
-    </linearGradient>
-    <linearGradient id="frost" gradientUnits="userSpaceOnUse" x1="0" y1="50" x2="0" y2="206">
-      {body_stops(GLASS_CHEV_HI, GLASS_CHEV_LO)}
-    </linearGradient>
-    <filter id="soft" x="-40%" y="-40%" width="180%" height="180%">
-      <feGaussianBlur stdDeviation="6"/>
-    </filter>
-    <clipPath id="squircle">
-      <path d="{squircle_path()}"/>
-    </clipPath>
-  </defs>
-  <g clip-path="url(#squircle)">
-  <rect width="256" height="256" fill="url(#bg)"/>
-  <rect width="256" height="256" fill="url(#pool)"/>
-  <rect width="256" height="46" fill="url(#lip)"/>
-  <g opacity="0.40" transform="translate(0 14)" filter="url(#soft)">
-  {shadow}
-  </g>
-  {body}
-  <rect x="{fmt(x0)}" y="{fmt(y0)}" width="{fmt(x1 - x0)}" height="{fmt(y1 - y0)}" rx="{fmt(GLASS_CURSOR_R)}" fill="url(#frost)"/>
-  </g>
-</svg>
-"""
-
-
-def windows_svg() -> str:
-    px0, py0, px1, py1 = WIN_PLATE
-    x0, y0, x1, y1 = PLATFORM_CURSOR
-    slabs = round_chevrons("url(#slab)", 40.0)
-    return f"""\
-<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
-  <!-- Fluent mica tile. The chevrons and the cursor share the accent blue. -->
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="{hex_rgb(WIN_BG_TOP)}"/>
-      <stop offset="1" stop-color="{hex_rgb(WIN_BG_BOT)}"/>
-    </linearGradient>
-    <linearGradient id="slab" gradientUnits="userSpaceOnUse" x1="0" y1="50" x2="0" y2="206">
-      {body_stops(WIN_SLAB_HI, WIN_SLAB_LO)}
-    </linearGradient>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
-      <feDropShadow dx="0" dy="8" stdDeviation="6" flood-color="#000" flood-opacity="0.45"/>
-    </filter>
-    <filter id="cast" x="-30%" y="-30%" width="160%" height="170%">
-      <feDropShadow dx="0" dy="5" stdDeviation="3" flood-color="#000" flood-opacity="0.35"/>
-    </filter>
-    <clipPath id="plate">
-      <rect x="{fmt(px0)}" y="{fmt(py0)}" width="{fmt(px1 - px0)}" height="{fmt(py1 - py0)}" rx="{fmt(WIN_PLATE_R)}"/>
-    </clipPath>
-  </defs>
-  <rect x="{fmt(px0)}" y="{fmt(py0)}" width="{fmt(px1 - px0)}" height="{fmt(py1 - py0)}" rx="{fmt(WIN_PLATE_R)}" fill="url(#bg)" filter="url(#shadow)"/>
-  <g clip-path="url(#plate)">
-    <rect x="{fmt(px0)}" y="{fmt(py0)}" width="{fmt(px1 - px0)}" height="48" fill="#fff" opacity="0.08"/>
-    <g filter="url(#cast)">
-  {slabs}
-    </g>
-    <rect x="{fmt(x0)}" y="{fmt(y0)}" width="{fmt(x1 - x0)}" height="{fmt(y1 - y0)}" rx="{fmt(WIN_CURSOR_R)}" fill="url(#slab)"/>
-  </g>
-</svg>
-"""
-
-
-def check_windows(rgba: bytes, size: int) -> None:
-    scale = size / VIEW
-
-    def at(vx: float, vy: float) -> tuple[int, int, int, int]:
-        return pixel(rgba, size, min(size - 1, int(vx * scale)), min(size - 1, int(vy * scale)))
-
-    corner = at(WIN_PLATE[0], WIN_PLATE[1])
-    if corner[3] != 0:
-        raise SystemExit(f"windows: plate corner is not rounded {corner}")
-    face = at((WIN_PLATE[0] + WIN_PLATE[2]) * 0.5, WIN_PLATE[1] + 8.0)
-    if face[3] != 255:
-        raise SystemExit(f"windows: tile face is not opaque {face}")
-    cursor = at(128.0, 128.0)
-    if cursor[2] < cursor[0] + 30 or cursor[2] < 160:
-        raise SystemExit(f"windows: cursor is not the accent blue {cursor}")
-    same_mark("windows", at)
-    outside = at(2.0, 2.0)
-    if outside[3] != 0:
-        raise SystemExit(f"windows: outside the tile is not clear {outside}")
-
-
-def check_glass(name: str, rgba: bytes, size: int) -> None:
-    scale = size / VIEW
-
-    def at(vx: float, vy: float) -> tuple[int, int, int, int]:
-        return pixel(rgba, size, min(size - 1, int(vx * scale)), min(size - 1, int(vy * scale)))
-
-    # Quintic superellipse: corners clear, side centers filled, and the
-    # corner bulge (inside the squircle, outside a circle on the same box).
-    corner = at(1.0, 1.0)
-    if corner[3] != 0:
-        raise SystemExit(f"{name}: squircle corner is not clear {corner}")
-    edge = at(128.0, 2.0)
-    if edge[3] != 255:
-        raise SystemExit(f"{name}: squircle does not meet the side {edge}")
-    bulge = at(22.0, 22.0)
-    if bulge[3] < 250:
-        raise SystemExit(f"{name}: squircle bulge is missing {bulge}")
-    top = at(128.0, 12.0)
-    bot = at(128.0, 244.0)
-    if sum(top[:3]) < sum(bot[:3]) + 40:
-        raise SystemExit(f"{name}: glass is not brighter at the top {top} vs {bot}")
-    cursor = at(128.0, 128.0)
-    margin = at(16.0, 220.0)
-    if cursor[2] < cursor[0] + 15 or sum(cursor[:3]) < sum(margin[:3]) + 30:
-        raise SystemExit(f"{name}: cursor does not glow {cursor} vs {margin}")
-    same_mark(name, at)
-
-
-def same_mark(name: str, at) -> None:
-    # Upper arm, lower arm, and the square are one blue.
-    upper = at(50.0, 96.0)
-    lower = at(50.0, 160.0)
-    cursor = at(128.0, 128.0)
-    for label, sample in (("upper", upper), ("lower", lower)):
-        if any(abs(sample[i] - cursor[i]) > 24 for i in range(3)):
-            raise SystemExit(f"{name}: {label} arm does not match the cursor {sample} vs {cursor}")
-        if sample[2] < sample[0] + 30:
-            raise SystemExit(f"{name}: {label} arm is not the accent blue {sample}")
-    # The top edge of each shape catches the same light.
-    cursor_rim = at(128.0, 110.0)
-    if sum(cursor_rim[:3]) < sum(cursor[:3]) + 12:
-        raise SystemExit(f"{name}: cursor top is not lit {cursor_rim} vs {cursor}")
-    cap = at(36.0, 50.0)
-    if sum(cap[:3]) < sum(upper[:3]) + 8:
-        raise SystemExit(f"{name}: chevron top is not lit {cap} vs {upper}")
-
-
 def main() -> None:
     macos = ROOT / "etc" / "macos"
     windows = ROOT / "etc" / "windows"
@@ -881,36 +604,28 @@ def main() -> None:
     macos.mkdir(parents=True, exist_ok=True)
     windows.mkdir(parents=True, exist_ok=True)
     linux.mkdir(parents=True, exist_ok=True)
+
     linux_svg = svg_text()
     if 'rx="0"' not in linux_svg:
         raise SystemExit("linux icon lost its square corners")
     linux_256 = render(256)
     check_square(linux_256, 256)
-    windows_256 = render_windows(256)
-    check_windows(windows_256, 256)
-    glass_256 = render_glass(256)
-    check_glass("glass", glass_256, 256)
-    glass_1024 = render_glass(1024)
-    check_glass("glass-1024", glass_1024, 1024)
     (ROOT / "etc" / "starcom.svg").write_text(linux_svg, encoding="utf-8")
     (linux / "icon.png").write_bytes(png_bytes(256, 256, linux_256))
-    (macos / "icon.svg").write_text(glass_svg(), encoding="utf-8")
-    (windows / "icon.svg").write_text(windows_svg(), encoding="utf-8")
-    # cargo-bundle's ICNS writer maps density-1 PNGs to 16/32/64/128/256/512.
-    # 1024 px is 512@2x; the @2x filename is what sets density so the type
-    # matches. icon.png is the in-app preview of that same 256 artwork.
+
+    og_svg = og_svg_text()
+    (macos / "icon.svg").write_text(og_svg, encoding="utf-8")
+    (windows / "icon.svg").write_text(og_svg, encoding="utf-8")
+    og_256 = og_render(256)
+    og_png256 = png_bytes(256, 256, og_256)
+    (macos / "icon.png").write_bytes(og_png256)
+    (windows / "icon.png").write_bytes(og_png256)
     for size in (16, 32, 64, 128, 256, 512):
-        data = png_bytes(size, size, glass_256 if size == 256 else render_glass(size))
+        rgba = og_256 if size == 256 else og_render(size)
+        data = png_bytes(size, size, rgba)
         (macos / f"icon_{size}.png").write_bytes(data)
-        if size == 256:
-            (macos / "icon.png").write_bytes(data)
-    (macos / "icon_512@2x.png").write_bytes(png_bytes(1024, 1024, glass_1024))
-    (windows / "icon.png").write_bytes(png_bytes(256, 256, windows_256))
-    ico_sizes = (16, 24, 32, 48, 64, 128, 256)
-    ico_images = []
-    for size in ico_sizes:
-        rgba = windows_256 if size == 256 else render_windows(size)
-        ico_images.append((size, png_bytes(size, size, rgba)))
+    (macos / "icon_512@2x.png").write_bytes(png_bytes(1024, 1024, og_render(1024)))
+    ico_images = [(size, png_bytes(size, size, og_256 if size == 256 else og_render(size))) for size in (16, 24, 32, 48, 64, 128, 256)]
     (windows / "icon.ico").write_bytes(ico_bytes(ico_images))
     print(
         "wrote etc/starcom.svg, etc/linux/icon.png, etc/macos/icon.svg, "
