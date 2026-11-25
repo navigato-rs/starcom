@@ -44,6 +44,7 @@ struct Tab {
     server: Option<desktop::ServerKey>,
     ui: ui::DesktopUi,
     last_seq: u64,
+    last_output_seq: u64,
     last_output: time::Instant,
     last_phase: desktop::Phase,
     last_revision: u64,
@@ -239,6 +240,7 @@ fn spawn_tab(
         server: None,
         ui: ui::DesktopUi::with_config(config, config_load_error),
         last_seq: 0,
+        last_output_seq: 0,
         last_output: time::Instant::now(),
         last_phase: desktop::Phase::Idle,
         last_revision: 0,
@@ -742,21 +744,22 @@ impl Workspace {
                 continue;
             }
             let phase = state.phase;
-            let seq = state
+            let (seq, output_seq) = state
                 .view
                 .as_ref()
-                .map(|view| tab.ui.display_seq(view))
-                .unwrap_or(0);
+                .map(|view| (tab.ui.display_seq(view), tab.ui.output_seq(view)))
+                .unwrap_or((0, 0));
             drop(state);
 
             let phase_changed = phase != tab.last_phase;
             let display_changed = seq != tab.last_seq;
+            let fresh_output = output_seq != tab.last_output_seq;
             let was_quiet = self.idle > 0
                 && live_phase(tab.last_phase)
                 && now.saturating_duration_since(tab.last_output)
                     >= time::Duration::from_secs(u64::from(self.idle));
             let visible = !self.composer_open && index == self.active;
-            let row_changed = phase_changed || (display_changed && was_quiet);
+            let row_changed = phase_changed || (fresh_output && was_quiet);
             if visible || row_changed {
                 repaint = true;
             }
@@ -769,8 +772,9 @@ impl Workspace {
                     tab.last_phase = phase;
                     tab.last_seq = seq;
                 }
-                if display_changed {
+                if fresh_output {
                     tab.last_output = now;
+                    tab.last_output_seq = output_seq;
                 }
             }
         }
@@ -1480,14 +1484,15 @@ impl Workspace {
                 for tab in &mut self.tabs {
                     let state = tab.client.lock();
                     let phase = logical_phase(tab, &state);
-                    let seq = state
+                    let (seq, output_seq) = state
                         .view
                         .as_ref()
-                        .map(|view| tab.ui.display_seq(view))
-                        .unwrap_or(0);
+                        .map(|view| (tab.ui.display_seq(view), tab.ui.output_seq(view)))
+                        .unwrap_or((0, 0));
                     drop(state);
-                    if seq != tab.last_seq {
+                    if output_seq != tab.last_output_seq {
                         tab.last_output = now;
+                        tab.last_output_seq = output_seq;
                     }
                     if seq != tab.last_seq || phase != tab.last_phase {
                         tab.last_seq = seq;
@@ -3618,6 +3623,41 @@ mod tests {
         assert!(
             !workspace.remote_changed(),
             "selected contents stay pending only until show paints"
+        );
+    }
+
+    #[test]
+    fn only_pane_output_moves_a_sessions_age() {
+        let mut workspace = Workspace::new(sync::Arc::new(|| {}), desktop::Startup::Demo).unwrap();
+        paint(&mut workspace);
+        let created = workspace.tabs[0].last_output;
+        {
+            let mut state = workspace.tabs[0].client.lock();
+            let view = state.view.as_mut().expect("demo view");
+            view.apply(tmuxctl::Notification::Unknown("%message hello".to_owned()));
+            view.disconnect();
+        }
+        paint(&mut workspace);
+        assert_eq!(
+            workspace.tabs[0].last_output, created,
+            "a resync and a disconnect repaint without aging the session"
+        );
+
+        workspace.tabs[0].client.demo().unwrap();
+        paint(&mut workspace);
+        let rebuilt = workspace.tabs[0].last_output;
+        {
+            let mut state = workspace.tabs[0].client.lock();
+            let view = state.view.as_mut().expect("demo view");
+            view.apply(tmuxctl::Notification::Output {
+                pane: tmuxctl::PaneId(0),
+                bytes: b"new output".to_vec(),
+            });
+        }
+        paint(&mut workspace);
+        assert!(
+            workspace.tabs[0].last_output > rebuilt,
+            "pane output refreshes the session's age"
         );
     }
 

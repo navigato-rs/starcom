@@ -156,9 +156,13 @@ default 14), the screen effect (`effect`, `none`, `wave`, `matrix`, or
 `retro`), and how long a quiet connected tab waits before its row leaves the
 active green (`idle`, default 30 seconds, 0 off; see
 `etc/workspace.conf.example`). Quiet rows then spread from green toward dark
-blue between the newest and oldest quiet tab, on a log scale. The
-redraw, font, effect, and idle settings are also on the **Settings** panel. The
-last-used session is the target used to resume that tab on startup.
+blue between the newest and oldest quiet tab, on a log scale. Only output
+printed while connected moves a row: adding a session, a reconnect, or a
+resync leaves the quiet colors where they were, and output printed during an
+outage arrives in the reconnect snapshot without counting as new. The
+redraw, font, effect, and idle settings are also on the
+**Settings** panel. The last-used session is the target used to resume
+that tab on startup.
 Nothing that would let a reader of that file connect is written: no keys, no
 passphrases, no host-key material, and no terminal contents. An identity entry
 is the path you already chose, never the key behind it.
@@ -312,9 +316,11 @@ TUI owns wheel events; its gutter cannot start selection or send mouse input
 remotely.
 
 A click on a link copies its destination to the local clipboard: OSC 8 if the
-cell has one, otherwise an `http(s)` URL covering the cell (including when
-the URL is split across soft-wrapped rows, hard-wrapped inside a TUI box, or
-hard-wrapped after `?` or a Grok message clock onto the next indented row),
+cell has one, otherwise an `http(s)` URL or absolute path covering the cell
+(including when the link is split across soft-wrapped rows, hard-wrapped
+inside a TUI box, hard-wrapped after `?` or a Grok message clock onto the
+next indented row, or hard-wrapped at column zero after an unfinished `/` or
+`?`),
 or — for a short underlined "click here to copy" affordance whose OSC 8 tmux
 has stripped — a URL on the same or an adjacent line. A long underlined run is
 treated as content, not a link. Hover shows the destination. A tiny pointer

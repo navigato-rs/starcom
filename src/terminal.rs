@@ -224,22 +224,23 @@ impl Terminal {
             .map(|link| link.uri().to_owned())
     }
 
-    /// Destination to copy for a click: OSC 8 first, then an `http(s)` URL
-    /// covering this cell, then a URL on this or an adjacent line when the cell
-    /// is a short underlined affordance (Grok's "click here to copy" without
-    /// OSC 8). The last case is a heuristic, so it is deliberately narrow: a
-    /// long underlined run (prose, a filename) is content, not a link.
+    /// Destination to copy for a click: OSC 8 first, then an `http(s)` URL or
+    /// an absolute path covering this cell, then a URL on this or an
+    /// adjacent line when the cell is a short underlined affordance (Grok's
+    /// "click here to copy" without OSC 8). The last case is a heuristic, so
+    /// it is deliberately narrow: a long underlined run (prose, a filename)
+    /// stays ordinary content.
     pub fn link_destination(&self, point: index::Point) -> Option<String> {
         let point = self.clamp_point(point);
         if let Some(uri) = self.hyperlink_at(point).filter(|uri| !uri.is_empty()) {
             return Some(uri);
         }
-        if let Some(url) = self.hard_wrapped_http_url(point, HardWrapTarget::Cell) {
+        if let Some(url) = self.hard_wrapped_link(point, HardWrapTarget::Cell) {
             return Some(url);
         }
         let (column, line) = self.wrapped_line_text(point)?;
-        if let Some(url) = http_url_at(&line, column) {
-            return Some(url.to_owned());
+        if let Some(link) = link_at(&line, column) {
+            return Some(link.to_owned());
         }
         // Only a short underlined affordance stands in for a stripped OSC 8
         // link. Bounding the run keeps ordinary underlined text from turning
@@ -248,7 +249,7 @@ impl Terminal {
         if run == 0 || run > MAX_AFFORDANCE_CELLS {
             return None;
         }
-        if let Some(url) = self.hard_wrapped_http_url(point, HardWrapTarget::SameLineAffordance) {
+        if let Some(url) = self.hard_wrapped_link(point, HardWrapTarget::SameLineAffordance) {
             return Some(url);
         }
         if let Some(url) = first_http_url(&line) {
@@ -274,14 +275,13 @@ impl Terminal {
         None
     }
 
-    /// Reconstruct an application-wrapped URL. Some TUIs print a newline and
+    /// Reconstruct an application-wrapped link. Some TUIs print a newline and
     /// repeat their indentation, leaving WRAPLINE unset across the break.
     /// Vertical box gutters are stripped so a hyphenated URL inside a panel
     /// still joins. A right-aligned clock after the URL (Grok's message
-    /// timestamp) counts as the end of the URL column. Join only bounded,
-    /// indented continuations after an obviously unfinished URL or a row
-    /// ending near the terminal margin.
-    fn hard_wrapped_http_url(&self, point: index::Point, target: HardWrapTarget) -> Option<String> {
+    /// timestamp) counts as the end of the URL column. `continues_link`
+    /// decides whether the next row's first token is more of the same link.
+    fn hard_wrapped_link(&self, point: index::Point, target: HardWrapTarget) -> Option<String> {
         use grid::Dimensions;
         const MAX_GROUPS: usize = 8;
 
@@ -308,7 +308,7 @@ impl Terminal {
             let mut search = 0;
             while search < line.len() {
                 let rest = &line[search..];
-                let Some(relative) = rest.find("https://").or_else(|| rest.find("http://")) else {
+                let Some(relative) = link_start(rest) else {
                     break;
                 };
                 let url_start = search + relative;
@@ -333,15 +333,15 @@ impl Terminal {
                     ))?;
                     let (next_gutter, next_line) = line_without_box_gutter(&raw_next);
                     let indent_bytes = next_line.len() - next_line.trim_start().len();
-                    if indent_bytes == 0 {
-                        break;
-                    }
                     let indent_columns = next_gutter + next_line[..indent_bytes].chars().count();
                     let Some((piece, piece_reaches_end)) =
                         url_line_piece(&next_line[indent_bytes..])
                     else {
                         break;
                     };
+                    if !continues_link(&url, piece, indent_bytes == 0) {
+                        break;
+                    }
                     if clicked_start == next
                         && clicked_column >= indent_columns
                         && clicked_column < indent_columns + piece.chars().count()
@@ -358,7 +358,7 @@ impl Terminal {
                     && (touched
                         || matches!(target, HardWrapTarget::SameLineAffordance)
                             && start == clicked_start)
-                    && http_url_from(&url).is_some_and(|parsed| parsed.len() == url.len())
+                    && acceptable_link(&url)
                 {
                     return Some(url);
                 }
@@ -383,11 +383,7 @@ impl Terminal {
     }
 
     fn url_may_continue(&self, piece: &str, line: &str) -> bool {
-        piece
-            .chars()
-            .last()
-            .is_some_and(|last| matches!(last, '/' | '-' | '_' | '?' | '&' | '=' | '%' | '#'))
-            || line.chars().count().saturating_add(8) >= self.size.columns()
+        url_ends_unfinished(piece) || line.chars().count().saturating_add(8) >= self.size.columns()
     }
 
     fn line_wraps(&self, line: index::Line) -> bool {
@@ -524,28 +520,6 @@ fn first_http_url(text: &str) -> Option<&str> {
     http_url_from(&text[start..])
 }
 
-fn http_url_at(text: &str, column: usize) -> Option<&str> {
-    let mut offset = 0;
-    while offset < text.len() {
-        let rest = &text[offset..];
-        let Some(rel) = rest.find("https://").or_else(|| rest.find("http://")) else {
-            break;
-        };
-        let start = offset + rel;
-        let Some(url) = http_url_from(&text[start..]) else {
-            offset = start.saturating_add(1);
-            continue;
-        };
-        let start_col = text[..start].chars().count();
-        let end_col = start_col + url.chars().count();
-        if column >= start_col && column < end_col {
-            return Some(url);
-        }
-        offset = start + url.len();
-    }
-    None
-}
-
 fn http_url_from(text: &str) -> Option<&str> {
     if !text.starts_with("https://") && !text.starts_with("http://") {
         return None;
@@ -564,7 +538,7 @@ fn url_line_piece(text: &str) -> Option<(&str, bool)> {
         .find(|ch: char| {
             ch.is_whitespace()
                 || is_box_gutter(ch)
-                || matches!(ch, '"' | '\'' | '<' | '>' | ')' | ']' | '|')
+                || matches!(ch, '"' | '\'' | '`' | '<' | '>' | ')' | ']' | '|')
         })
         .unwrap_or(text.len());
     let raw = &text[..raw_len];
@@ -575,6 +549,81 @@ fn url_line_piece(text: &str) -> Option<(&str, bool)> {
         raw.trim_end_matches(['.', ',', ';', '!', '?'])
     };
     (!piece.is_empty()).then_some((piece, padding && piece.len() == raw.len()))
+}
+
+fn url_ends_unfinished(piece: &str) -> bool {
+    piece
+        .chars()
+        .last()
+        .is_some_and(|last| matches!(last, '/' | '-' | '_' | '?' | '&' | '=' | '%' | '#'))
+}
+
+/// Whether `piece`, the first token on the next row, continues `link`.
+/// Stopping on an unfinished marker is strong evidence of a wrap; only
+/// reaching the margin is weak evidence.
+fn continues_link(link: &str, piece: &str, unindented: bool) -> bool {
+    // A `/` and then a `/` is the next entry of a list, not one wrapped path.
+    if link.ends_with('/') && piece.starts_with('/') {
+        return false;
+    }
+    if unindented {
+        // Column zero usually starts a paragraph or a list entry, so it needs
+        // strong evidence, a path or query shape, and no link of its own.
+        url_ends_unfinished(link)
+            && piece.contains(['/', '.', '?', '&', '=', '%', '#', '{'])
+            && link_start(piece) != Some(0)
+    } else {
+        // After weak evidence, a label such as `exec:` starts a sentence.
+        url_ends_unfinished(link) || !piece.ends_with(':')
+    }
+}
+
+/// One whole `http(s)` URL, or an absolute path with at least two slashes
+/// (`/home/user/file`). `//` is a comment marker, not a path.
+fn acceptable_link(text: &str) -> bool {
+    if let Some(path) = text.strip_prefix('/') {
+        return !path.starts_with('/') && path.contains('/');
+    }
+    http_url_from(text).is_some_and(|parsed| parsed.len() == text.len())
+}
+
+/// The `http(s)` URL or absolute path covering `column`.
+fn link_at(text: &str, column: usize) -> Option<&str> {
+    let mut offset = 0;
+    while let Some(relative) = link_start(&text[offset..]) {
+        let start = offset + relative;
+        let Some((link, _)) = url_line_piece(&text[start..]) else {
+            offset = start + 1;
+            continue;
+        };
+        let start_column = text[..start].chars().count();
+        if acceptable_link(link)
+            && (start_column..start_column + link.chars().count()).contains(&column)
+        {
+            return Some(link);
+        }
+        offset = start + link.len();
+    }
+    None
+}
+
+/// Earliest `http(s)://` or absolute path. A path starts the text or follows
+/// whitespace or a quote, so the `/` in `https://host/a` stays in its URL.
+fn link_start(text: &str) -> Option<usize> {
+    let mut previous = None;
+    for (at, ch) in text.char_indices() {
+        let rest = &text[at..];
+        if rest.starts_with("https://") || rest.starts_with("http://") {
+            return Some(at);
+        }
+        let opens_path =
+            |before: char| before.is_whitespace() || matches!(before, '\'' | '"' | '`');
+        if ch == '/' && previous.is_none_or(opens_path) {
+            return Some(at);
+        }
+        previous = Some(ch);
+    }
+    None
 }
 
 fn url_tail_is_padding(rest: &str) -> bool {
@@ -804,6 +853,222 @@ mod tests {
                 .as_deref(),
             Some("https://example.com/wrap-path"),
             "the continuation row is the same URL"
+        );
+    }
+
+    #[test]
+    fn a_near_margin_url_does_not_swallow_the_next_sentence() {
+        let mut terminal = Terminal::new(core::Size::new(72, 6).unwrap(), 0);
+        terminal.feed(
+            concat!(
+                "! Failed opening a web browser at https://github.com/login/device\r\n",
+                "  exec: \"none\": executable file not found in $PATH\r\n",
+            )
+            .as_bytes(),
+        );
+        let column = "! Failed opening a web browser at ".chars().count();
+        assert_eq!(
+            terminal
+                .link_destination(index::Point::new(index::Line(0), index::Column(column)))
+                .as_deref(),
+            Some("https://github.com/login/device")
+        );
+        assert!(
+            terminal
+                .link_destination(index::Point::new(index::Line(1), index::Column(2)))
+                .is_none(),
+            "the following sentence stays a separate row"
+        );
+    }
+
+    #[test]
+    fn urls_and_local_paths_join_across_unindented_rows() {
+        // 120 columns keeps these short rows as hard breaks. The rows are the
+        // wrapped paste as printed.
+        let mut terminal = Terminal::new(core::Size::new(120, 16).unwrap(), 0);
+        terminal.feed(
+            concat!(
+                "PNG: https://files.example.com/storage/s11/\r\n",
+                "cluster/api/v1/fetch_file?path=/home/\r\n",
+                "user/perf/realtime_pct_comparison.png\r\n",
+                "SVG: https://files.example.com/storage/s11/\r\n",
+                "cluster/api/v1/fetch_file?path=/home/\r\n",
+                "user/perf/realtime_pct_comparison.svg\r\n",
+                "Local files: /home/user/perf/\r\n",
+                "realtime_pct_comparison.{png,svg} (generated by /\r\n",
+                "home/user/perf/plot_realtime_bars.py).\r\n",
+            )
+            .as_bytes(),
+        );
+        let png = concat!(
+            "https://files.example.com/storage/s11/",
+            "cluster/api/v1/fetch_file?path=/home/",
+            "user/perf/realtime_pct_comparison.png",
+        );
+        let svg = concat!(
+            "https://files.example.com/storage/s11/",
+            "cluster/api/v1/fetch_file?path=/home/",
+            "user/perf/realtime_pct_comparison.svg",
+        );
+        let files = "/home/user/perf/realtime_pct_comparison.{png,svg}";
+        let script = "/home/user/perf/plot_realtime_bars.py";
+        let dest = |line, column| {
+            terminal.link_destination(index::Point::new(index::Line(line), index::Column(column)))
+        };
+
+        let https = "PNG: ".chars().count();
+        assert_eq!(dest(0, https).as_deref(), Some(png));
+        assert_eq!(dest(1, 0).as_deref(), Some(png));
+        assert_eq!(dest(2, 0).as_deref(), Some(png));
+        assert!(dest(0, 0).is_none(), "the PNG label is prose");
+
+        let svg_https = "SVG: ".chars().count();
+        assert_eq!(dest(3, svg_https).as_deref(), Some(svg));
+        assert_eq!(dest(4, 10).as_deref(), Some(svg));
+        assert_eq!(dest(5, 0).as_deref(), Some(svg));
+        assert!(dest(3, 0).is_none(), "the SVG label is prose");
+
+        let path = "Local files: ".chars().count();
+        assert_eq!(dest(6, path).as_deref(), Some(files));
+        let brace = "realtime_pct_comparison.".chars().count();
+        assert_eq!(dest(7, brace).as_deref(), Some(files));
+        let slash = "realtime_pct_comparison.{png,svg} (generated by "
+            .chars()
+            .count();
+        assert_eq!(dest(7, slash).as_deref(), Some(script));
+        assert_eq!(dest(8, 4).as_deref(), Some(script));
+        let generated = "realtime_pct_comparison.{png,svg} (".chars().count();
+        assert!(
+            dest(7, generated).is_none(),
+            "the words between the two paths stay prose"
+        );
+    }
+
+    #[test]
+    fn an_unindented_query_continues_on_the_next_row() {
+        let mut terminal = Terminal::new(core::Size::new(80, 4).unwrap(), 0);
+        terminal.feed(b"https://mlp.example/fetch?\r\nfile=realtime.png\r\n");
+        let expected = "https://mlp.example/fetch?file=realtime.png";
+        assert_eq!(
+            terminal
+                .link_destination(index::Point::new(index::Line(0), index::Column(0)))
+                .as_deref(),
+            Some(expected)
+        );
+        assert_eq!(
+            terminal
+                .link_destination(index::Point::new(index::Line(1), index::Column(0)))
+                .as_deref(),
+            Some(expected),
+            "the query value on the next row belongs to the URL"
+        );
+    }
+
+    #[test]
+    fn an_unindented_sentence_after_a_slash_stays_prose() {
+        let mut terminal = Terminal::new(core::Size::new(80, 4).unwrap(), 0);
+        terminal.feed(b"Docs live at https://example.com/docs/\r\nThen read the guide.\r\n");
+        let https = "Docs live at ".chars().count();
+        assert_eq!(
+            terminal
+                .link_destination(index::Point::new(index::Line(0), index::Column(https)))
+                .as_deref(),
+            Some("https://example.com/docs/")
+        );
+        assert!(
+            terminal
+                .link_destination(index::Point::new(index::Line(1), index::Column(0)))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn an_indented_continuation_keeps_every_url_character() {
+        let cases = [
+            (
+                "  https://example.com/search?\r\n  t=12:30&q=x\r\n",
+                "https://example.com/search?t=12:30&q=x",
+            ),
+            (
+                "  https://www.google.com/maps/place/\r\n  @37.4,-122.0,17z/data=!3m1!4b1\r\n",
+                "https://www.google.com/maps/place/@37.4,-122.0,17z/data=!3m1!4b1",
+            ),
+            (
+                "  https://ru.wikipedia.org/wiki/\r\n  Москва\r\n",
+                "https://ru.wikipedia.org/wiki/Москва",
+            ),
+        ];
+        for (rows, expected) in cases {
+            let mut terminal = Terminal::new(core::Size::new(50, 4).unwrap(), 0);
+            terminal.feed(rows.as_bytes());
+            assert_eq!(
+                terminal
+                    .link_destination(index::Point::new(index::Line(1), index::Column(3)))
+                    .as_deref(),
+                Some(expected),
+                "{rows:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_list_of_slash_terminated_links_stays_separate() {
+        let cases = [
+            ("/etc/apt/\r\n/etc/ssh/\r\n/etc/ufw/\r\n", 0, "/etc/apt/"),
+            ("  /etc/apt/\r\n  /etc/ssh/\r\n", 2, "/etc/apt/"),
+            (
+                "https://a.example/x/\r\nhttps://b.example/y/\r\n",
+                0,
+                "https://a.example/x/",
+            ),
+        ];
+        for (rows, column, expected) in cases {
+            let mut terminal = Terminal::new(core::Size::new(80, 4).unwrap(), 0);
+            terminal.feed(rows.as_bytes());
+            assert_eq!(
+                terminal
+                    .link_destination(index::Point::new(index::Line(0), index::Column(column)))
+                    .as_deref(),
+                Some(expected),
+                "{rows:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_absolute_path_is_a_link_however_it_wraps() {
+        let dest = |columns, rows: &str, line, column| {
+            let mut terminal = Terminal::new(core::Size::new(columns, 4).unwrap(), 0);
+            terminal.feed(rows.as_bytes());
+            terminal.link_destination(index::Point::new(index::Line(line), index::Column(column)))
+        };
+        let path = "/home/user/out/plot.png";
+        assert_eq!(
+            dest(80, "Saved to /home/user/out/plot.png.\r\n", 0, 12).as_deref(),
+            Some(path),
+            "one row, without the sentence's period"
+        );
+        assert_eq!(
+            dest(20, "Saved to /home/user/out/plot.png\r\n", 1, 2).as_deref(),
+            Some(path),
+            "soft-wrapped at the terminal margin"
+        );
+        assert_eq!(
+            dest(
+                80,
+                "wrote `/home/user/out/plot.png` and '/home/user/b/c'\r\n",
+                0,
+                8
+            )
+            .as_deref(),
+            Some(path),
+            "a Markdown code span or quote is not part of the path"
+        );
+        assert!(dest(80, "  // see /tmp for logs\r\n", 0, 2).is_none());
+        assert!(dest(80, "  // see /tmp for logs\r\n", 0, 10).is_none());
+        assert!(
+            dest(80, "src/main.rs and ./run/me\r\n", 0, 5).is_none(),
+            "a relative path is not a link"
         );
     }
 

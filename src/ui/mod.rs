@@ -1010,6 +1010,13 @@ impl DesktopUi {
             )
     }
 
+    /// Output printed in this tab's window. A tab without a window has none.
+    pub(crate) fn output_seq(&self, view: &snapshot::View) -> u64 {
+        self.window
+            .or_else(|| view.window_named(self.session_name()))
+            .map_or(0, |window| view.window_output_seq(window))
+    }
+
     pub(crate) fn set_session_name(&mut self, name: String) {
         self.form.session = name;
     }
