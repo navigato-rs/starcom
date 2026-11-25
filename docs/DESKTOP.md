@@ -156,9 +156,11 @@ default 14), the screen effect (`effect`, `none`, `wave`, `matrix`, or
 `retro`), and how long a quiet connected tab waits before its row leaves the
 active green (`idle`, default 30 seconds, 0 off; see
 `etc/workspace.conf.example`). Quiet rows then spread from green toward dark
-blue between the newest and oldest quiet tab, on a log scale. Adding a
-session, and an automatic reconnect, leave those quiet colors where they
-were. The redraw, font, effect, and idle settings are also on the
+blue between the newest and oldest quiet tab, on a log scale. Only output
+printed while connected moves a row: adding a session, a reconnect, or a
+resync leaves the quiet colors where they were, and output printed during an
+outage arrives in the reconnect snapshot without counting as new. The
+redraw, font, effect, and idle settings are also on the
 **Settings** panel. The last-used session is the target used to resume
 that tab on startup.
 Nothing that would let a reader of that file connect is written: no keys, no

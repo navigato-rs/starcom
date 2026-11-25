@@ -368,6 +368,10 @@ pub struct View {
     /// do not bump this until ESU or timeout, so a torn erase is never painted.
     display_seq: u64,
     window_display_seq: collections::BTreeMap<tmuxctl::WindowId, u64>,
+    /// Bumped only when a window's panes print. Resync, reconnect, and window
+    /// changes repaint through `display_seq` but leave this alone, so a
+    /// session's age means "last output", not "last rebuilt".
+    window_output_seq: collections::BTreeMap<tmuxctl::WindowId, u64>,
 }
 
 /// `%exit` carries no reason on older servers; the distinction matters, so an
@@ -422,7 +426,8 @@ impl View {
                 "duplicate pane"
             );
         }
-        let window_display_seq = windows.keys().map(|window| (*window, 0)).collect();
+        let window_display_seq: collections::BTreeMap<_, _> =
+            windows.keys().map(|window| (*window, 0)).collect();
         Ok(Self {
             session,
             windows,
@@ -433,6 +438,7 @@ impl View {
             closed_windows: collections::BTreeSet::new(),
             session_closed: false,
             display_seq: 0,
+            window_output_seq: window_display_seq.clone(),
             window_display_seq,
         })
     }
@@ -488,7 +494,9 @@ impl View {
         self.status
     }
     pub fn disconnect(&mut self) {
-        // A transport drop leaves each window's activity clock where it was.
+        if self.status != Status::Disconnected {
+            self.bump_all();
+        }
         self.status = Status::Disconnected;
     }
 
@@ -498,6 +506,10 @@ impl View {
 
     pub(crate) fn window_display_seq(&self, window: tmuxctl::WindowId) -> u64 {
         self.window_display_seq.get(&window).copied().unwrap_or(0)
+    }
+
+    pub(crate) fn window_output_seq(&self, window: tmuxctl::WindowId) -> u64 {
+        self.window_output_seq.get(&window).copied().unwrap_or(0)
     }
 
     fn bump_window(&mut self, window: tmuxctl::WindowId) {
@@ -582,6 +594,11 @@ impl View {
                 *seq = previous.wrapping_add(*seq);
             }
         }
+        for (window, seq) in &mut self.window_output_seq {
+            if let Some(previous) = previous.window_output_seq.get(window) {
+                *seq = previous.wrapping_add(*seq);
+            }
+        }
         self.closed_windows
             .extend(previous.closed_windows.iter().copied());
     }
@@ -627,6 +644,9 @@ impl View {
                 };
                 if let Some(window) = changed {
                     self.bump_window(window);
+                    if let Some(seq) = self.window_output_seq.get_mut(&window) {
+                        *seq = seq.wrapping_add(1);
+                    }
                 }
             }
             tmuxctl::Notification::Exit(_) => self.disconnect(),
@@ -981,12 +1001,12 @@ mod tests {
             view.panes()[&tmuxctl::PaneId(1)].terminal.screen_lines()[0],
             "before"
         );
-        let seq_after_add = view.window_display_seq(tmuxctl::WindowId(2));
+        let output = view.window_output_seq(tmuxctl::WindowId(2));
         view.apply(tmuxctl::Notification::Exit(None));
         assert_eq!(view.status(), Status::Disconnected);
         assert_eq!(
-            view.window_display_seq(tmuxctl::WindowId(2)),
-            seq_after_add,
+            view.window_output_seq(tmuxctl::WindowId(2)),
+            output,
             "a transport drop does not count as new output"
         );
     }
@@ -1099,6 +1119,34 @@ mod tests {
 
         assert_eq!(replacement.window_display_seq(tmuxctl::WindowId(2)), 1);
         assert_eq!(replacement.window_display_seq(tmuxctl::WindowId(3)), 1);
+        assert_eq!(replacement.window_output_seq(tmuxctl::WindowId(2)), 1);
+        assert_eq!(replacement.window_output_seq(tmuxctl::WindowId(3)), 1);
+    }
+
+    #[test]
+    fn only_pane_output_moves_a_windows_age() {
+        let first = Pane::restore(state(12, 3), &lines(&["", "", ""]), &[], &[], 0).unwrap();
+        let mut second_state = state(12, 3);
+        second_state.pane = tmuxctl::PaneId(2);
+        second_state.window = tmuxctl::WindowId(3);
+        let second = Pane::restore(second_state, &lines(&["", "", ""]), &[], &[], 0).unwrap();
+        let windows = collections::BTreeMap::from([
+            (tmuxctl::WindowId(2), "work".to_owned()),
+            (tmuxctl::WindowId(3), "build".to_owned()),
+        ]);
+        let mut view =
+            View::new_named(tmuxctl::SessionId(0), vec![first, second], windows).unwrap();
+        let display = view.window_display_seq(tmuxctl::WindowId(3));
+        // A notification tmuxctl does not type forces a resync of every window.
+        view.apply(tmuxctl::Notification::Unknown("%message hello".to_owned()));
+        assert_ne!(view.window_display_seq(tmuxctl::WindowId(3)), display);
+        view.disconnect();
+        assert_eq!(view.window_output_seq(tmuxctl::WindowId(2)), 0);
+        assert_eq!(
+            view.window_output_seq(tmuxctl::WindowId(3)),
+            0,
+            "a resync and a disconnect repaint but do not age a window"
+        );
     }
 
     #[test]

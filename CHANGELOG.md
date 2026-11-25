@@ -40,9 +40,9 @@
 - Quiet session rows spread from green to dark blue between the newest and
   oldest quiet tab, on a log scale. Five quiet days and ten sit close
   together when a much newer tab is also quiet.
-- Adding a session leaves the other sessions on that server at their
-  current age. An automatic reconnect leaves each session's quiet color
-  where it was.
+- Only new output moves a session's quiet color. Adding a session, an
+  automatic reconnect, or a resync leaves the other sessions on that server
+  at their current age.
 - Enter in the new-session field creates that window, the same as clicking
   **Create**.
 - Creating a session refuses a name that already exists on that server. Each

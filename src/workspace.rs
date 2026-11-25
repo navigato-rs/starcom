@@ -44,6 +44,7 @@ struct Tab {
     server: Option<desktop::ServerKey>,
     ui: ui::DesktopUi,
     last_seq: u64,
+    last_output_seq: u64,
     last_output: time::Instant,
     last_phase: desktop::Phase,
     last_revision: u64,
@@ -239,6 +240,7 @@ fn spawn_tab(
         server: None,
         ui: ui::DesktopUi::with_config(config, config_load_error),
         last_seq: 0,
+        last_output_seq: 0,
         last_output: time::Instant::now(),
         last_phase: desktop::Phase::Idle,
         last_revision: 0,
@@ -742,18 +744,16 @@ impl Workspace {
                 continue;
             }
             let phase = state.phase;
-            let seq = state
+            let (seq, output_seq) = state
                 .view
                 .as_ref()
-                .map(|view| tab.ui.display_seq(view))
-                .unwrap_or(0);
+                .map(|view| (tab.ui.display_seq(view), tab.ui.output_seq(view)))
+                .unwrap_or((0, 0));
             drop(state);
 
             let phase_changed = phase != tab.last_phase;
             let display_changed = seq != tab.last_seq;
-            // Reconnect and resync change the phase. Only output while the
-            // session stays live moves its quiet-row clock.
-            let fresh_output = display_changed && live_phase(phase) && live_phase(tab.last_phase);
+            let fresh_output = output_seq != tab.last_output_seq;
             let was_quiet = self.idle > 0
                 && live_phase(tab.last_phase)
                 && now.saturating_duration_since(tab.last_output)
@@ -763,7 +763,7 @@ impl Workspace {
             if visible || row_changed {
                 repaint = true;
             }
-            if visible && fresh_output {
+            if visible && display_changed {
                 echo = true;
             }
             if !visible {
@@ -774,6 +774,7 @@ impl Workspace {
                 }
                 if fresh_output {
                     tab.last_output = now;
+                    tab.last_output_seq = output_seq;
                 }
             }
         }
@@ -1483,14 +1484,15 @@ impl Workspace {
                 for tab in &mut self.tabs {
                     let state = tab.client.lock();
                     let phase = logical_phase(tab, &state);
-                    let seq = state
+                    let (seq, output_seq) = state
                         .view
                         .as_ref()
-                        .map(|view| tab.ui.display_seq(view))
-                        .unwrap_or(0);
+                        .map(|view| (tab.ui.display_seq(view), tab.ui.output_seq(view)))
+                        .unwrap_or((0, 0));
                     drop(state);
-                    if seq != tab.last_seq && live_phase(phase) && live_phase(tab.last_phase) {
+                    if output_seq != tab.last_output_seq {
                         tab.last_output = now;
+                        tab.last_output_seq = output_seq;
                     }
                     if seq != tab.last_seq || phase != tab.last_phase {
                         tab.last_seq = seq;
