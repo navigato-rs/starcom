@@ -3627,6 +3627,41 @@ mod tests {
     }
 
     #[test]
+    fn only_pane_output_moves_a_sessions_age() {
+        let mut workspace = Workspace::new(sync::Arc::new(|| {}), desktop::Startup::Demo).unwrap();
+        paint(&mut workspace);
+        let created = workspace.tabs[0].last_output;
+        {
+            let mut state = workspace.tabs[0].client.lock();
+            let view = state.view.as_mut().expect("demo view");
+            view.apply(tmuxctl::Notification::Unknown("%message hello".to_owned()));
+            view.disconnect();
+        }
+        paint(&mut workspace);
+        assert_eq!(
+            workspace.tabs[0].last_output, created,
+            "a resync and a disconnect repaint without aging the session"
+        );
+
+        workspace.tabs[0].client.demo().unwrap();
+        paint(&mut workspace);
+        let rebuilt = workspace.tabs[0].last_output;
+        {
+            let mut state = workspace.tabs[0].client.lock();
+            let view = state.view.as_mut().expect("demo view");
+            view.apply(tmuxctl::Notification::Output {
+                pane: tmuxctl::PaneId(0),
+                bytes: b"new output".to_vec(),
+            });
+        }
+        paint(&mut workspace);
+        assert!(
+            workspace.tabs[0].last_output > rebuilt,
+            "pane output refreshes the session's age"
+        );
+    }
+
+    #[test]
     fn idle_frames_do_not_request_another_repaint() {
         let count = sync::Arc::new(sync::atomic::AtomicUsize::new(0));
         let wake = sync::Arc::clone(&count);
