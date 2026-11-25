@@ -13,11 +13,13 @@
   queued, and WAIT if that work stays unacknowledged or the queue is full.
 - A click copies an `http(s)` URL that a TUI wrapped inside a box, including
   when the break is at a hyphen and the next row starts with a `│` gutter.
-- A click copies only the URL when the next indented row is a new sentence,
-  such as `exec:` after `https://github.com/login/device`.
-- A click copies a web link or absolute path that continues on the next
-  row at column zero when the break is an unfinished `/` or `?`, including
-  a braced filename such as `realtime_pct_comparison.{png,svg}`.
+- A click copies only the URL when the next indented row starts with a
+  label, such as `exec:` after `https://github.com/login/device`.
+- A click copies an absolute path such as `/home/user/out/plot.png`, on one
+  row or wrapped, the same as an `http(s)` URL. A link that stops on an
+  unfinished `/` or `?` continues on the next row at column zero, including
+  a braced filename such as `plot.{png,svg}`. A list of paths or URLs that
+  end in `/` stays one link per row.
 - A click copies an `http(s)` URL that wraps after `?` or before a Grok
   message clock, joining the continuation on the next indented row.
 - An in-flight file drop keeps uploading after you switch sessions. Cancel

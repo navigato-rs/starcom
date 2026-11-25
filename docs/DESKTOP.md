@@ -316,11 +316,11 @@ TUI owns wheel events; its gutter cannot start selection or send mouse input
 remotely.
 
 A click on a link copies its destination to the local clipboard: OSC 8 if the
-cell has one, otherwise an `http(s)` URL or wrapped absolute path covering
-the cell (including when the link is split across soft-wrapped rows,
-hard-wrapped inside a TUI box, hard-wrapped after `?` or a Grok message clock
-onto the next indented row, or hard-wrapped at column zero after an
-unfinished `/` or `?`),
+cell has one, otherwise an `http(s)` URL or absolute path covering the cell
+(including when the link is split across soft-wrapped rows, hard-wrapped
+inside a TUI box, hard-wrapped after `?` or a Grok message clock onto the
+next indented row, or hard-wrapped at column zero after an unfinished `/` or
+`?`),
 or — for a short underlined "click here to copy" affordance whose OSC 8 tmux
 has stripped — a URL on the same or an adjacent line. A long underlined run is
 treated as content, not a link. Hover shows the destination. A tiny pointer
