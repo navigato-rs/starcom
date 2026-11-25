@@ -488,9 +488,7 @@ impl View {
         self.status
     }
     pub fn disconnect(&mut self) {
-        if self.status != Status::Disconnected {
-            self.bump_all();
-        }
+        // A transport drop leaves each window's activity clock where it was.
         self.status = Status::Disconnected;
     }
 
@@ -983,8 +981,14 @@ mod tests {
             view.panes()[&tmuxctl::PaneId(1)].terminal.screen_lines()[0],
             "before"
         );
+        let seq_after_add = view.window_display_seq(tmuxctl::WindowId(2));
         view.apply(tmuxctl::Notification::Exit(None));
         assert_eq!(view.status(), Status::Disconnected);
+        assert_eq!(
+            view.window_display_seq(tmuxctl::WindowId(2)),
+            seq_after_add,
+            "a transport drop does not count as new output"
+        );
     }
 
     #[test]

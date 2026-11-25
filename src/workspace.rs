@@ -751,16 +751,19 @@ impl Workspace {
 
             let phase_changed = phase != tab.last_phase;
             let display_changed = seq != tab.last_seq;
+            // Reconnect and resync change the phase. Only output while the
+            // session stays live moves its quiet-row clock.
+            let fresh_output = display_changed && live_phase(phase) && live_phase(tab.last_phase);
             let was_quiet = self.idle > 0
                 && live_phase(tab.last_phase)
                 && now.saturating_duration_since(tab.last_output)
                     >= time::Duration::from_secs(u64::from(self.idle));
             let visible = !self.composer_open && index == self.active;
-            let row_changed = phase_changed || (display_changed && was_quiet);
+            let row_changed = phase_changed || (fresh_output && was_quiet);
             if visible || row_changed {
                 repaint = true;
             }
-            if visible && display_changed {
+            if visible && fresh_output {
                 echo = true;
             }
             if !visible {
@@ -769,7 +772,7 @@ impl Workspace {
                     tab.last_phase = phase;
                     tab.last_seq = seq;
                 }
-                if display_changed {
+                if fresh_output {
                     tab.last_output = now;
                 }
             }
@@ -1486,7 +1489,7 @@ impl Workspace {
                         .map(|view| tab.ui.display_seq(view))
                         .unwrap_or(0);
                     drop(state);
-                    if seq != tab.last_seq {
+                    if seq != tab.last_seq && live_phase(phase) && live_phase(tab.last_phase) {
                         tab.last_output = now;
                     }
                     if seq != tab.last_seq || phase != tab.last_phase {

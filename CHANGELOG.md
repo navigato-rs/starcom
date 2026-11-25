@@ -13,6 +13,11 @@
   queued, and WAIT if that work stays unacknowledged or the queue is full.
 - A click copies an `http(s)` URL that a TUI wrapped inside a box, including
   when the break is at a hyphen and the next row starts with a `│` gutter.
+- A click copies only the URL when the next indented row is a new sentence,
+  such as `exec:` after `https://github.com/login/device`.
+- A click copies a web link or absolute path that continues on the next
+  row at column zero when the break is an unfinished `/` or `?`, including
+  a braced filename such as `realtime_pct_comparison.{png,svg}`.
 - A click copies an `http(s)` URL that wraps after `?` or before a Grok
   message clock, joining the continuation on the next indented row.
 - An in-flight file drop keeps uploading after you switch sessions. Cancel
@@ -35,8 +40,9 @@
 - Quiet session rows spread from green to dark blue between the newest and
   oldest quiet tab, on a log scale. Five quiet days and ten sit close
   together when a much newer tab is also quiet.
-- Adding a session no longer marks the other sessions on that server as
-  freshly updated.
+- Adding a session leaves the other sessions on that server at their
+  current age. An automatic reconnect leaves each session's quiet color
+  where it was.
 - Enter in the new-session field creates that window, the same as clicking
   **Create**.
 - Creating a session refuses a name that already exists on that server. Each
